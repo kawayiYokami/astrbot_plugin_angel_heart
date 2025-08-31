@@ -1,0 +1,48 @@
+{
+  "enable_angel_heart": {
+    "type": "bool",
+    "title": "启用AngelHeart插件",
+    "default": false
+  },
+  "analyzer_model": {
+    "type": "string",
+    "title": "秘书模型",
+    "description": "用于分析对话、决定是否回复的快速、低成本模型提供商名称。",
+    "default": ""
+  },
+  "waiting_time": {
+    "type": "float",
+    "title": "等待时间（秒）",
+    "description": "最多每7秒主动回复一次。",
+    "default": 7.0
+  },
+  "whitelist_enabled": {
+    "type": "bool",
+    "title": "启用群聊白名单",
+    "description": "启用后只有白名单中的群聊才会触发插件",
+    "default": false
+  },
+  "chat_ids": {
+    "type": "list",
+    "title": "群聊ID白名单",
+    "description": "允许插件生效的群聊ID列表",
+    "hint": "请直接填写需要启用白名单的群聊或好友的QQ号列表。",
+    "items": {
+      "type": "string"
+    },
+    "default": []
+  },
+  "cache_expiry": {
+    "type": "int",
+    "title": "缓存过期时间（秒）",
+    "description": "消息缓存的过期时间，超过此时间的消息将被自动清理",
+    "default": 3600
+  },
+  "reply_strategy_guide": {
+    "type": "string",
+    "title": "智能回复策略指导",
+    "description": "定义AI如何根据对话情况选择回复策略",
+    "default": "下面的例子是针对不同场景的回复策略建议：\n\n1. 火药味和攻击性强时，决策：缓和气氛，语气温和友善\n2. 当出现技术性问题时，决策：技术指导，提供准确解答\n3. 当用户寻求帮助时，决策：表示共情之后给出实用建议\n4. 当出现误解时，决策：澄清解释，耐心沟通\n5. 当出现积极反馈时，决策：鼓励支持，表示认同\n\n请根据这些原则，根据对话内容判断合适的回复策略。",
+    "hint": "直接填入指导文本即可，支持多行，高版本模型会自动根据这里的指导来进行回复策略判断。"
+  }
+}

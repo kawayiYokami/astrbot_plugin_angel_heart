@@ -1,0 +1,13 @@
+# Python
+__pycache__
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# IDE / Editor
+.idea/
+.vscode/
+
+# Local config
+config.local.yaml

@@ -1,0 +1,5 @@
+name: astrbot_plugin_angel_heart
+description: "天使小秘书，负责给大模型判断是否需要主动回复。"
+author: kawayiYokami
+version: 1.0.0
+repo: https://github.com/user/astrbot_plugin_angel_heart
