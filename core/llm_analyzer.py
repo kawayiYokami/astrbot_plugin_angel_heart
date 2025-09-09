@@ -79,13 +79,13 @@ class LLMAnalyzer:
                 topic_raw = raw.get("topic")
 
                 if reply_strategy_raw is None:
-                    logger.warning("AngelHeart\u5206\u6790\u5668: AI 返回的 reply_strategy 为 null，使用默认值。 原始响应: %s" % (response_text[:200]))
+                    logger.warning("AngelHeart分析器: AI 返回的 reply_strategy 为 null，使用默认值。 原始响应: %s" % (response_text[:200]))
                     reply_strategy = ""
                 else:
                     reply_strategy = str(reply_strategy_raw)
 
                 if topic_raw is None:
-                    logger.warning("AngelHeart\u5206\u6790\u5668: AI 返回的 topic 为 null，使用默认值。 原始响应: %s" % (response_text[:200]))
+                    logger.warning("AngelHeart分析器: AI 返回的 topic 为 null，使用默认值。 原始响应: %s" % (response_text[:200]))
                     topic = ""
                 else:
                     topic = str(topic_raw)
@@ -113,6 +113,9 @@ class LLMAnalyzer:
                     logger.error("AngelHeart分析器: JSON字段缺失，已达到最大重试次数。")
                     break
                 continue
+            except asyncio.CancelledError:
+                # 重新抛出 CancelledError，以确保异步任务可以被正常取消
+                raise
             except Exception as e:
                 logger.error(f"💥 AngelHeart分析器: 轻量级AI分析失败 (尝试 {attempt + 1}/{max_retries + 1}): {e}", exc_info=True)
                 if attempt == max_retries:
