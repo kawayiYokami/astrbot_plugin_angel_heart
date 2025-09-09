@@ -327,7 +327,6 @@ class AngelHeartPlugin(Star):
             # 秘书职责3：执行决策
             if decision.should_reply:
                 # --- 新增：动态人格注入逻辑 ---
-                import uuid
                 # 1. 获取原始人格
                 original_prompt, original_persona_id = await self._get_original_persona_prompt(chat_id)
 
@@ -335,12 +334,24 @@ class AngelHeartPlugin(Star):
                 # 格式：直接追加到原始人格末尾
                 new_prompt_text = f"{original_prompt}\n\n---\n当前最新话题: {decision.topic}\n回复策略: {decision.reply_strategy}"
 
-                # 3. 创建并注册临时人格
-                temp_persona_id = f"angelheart_temp_{uuid.uuid4()}"
-                temp_persona = {"name": temp_persona_id, "prompt": new_prompt_text}
-                self.context.provider_manager.personas.append(temp_persona)
+                # 3. 为每个会话创建一个唯一的临时人格ID
+                temp_persona_id = f"angelheart_temp_session_{chat_id}"
 
-                # 4. 应用临时人格到当前会话
+                # 4. 查找或创建临时人格
+                persona_found = False
+                for persona in self.context.provider_manager.personas:
+                    if persona["name"] == temp_persona_id:
+                        # 如果找到，直接更新其prompt
+                        persona["prompt"] = new_prompt_text
+                        persona_found = True
+                        break
+
+                # 如果没有找到，则创建新的人格
+                if not persona_found:
+                    temp_persona = {"name": temp_persona_id, "prompt": new_prompt_text}
+                    self.context.provider_manager.personas.append(temp_persona)
+
+                # 5. 应用临时人格到当前会话
                 await self.context.conversation_manager.update_conversation_persona_id(chat_id, temp_persona_id)
                 logger.info(f"AngelHeart[{chat_id}]: 已应用临时人格 ID: {temp_persona_id}")
                 # --- 新增结束 ---
