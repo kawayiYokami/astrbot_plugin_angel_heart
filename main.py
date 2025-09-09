@@ -172,7 +172,7 @@ class AngelHeartPlugin(Star):
         # 如果缓存超过最大尺寸，则移除最旧的条目
         if len(self.analysis_cache) > CACHE_MAX_SIZE:
             self.analysis_cache.popitem(last=False)
-        logger.info(f"AngelHeart[{chat_id}]: 分析完成，已更新缓存。决策: {'回复' if result.should_reply else '不回复'}")
+        logger.info(f"AngelHeart[{chat_id}]: 分析完成，已更新缓存。决策: {'回复' if result.should_reply else '不回复'} | 策略: {result.reply_strategy} | 话题: {result.topic}")
 
     def reload_config(self, new_config: dict):
         """重新加载配置"""
@@ -326,6 +326,25 @@ class AngelHeartPlugin(Star):
 
             # 秘书职责3：执行决策
             if decision.should_reply:
+                # --- 新增：动态人格注入逻辑 ---
+                import uuid
+                # 1. 获取原始人格
+                original_prompt, original_persona_id = await self._get_original_persona_prompt(chat_id)
+
+                # 2. 拼接新的提示词
+                # 格式：直接追加到原始人格末尾
+                new_prompt_text = f"{original_prompt}\n\n---\n当前最新话题: {decision.topic}\n回复策略: {decision.reply_strategy}"
+
+                # 3. 创建并注册临时人格
+                temp_persona_id = f"angelheart_temp_{uuid.uuid4()}"
+                temp_persona = {"name": temp_persona_id, "prompt": new_prompt_text}
+                self.context.provider_manager.personas.append(temp_persona)
+
+                # 4. 应用临时人格到当前会话
+                await self.context.conversation_manager.update_conversation_persona_id(chat_id, temp_persona_id)
+                logger.info(f"AngelHeart[{chat_id}]: 已应用临时人格 ID: {temp_persona_id}")
+                # --- 新增结束 ---
+
                 # 在唤醒核心前，将待处理历史（数据库历史记录）同步回数据库
                 # 不包含当前消息，因为当前消息会在后续被核心系统处理并添加到记录中
                 curr_cid = await self.context.conversation_manager.get_curr_conversation_id(chat_id)
@@ -395,6 +414,58 @@ class AngelHeartPlugin(Star):
             latest_time = time.time() - 3600  # 默认1小时前
 
         return latest_time
+
+    async def _get_original_persona_prompt(self, chat_id: str) -> tuple[str, str]:
+        """获取当前会话的原始人格提示词和ID
+
+        Returns:
+            tuple[str, str]: (persona_prompt, persona_id)
+        """
+        try:
+            # 获取当前对话
+            curr_cid = await self.context.conversation_manager.get_curr_conversation_id(chat_id)
+            if not curr_cid:
+                # 如果没有对话ID，使用默认人格
+                default_persona = self.context.provider_manager.selected_default_persona
+                if default_persona:
+                    return default_persona.get("prompt", ""), default_persona["name"]
+                return "", "default"
+
+            conversation = await self.context.conversation_manager.get_conversation(chat_id, curr_cid)
+            if not conversation:
+                # 如果没有对话对象，使用默认人格
+                default_persona = self.context.provider_manager.selected_default_persona
+                if default_persona:
+                    return default_persona.get("prompt", ""), default_persona["name"]
+                return "", "default"
+
+            # 获取人格ID
+            persona_id = conversation.persona_id
+
+            if not persona_id:
+                # persona_id 为 None 或空时，使用默认人格
+                default_persona = self.context.provider_manager.selected_default_persona
+                if default_persona:
+                    return default_persona.get("prompt", ""), default_persona["name"]
+                return "", "default"
+            elif persona_id == "[%None]":
+                # 用户显式取消人格时，不使用任何人格
+                return "", "[%None]"
+
+            # 从provider_manager中查找人格
+            for persona in self.context.provider_manager.personas:
+                if persona["name"] == persona_id:
+                    return persona.get("prompt", ""), persona_id
+
+            logger.debug(f"未找到人格: {persona_id}，使用默认人格")
+            default_persona = self.context.provider_manager.selected_default_persona
+            if default_persona:
+                return default_persona.get("prompt", ""), default_persona["name"]
+            return "", "default"
+
+        except Exception as e:
+            logger.debug(f"获取原始人格提示词失败: {e}")
+            return "", ""
 
     async def _get_conversation_history(self, chat_id: str) -> List[Dict]:
         """获取当前会话的完整对话历史"""
