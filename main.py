@@ -59,6 +59,7 @@ class AngelHeartPlugin(Star):
         """缓存过期时间：消息缓存的过期时间（秒）"""
         # -- 常量定义 --
         self.DEFAULT_TIMESTAMP_FALLBACK_SECONDS = 3600  # 默认时间戳回退时间（1小时）
+        self.DB_HISTORY_MERGE_LIMIT = 5  # 数据库历史记录合并限制
 
 
 
@@ -356,9 +357,6 @@ class AngelHeartPlugin(Star):
                 logger.debug(f"AngelHeart[{chat_id}]: 上下文为空，无需分析。")
                 return
 
-            # 清空当前缓存，准备接收新一轮消息
-            self.unprocessed_messages[chat_id] = []
-
             # 秘书职责2：调用分析器进行决策
             decision = await self.llm_analyzer.analyze_and_decide(conversations=full_context)
             self.update_analysis_cache(chat_id, decision)
@@ -379,6 +377,9 @@ class AngelHeartPlugin(Star):
             else:
                 logger.info(f"AngelHeart[{chat_id}]: 决策为'不参与'。")
 
+            # 所有操作成功完成后再清空当前缓存，准备接收新一轮消息
+            self.unprocessed_messages[chat_id] = []
+
         except Exception as e:
             logger.error(f"AngelHeart[{chat_id}]: 秘书处理过程中出错: {e}", exc_info=True)
 
@@ -393,9 +394,9 @@ class AngelHeartPlugin(Star):
         # 获取数据库中最新的消息时间作为基准
         latest_db_time = self._get_latest_message_time(db_history)
 
-        # 收集数据库中的内容用于去重检查（检查最近5条消息）
+        # 收集数据库中的内容用于去重检查（检查最近N条消息）
         db_contents = set()
-        for msg in db_history[-5:]:  # 只检查最近5条以避免性能问题
+        for msg in db_history[-self.DB_HISTORY_MERGE_LIMIT:]:  # 只检查最近N条以避免性能问题
             content = msg.get('content', '').strip()
             if content:  # 只添加非空内容
                 db_contents.add(content)
@@ -432,6 +433,7 @@ class AngelHeartPlugin(Star):
         # 如果所有消息都没有时间戳，使用当前时间作为基准
         if latest_time == 0.0:
             latest_time = time.time() - self.DEFAULT_TIMESTAMP_FALLBACK_SECONDS  # 默认1小时前
+            logger.debug(f"AngelHeart: 消息时间戳回退到默认值 {latest_time} ({self.DEFAULT_TIMESTAMP_FALLBACK_SECONDS}秒前)")
 
         return latest_time
 
