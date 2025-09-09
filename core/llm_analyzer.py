@@ -54,18 +54,10 @@ class LLMAnalyzer:
                 # 调用新方法解析和验证响应
                 return self._parse_and_validate_decision(response_text)
 
-            except json.JSONDecodeError as e:
-                logger.warning(f"AngelHeart分析器: AI返回了无效的JSON (尝试 {attempt + 1}/{max_retries + 1}): {e}. 原始响应: {response_text[:200]}...")
+            except (json.JSONDecodeError, KeyError) as e:
+                logger.warning(f"AngelHeart分析器: AI返回的JSON格式或内容有误 (尝试 {attempt + 1}/{max_retries + 1}): {e}. 原始响应: {response_text[:200]}...")
                 if attempt == max_retries:
-                    logger.error("AngelHeart分析器: JSON解析失败，已达到最大重试次数。")
-                    break
-                # 在下一次尝试前，可以考虑修改prompt以更明确地要求JSON格式
-                # 这里我们简单地重试
-                continue
-            except KeyError as e:
-                logger.warning(f"AngelHeart分析器: AI返回的JSON缺少必要字段 (尝试 {attempt + 1}/{max_retries + 1}): {e}. 原始响应: {response_text}")
-                if attempt == max_retries:
-                    logger.error("AngelHeart分析器: JSON字段缺失，已达到最大重试次数。")
+                    logger.error("AngelHeart分析器: JSON处理失败，已达到最大重试次数。")
                     break
                 continue
             except asyncio.CancelledError:
@@ -102,11 +94,8 @@ class LLMAnalyzer:
         if isinstance(should_reply_raw, bool):
             should_reply = should_reply_raw
         else:
-            try:
-                sr = str(should_reply_raw).strip().lower()
-                should_reply = sr in ("true", "1", "yes", "y")
-            except Exception:
-                should_reply = False
+            sr = str(should_reply_raw).strip().lower()
+            should_reply = sr in ("true", "1", "yes", "y")
 
         # 解析 reply_strategy 和 topic，确保为字符串，若为空或 None 则使用安全默认并记录警告
         reply_strategy_raw = raw.get("reply_strategy")

@@ -140,9 +140,6 @@ class AngelHeartPlugin(Star):
         req.prompt = f"{req.prompt}{persona_context}"
         logger.debug(f"AngelHeart[{chat_id}]: 已注入人格上下文到LLM请求。")
 
-        # 6. 用后即焚：删除缓存中的决策，确保只使用一次
-        if self.analysis_cache.pop(chat_id, None) is not None:
-            logger.debug(f"AngelHeart[{chat_id}]: 已从缓存中移除一次性决策。")
 
     # --- 指令实现 ---
     @filter.command("angelheart")
@@ -365,6 +362,8 @@ class AngelHeartPlugin(Star):
             # 所有操作成功完成后再清空当前缓存，准备接收新一轮消息
             self.unprocessed_messages[chat_id] = []
 
+        except asyncio.TimeoutError as e:
+            logger.warning(f"AngelHeart[{chat_id}]: 秘书处理过程中发生超时: {e}")
         except Exception as e:
             logger.error(f"AngelHeart[{chat_id}]: 秘书处理过程中出错: {e}", exc_info=True)
 
@@ -441,6 +440,9 @@ class AngelHeartPlugin(Star):
         except json.JSONDecodeError as e:
             logger.error(f"解析对话历史JSON失败: {e}")
             return []
+        except (TypeError, AttributeError) as e:
+            logger.error(f"获取对话历史时发生类型或属性错误: {e}", exc_info=True)
+            return []
         except Exception as e:
             logger.error(f"获取对话历史时发生未知错误: {e}", exc_info=True)
             return []
@@ -487,6 +489,15 @@ class AngelHeartPlugin(Star):
                 logger.error(f"🕒 周期性清理任务出错: {e}", exc_info=True)
                 # 即使出错也继续下一次循环
                 continue
+
+    @filter.on_llm_response()
+    async def clear_oneshot_decision_on_llm_response(self, event: AstrMessageEvent, resp, *args, **kwargs):
+        """在LLM成功响应后，清理一次性决策缓存"""
+        chat_id = event.unified_msg_origin
+        # 检查缓存是否存在，如果存在则移除
+        if self.analysis_cache.get(chat_id):
+            if self.analysis_cache.pop(chat_id, None) is not None:
+                logger.debug(f"AngelHeart[{chat_id}]: LLM响应成功，已从缓存中移除一次性决策。")
 
     async def on_destroy(self):
         """插件销毁时的清理工作"""
