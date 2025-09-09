@@ -47,6 +47,7 @@ class LLMAnalyzer:
 
         max_retries = 2
         for attempt in range(max_retries + 1):
+            response_text = ""  # 初始化变量
             try:
                 token = await provider.text_chat(prompt=prompt)
                 response_text = token.completion_text.strip()

@@ -61,6 +61,12 @@ class AngelHeartPlugin(Star):
         # -- 常量定义 --
         self.DEFAULT_TIMESTAMP_FALLBACK_SECONDS = 3600  # 默认时间戳回退时间（1小时）
         self.DB_HISTORY_MERGE_LIMIT = 5  # 数据库历史记录合并限制
+        self.CLEANUP_INTERVAL_SECONDS = 3600  # 周期性清理间隔 (1小时)
+        self.INACTIVE_SESSION_THRESHOLD_SECONDS = 86400  # 不活跃会话阈值 (1天)
+
+        # -- 后台任务 --
+        self._cleanup_task: asyncio.Task | None = None
+        """周期性清理任务"""
 
 
 
@@ -70,6 +76,9 @@ class AngelHeartPlugin(Star):
         reply_strategy_guide = self.config.get("reply_strategy_guide", "")
         # 传递 context 对象，让 LLMAnalyzer 在需要时动态获取 provider
         self.llm_analyzer = LLMAnalyzer(analyzer_model_name, context, reply_strategy_guide)
+
+        # 启动周期性清理任务
+        self._start_periodic_cleanup()
 
         logger.info("💖 AngelHeart智能回复员初始化完成 (同步轻量级架构)")
 
@@ -94,11 +103,6 @@ class AngelHeartPlugin(Star):
                 self.analysis_locks[chat_id] = asyncio.Lock()
 
             lock = self.analysis_locks[chat_id]
-
-            # 检查锁是否已被占用，避免不必要的等待
-            if lock.locked():
-                logger.debug(f"AngelHeart[{chat_id}]: 分析已在进行中，跳过本次唤醒。")
-                return
 
             async with lock:
                 # 再次检查时间间隔，因为在等待锁的过程中条件可能已改变
@@ -299,25 +303,24 @@ class AngelHeartPlugin(Star):
             return
 
         current_time = time.time()
-        expired_count = 0
+        original_count = len(self.unprocessed_messages[chat_id])
 
-        # 从后向前遍历，避免在迭代时修改列表
-        messages = self.unprocessed_messages[chat_id]
-        i = len(messages) - 1
-        while i >= 0:
-            msg = messages[i]
-            # 检查消息时间戳是否过期
-            if 'timestamp' in msg and current_time - msg['timestamp'] > self.cache_expiry:
-                messages.pop(i)
-                expired_count += 1
-            i -= 1
+        # 使用列表推导式过滤掉过期的消息
+        self.unprocessed_messages[chat_id] = [
+            msg for msg in self.unprocessed_messages[chat_id]
+            if 'timestamp' not in msg or current_time - msg['timestamp'] <= self.cache_expiry
+        ]
+
+        new_count = len(self.unprocessed_messages[chat_id])
+        expired_count = original_count - new_count
 
         if expired_count > 0:
-            logger.debug(f"AngelHeart[{chat_id}]: 清理了 {expired_count} 条过期消息，剩余 {len(messages)} 条")
+            logger.debug(f"AngelHeart[{chat_id}]: 清理了 {expired_count} 条过期消息，剩余 {new_count} 条")
 
-        # 如果会话消息列表为空，删除该会话的键
-        if not messages:
+        # 如果会话消息列表为空，删除该会话的键和对应的锁
+        if not self.unprocessed_messages[chat_id]:
             self.unprocessed_messages.pop(chat_id, None)
+            self.analysis_locks.pop(chat_id, None)
 
     async def _awaken_secretary_for_analysis(self, chat_id: str, event: AstrMessageEvent):
         """秘书职责：分析缓存内容并做出决策"""
@@ -442,6 +445,56 @@ class AngelHeartPlugin(Star):
             logger.error(f"获取对话历史时发生未知错误: {e}", exc_info=True)
             return []
 
+    def _start_periodic_cleanup(self):
+        """启动周期性清理任务"""
+        if self._cleanup_task is None or self._cleanup_task.done():
+            self._cleanup_task = asyncio.create_task(self._periodic_cleanup())
+            logger.info("🕒 已启动 AngelHeart 周期性清理任务")
+
+    async def _periodic_cleanup(self):
+        """周期性清理不活跃会话的任务"""
+        logger.info("🕒 周期性清理任务已启动，间隔: {}秒".format(self.CLEANUP_INTERVAL_SECONDS))
+        while True:
+            try:
+                await asyncio.sleep(self.CLEANUP_INTERVAL_SECONDS)
+                logger.debug("🕒 执行周期性清理...")
+
+                current_time = time.time()
+                inactive_chat_ids = []
+
+                # 收集超过阈值的不活跃会话ID
+                for chat_id, last_analysis_time in self.last_analysis_time.items():
+                    if current_time - last_analysis_time > self.INACTIVE_SESSION_THRESHOLD_SECONDS:
+                        inactive_chat_ids.append(chat_id)
+
+                # 清理不活跃会话的相关数据
+                cleaned_count = 0
+                for chat_id in inactive_chat_ids:
+                    self.unprocessed_messages.pop(chat_id, None)
+                    self.analysis_locks.pop(chat_id, None)
+                    self.last_analysis_time.pop(chat_id, None)
+                    cleaned_count += 1
+
+                if cleaned_count > 0:
+                    logger.info(f"🕒 周期性清理完成，已清理 {cleaned_count} 个不活跃会话")
+                else:
+                    logger.debug("🕒 周期性清理完成，未发现不活跃会话")
+
+            except asyncio.CancelledError:
+                logger.info("🕒 周期性清理任务已被取消")
+                break
+            except Exception as e:
+                logger.error(f"🕒 周期性清理任务出错: {e}", exc_info=True)
+                # 即使出错也继续下一次循环
+                continue
+
     async def on_destroy(self):
         """插件销毁时的清理工作"""
+        # 取消周期性清理任务
+        if self._cleanup_task and not self._cleanup_task.done():
+            self._cleanup_task.cancel()
+            try:
+                await self._cleanup_task
+            except asyncio.CancelledError:
+                pass # 预期的取消异常
         logger.info("💖 AngelHeart 插件已销毁")
