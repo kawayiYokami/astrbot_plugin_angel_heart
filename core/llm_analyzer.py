@@ -18,12 +18,12 @@ class LLMAnalyzer:
         self.context = context  # 存储 context 对象，用于动态获取 provider
         self.strategy_guide = strategy_guide or ""  # 存储策略指导文本
         if not self.analyzer_model_name:
-            logger.warning("AngelHeart的分析模型未配置，功能将受限。" )
+            logger.warning("AngelHeart的分析模型未配置，功能将受限。")
 
     async def analyze_and_decide(self, conversations: List[Dict]) -> SecretaryDecision:
         """分析对话历史，做出结构化的决策 (JSON)"""
         if not self.analyzer_model_name:
-            logger.debug("AngelHeart分析器: 分析模型未配置, 跳过分析。" )
+            logger.debug("AngelHeart分析器: 分析模型未配置, 跳过分析。")
             # 返回一个默认的不参与决策
             return SecretaryDecision(
                 should_reply=False,
@@ -51,53 +51,8 @@ class LLMAnalyzer:
             try:
                 token = await provider.text_chat(prompt=prompt)
                 response_text = token.completion_text.strip()
-
-                # 尝试提取可能被包裹在代码块中的JSON
-                if response_text.startswith("```json"):
-                    response_text = response_text.split("```json")[1].split("```")[0].strip()
-                elif response_text.startswith("```"):
-                    response_text = response_text.split("```")[1].strip()
-
-                # 解析JSON
-                decision_data = json.loads(response_text)
-
-                # 对来自 AI 的 JSON 做健壮性处理，防止字段为 null 或类型不符合导致 pydantic 校验失败
-                raw = decision_data
-                # 解析 should_reply，兼容 bool、数字、字符串等形式
-                should_reply_raw = raw.get("should_reply", False)
-                if isinstance(should_reply_raw, bool):
-                    should_reply = should_reply_raw
-                else:
-                    try:
-                        sr = str(should_reply_raw).strip().lower()
-                        should_reply = sr in ("true", "1", "yes", "y")
-                    except Exception:
-                        should_reply = False
-
-                # 解析 reply_strategy 和 topic，确保为字符串，若为空或 None 则使用安全默认并记录警告
-                reply_strategy_raw = raw.get("reply_strategy")
-                topic_raw = raw.get("topic")
-
-                if reply_strategy_raw is None:
-                    logger.warning("AngelHeart分析器: AI 返回的 reply_strategy 为 null，使用默认值。 原始响应: %s" % (response_text[:200]))
-                    reply_strategy = ""
-                else:
-                    reply_strategy = str(reply_strategy_raw)
-
-                if topic_raw is None:
-                    logger.warning("AngelHeart分析器: AI 返回的 topic 为 null，使用默认值。 原始响应: %s" % (response_text[:200]))
-                    topic = ""
-                else:
-                    topic = str(topic_raw)
-
-                decision = SecretaryDecision(
-                    should_reply=should_reply,
-                    reply_strategy=reply_strategy,
-                    topic=topic
-                )
-
-                logger.debug(f"AngelHeart分析器: 轻量级AI分析完成。决策: {decision} , 回复策略: {reply_strategy} ，话题: {topic}")
-                return decision
+                # 调用新方法解析和验证响应
+                return self._parse_and_validate_decision(response_text)
 
             except json.JSONDecodeError as e:
                 logger.warning(f"AngelHeart分析器: AI返回了无效的JSON (尝试 {attempt + 1}/{max_retries + 1}): {e}. 原始响应: {response_text[:200]}...")
@@ -129,6 +84,54 @@ class LLMAnalyzer:
             reply_strategy="分析失败",
             topic="未知"
         )
+    def _parse_and_validate_decision(self, response_text: str) -> SecretaryDecision:
+        """解析并验证来自AI的响应文本，构建SecretaryDecision对象"""
+        # 尝试提取可能被包裹在代码块中的JSON
+        if response_text.startswith("```json"):
+            response_text = response_text.split("```json")[1].split("```")[0].strip()
+        elif response_text.startswith("```"):
+            response_text = response_text.split("```")[1].strip()
+
+        # 解析JSON
+        decision_data = json.loads(response_text)
+
+        # 对来自 AI 的 JSON 做健壮性处理，防止字段为 null 或类型不符合导致 pydantic 校验失败
+        raw = decision_data
+        # 解析 should_reply，兼容 bool、数字、字符串等形式
+        should_reply_raw = raw.get("should_reply", False)
+        if isinstance(should_reply_raw, bool):
+            should_reply = should_reply_raw
+        else:
+            try:
+                sr = str(should_reply_raw).strip().lower()
+                should_reply = sr in ("true", "1", "yes", "y")
+            except Exception:
+                should_reply = False
+
+        # 解析 reply_strategy 和 topic，确保为字符串，若为空或 None 则使用安全默认并记录警告
+        reply_strategy_raw = raw.get("reply_strategy")
+        topic_raw = raw.get("topic")
+
+        if reply_strategy_raw is None:
+            logger.warning(f"AngelHeart分析器: AI 返回的 reply_strategy 为 null，使用默认值。 原始响应: {response_text[:200]}")
+            reply_strategy = ""
+        else:
+            reply_strategy = str(reply_strategy_raw)
+
+        if topic_raw is None:
+            logger.warning(f"AngelHeart分析器: AI 返回的 topic 为 null，使用默认值。 原始响应: {response_text[:200]}")
+            topic = ""
+        else:
+            topic = str(topic_raw)
+
+        decision = SecretaryDecision(
+            should_reply=should_reply,
+            reply_strategy=reply_strategy,
+            topic=topic
+        )
+
+        logger.debug(f"AngelHeart分析器: 轻量级AI分析完成。决策: {decision} , 回复策略: {reply_strategy} ，话题: {topic}")
+        return decision
 
     def _build_analysis_prompt(self, conversations: List[Dict]) -> str:
         history_text = self._format_conversation_history(conversations)
