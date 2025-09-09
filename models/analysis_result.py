@@ -1,5 +1,4 @@
 from pydantic import BaseModel, Field
-from typing import Optional
 
 class SecretaryDecision(BaseModel):
     """秘书AI的决策结果"""

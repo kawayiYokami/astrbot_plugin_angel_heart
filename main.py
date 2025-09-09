@@ -10,6 +10,7 @@ AngelHeart插件 - 天使心智能群聊/私聊交互插件
 
 import asyncio
 import time
+import json
 from collections import OrderedDict
 from datetime import datetime
 from typing import Dict, List
@@ -56,10 +57,10 @@ class AngelHeartPlugin(Star):
         """秘书分析间隔：两次分析之间的最小时间间隔（秒）"""
         self.cache_expiry = self.config.get("cache_expiry", 3600)
         """缓存过期时间：消息缓存的过期时间（秒）"""
+        # -- 常量定义 --
+        self.DEFAULT_TIMESTAMP_FALLBACK_SECONDS = 3600  # 默认时间戳回退时间（1小时）
 
-        # -- 并行处理 --
-        self.analysis_locks: Dict[str, asyncio.Lock] = {}
-        """会话级别的分析锁，防止并发分析同一会话"""
+
 
         # -- 核心组件 --
         # 初始化 LLMAnalyzer
@@ -274,7 +275,6 @@ class AngelHeartPlugin(Star):
                 logger.debug(f"对话对象为空或无历史记录: {curr_cid}")
                 return []
 
-            import json
             history = json.loads(conversation.history)
 
             # 输出对话历史
@@ -431,7 +431,7 @@ class AngelHeartPlugin(Star):
 
         # 如果所有消息都没有时间戳，使用当前时间作为基准
         if latest_time == 0.0:
-            latest_time = time.time() - 3600  # 默认1小时前
+            latest_time = time.time() - self.DEFAULT_TIMESTAMP_FALLBACK_SECONDS  # 默认1小时前
 
         return latest_time
 
@@ -448,7 +448,6 @@ class AngelHeartPlugin(Star):
                 logger.debug(f"对话对象为空或无历史记录: {curr_cid}")
                 return []
 
-            import json
             history = json.loads(conversation.history)
             return history
 
