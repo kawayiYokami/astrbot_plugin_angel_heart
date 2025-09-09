@@ -1,8 +1,7 @@
-from typing import List, Dict, Optional
+from typing import List, Dict
 import json
 
 from astrbot.api import logger
-from astrbot.core.star.context import Context
 from ..models.analysis_result import SecretaryDecision
 
 class LLMAnalyzer:
