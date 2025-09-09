@@ -76,7 +76,7 @@ class AngelHeartPlugin(Star):
 
     # --- 核心事件处理 ---
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE | filter.EventMessageType.PRIVATE_MESSAGE, priority=1)
-    async def smart_reply_handler(self, event: AstrMessageEvent):
+    async def smart_reply_handler(self, event: AstrMessageEvent, *args, **kwargs):
         """智能回复员 - 前台职责：接收并缓存消息，在适当时机唤醒秘书"""
         chat_id = event.unified_msg_origin
         logger.info(f"AngelHeart[{chat_id}]: 收到消息")
