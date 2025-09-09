@@ -12,7 +12,6 @@ import asyncio
 import time
 import json
 from collections import OrderedDict
-from datetime import datetime
 from typing import Dict, List
 
 from astrbot.api.star import Star
@@ -143,7 +142,7 @@ class AngelHeartPlugin(Star):
 
     # --- 指令实现 ---
     @filter.command("angelheart")
-    async def handle_status_command(self, event: AstrMessageEvent):
+    async def handle_status_command(self, event: AstrMessageEvent, *args, **kwargs):
         status_report = []
         status_report.append("💖 AngelHeart 运行状态 💖")
         status_report.append("--------------------")
@@ -171,7 +170,7 @@ class AngelHeartPlugin(Star):
         await event.reply("\n".join(status_report))
 
     @filter.command("angelheart_reset")
-    async def handle_reset_command(self, event: AstrMessageEvent):
+    async def handle_reset_command(self, event: AstrMessageEvent, *args, **kwargs):
         chat_id = event.unified_msg_origin
         # 重置前台缓存和秘书分析时间
         if chat_id in self.unprocessed_messages:
@@ -181,7 +180,7 @@ class AngelHeartPlugin(Star):
         await event.reply("✅ 本会话的 AngelHeart 状态已重置。")
 
     @filter.command("angelheart_health")
-    async def handle_health_command(self, event: AstrMessageEvent):
+    async def handle_health_command(self, event: AstrMessageEvent, *args, **kwargs):
         """健康检查命令，显示插件状态信息"""
         chat_id = event.unified_msg_origin
 
