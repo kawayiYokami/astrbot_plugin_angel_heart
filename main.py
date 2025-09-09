@@ -16,6 +16,7 @@ from typing import Dict, List
 
 from astrbot.api.star import Star
 from astrbot.api.event import AstrMessageEvent, filter
+from astrbot.api.provider import ProviderRequest
 from astrbot.core.star.context import Context
 from astrbot.api import logger
 
@@ -87,6 +88,44 @@ class AngelHeartPlugin(Star):
         if self._should_awaken_secretary(chat_id):
             # 唤醒秘书进行分析和决策
             await self._awaken_secretary_for_analysis(chat_id, event)
+
+    # --- LLM Request Hook ---
+    @filter.on_llm_request()
+    async def inject_oneshot_persona_on_llm_request(self, event: AstrMessageEvent, req: ProviderRequest):
+        """在LLM请求时，一次性注入由秘书分析得出的人格上下文"""
+        chat_id = event.unified_msg_origin
+
+        # 1. 从缓存中获取决策
+        decision = self.analysis_cache.get(chat_id)
+
+        # 2. 检查决策是否存在且有效
+        if not decision or not decision.should_reply:
+            # 如果没有决策或决策是不回复，则不进行任何操作
+            return
+
+        # 3. 严格检查参数合法性
+        topic = getattr(decision, 'topic', None)
+        strategy = getattr(decision, 'reply_strategy', None)
+
+        if not topic or not strategy:
+            # 如果话题或策略为空，则不进行任何操作，防止污染
+            logger.debug(f"AngelHeart[{chat_id}]: 决策参数不合法 (topic: {topic}, strategy: {strategy})，跳过人格注入。")
+            return
+
+        # 4. 构建补充提示词
+        persona_context = f"\n\n---\n[AngelHeart秘书提醒] 请围绕以下要点回复：\n- 核心话题: {topic}\n- 回复策略: {strategy}"
+
+        # 5. 注入到 req.prompt 的末尾
+        req.prompt = f"{req.prompt}{persona_context}"
+        logger.debug(f"AngelHeart[{chat_id}]: 已注入人格上下文到LLM请求。")
+
+        # 6. 用后即焚：删除缓存中的决策，确保只使用一次
+        try:
+            del self.analysis_cache[chat_id]
+            logger.debug(f"AngelHeart[{chat_id}]: 已从缓存中移除一次性决策。")
+        except KeyError:
+            # 如果在删除时发生KeyError（理论上不应该发生，但为了健壮性还是加上），则忽略
+            pass
 
     # --- 指令实现 ---
     @filter.command("angelheart")
@@ -326,36 +365,6 @@ class AngelHeartPlugin(Star):
 
             # 秘书职责3：执行决策
             if decision.should_reply:
-                # --- 新增：动态人格注入逻辑 ---
-                # 1. 获取原始人格
-                original_prompt, original_persona_id = await self._get_original_persona_prompt(chat_id)
-
-                # 2. 拼接新的提示词
-                # 格式：直接追加到原始人格末尾
-                new_prompt_text = f"{original_prompt}\n\n---\n当前最新话题: {decision.topic}\n回复策略: {decision.reply_strategy}"
-
-                # 3. 为每个会话创建一个唯一的临时人格ID
-                temp_persona_id = f"angelheart_temp_session_{chat_id}"
-
-                # 4. 查找或创建临时人格
-                persona_found = False
-                for persona in self.context.provider_manager.personas:
-                    if persona["name"] == temp_persona_id:
-                        # 如果找到，直接更新其prompt
-                        persona["prompt"] = new_prompt_text
-                        persona_found = True
-                        break
-
-                # 如果没有找到，则创建新的人格
-                if not persona_found:
-                    temp_persona = {"name": temp_persona_id, "prompt": new_prompt_text}
-                    self.context.provider_manager.personas.append(temp_persona)
-
-                # 5. 应用临时人格到当前会话
-                await self.context.conversation_manager.update_conversation_persona_id(chat_id, temp_persona_id)
-                logger.info(f"AngelHeart[{chat_id}]: 已应用临时人格 ID: {temp_persona_id}")
-                # --- 新增结束 ---
-
                 # 在唤醒核心前，将待处理历史（数据库历史记录）同步回数据库
                 # 不包含当前消息，因为当前消息会在后续被核心系统处理并添加到记录中
                 curr_cid = await self.context.conversation_manager.get_curr_conversation_id(chat_id)
@@ -425,58 +434,6 @@ class AngelHeartPlugin(Star):
             latest_time = time.time() - 3600  # 默认1小时前
 
         return latest_time
-
-    async def _get_original_persona_prompt(self, chat_id: str) -> tuple[str, str]:
-        """获取当前会话的原始人格提示词和ID
-
-        Returns:
-            tuple[str, str]: (persona_prompt, persona_id)
-        """
-        try:
-            # 获取当前对话
-            curr_cid = await self.context.conversation_manager.get_curr_conversation_id(chat_id)
-            if not curr_cid:
-                # 如果没有对话ID，使用默认人格
-                default_persona = self.context.provider_manager.selected_default_persona
-                if default_persona:
-                    return default_persona.get("prompt", ""), default_persona["name"]
-                return "", "default"
-
-            conversation = await self.context.conversation_manager.get_conversation(chat_id, curr_cid)
-            if not conversation:
-                # 如果没有对话对象，使用默认人格
-                default_persona = self.context.provider_manager.selected_default_persona
-                if default_persona:
-                    return default_persona.get("prompt", ""), default_persona["name"]
-                return "", "default"
-
-            # 获取人格ID
-            persona_id = conversation.persona_id
-
-            if not persona_id:
-                # persona_id 为 None 或空时，使用默认人格
-                default_persona = self.context.provider_manager.selected_default_persona
-                if default_persona:
-                    return default_persona.get("prompt", ""), default_persona["name"]
-                return "", "default"
-            elif persona_id == "[%None]":
-                # 用户显式取消人格时，不使用任何人格
-                return "", "[%None]"
-
-            # 从provider_manager中查找人格
-            for persona in self.context.provider_manager.personas:
-                if persona["name"] == persona_id:
-                    return persona.get("prompt", ""), persona_id
-
-            logger.debug(f"未找到人格: {persona_id}，使用默认人格")
-            default_persona = self.context.provider_manager.selected_default_persona
-            if default_persona:
-                return default_persona.get("prompt", ""), default_persona["name"]
-            return "", "default"
-
-        except Exception as e:
-            logger.debug(f"获取原始人格提示词失败: {e}")
-            return "", ""
 
     async def _get_conversation_history(self, chat_id: str) -> List[Dict]:
         """获取当前会话的完整对话历史"""
