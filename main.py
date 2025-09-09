@@ -109,7 +109,7 @@ class AngelHeartPlugin(Star):
 
     # --- LLM Request Hook ---
     @filter.on_llm_request()
-    async def inject_oneshot_persona_on_llm_request(self, event: AstrMessageEvent, req: ProviderRequest):
+    async def inject_oneshot_persona_on_llm_request(self, event: AstrMessageEvent, req: ProviderRequest, *args, **kwargs):
         """在LLM请求时，一次性注入由秘书分析得出的人格上下文"""
         chat_id = event.unified_msg_origin
 
@@ -290,7 +290,7 @@ class AngelHeartPlugin(Star):
 
     def _should_awaken_secretary(self, chat_id: str) -> bool:
         """检查是否应该唤醒秘书进行分析"""
-        current_time = self._get_current_time()
+        current_time = time.time()
         last_time = self.last_analysis_time.get(chat_id, 0)
         return current_time - last_time >= self.analysis_interval
 
@@ -299,7 +299,7 @@ class AngelHeartPlugin(Star):
         if chat_id not in self.unprocessed_messages:
             return
 
-        current_time = self._get_current_time()
+        current_time = time.time()
         expired_count = 0
 
         # 从后向前遍历，避免在迭代时修改列表
