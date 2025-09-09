@@ -47,6 +47,8 @@ class AngelHeartPlugin(Star):
         }
         # 使用OrderedDict实现有大小限制的缓存
         self.analysis_cache: OrderedDict[str, SecretaryDecision] = OrderedDict()
+        self.analysis_locks: Dict[str, asyncio.Lock] = {}
+        """为每个会话(chat_id)维护一个锁，防止并发分析"""
 
         # -- 前台缓存与秘书调度 --
         self.unprocessed_messages: Dict[str, List[Dict]] = {}
@@ -88,8 +90,22 @@ class AngelHeartPlugin(Star):
 
         # 前台职责2：检查是否到达秘书的预定工作时间
         if self._should_awaken_secretary(chat_id):
-            # 唤醒秘书进行分析和决策
-            await self._awaken_secretary_for_analysis(chat_id, event)
+            # 获取或创建锁
+            if chat_id not in self.analysis_locks:
+                self.analysis_locks[chat_id] = asyncio.Lock()
+
+            lock = self.analysis_locks[chat_id]
+
+            # 检查锁是否已被占用，避免不必要的等待
+            if lock.locked():
+                logger.debug(f"AngelHeart[{chat_id}]: 分析已在进行中，跳过本次唤醒。")
+                return
+
+            async with lock:
+                # 再次检查时间间隔，因为在等待锁的过程中条件可能已改变
+                if self._should_awaken_secretary(chat_id):
+                    # 唤醒秘书进行分析和决策
+                    await self._awaken_secretary_for_analysis(chat_id, event)
 
     # --- LLM Request Hook ---
     @filter.on_llm_request()
@@ -122,12 +138,8 @@ class AngelHeartPlugin(Star):
         logger.debug(f"AngelHeart[{chat_id}]: 已注入人格上下文到LLM请求。")
 
         # 6. 用后即焚：删除缓存中的决策，确保只使用一次
-        try:
-            del self.analysis_cache[chat_id]
+        if self.analysis_cache.pop(chat_id, None) is not None:
             logger.debug(f"AngelHeart[{chat_id}]: 已从缓存中移除一次性决策。")
-        except KeyError:
-            # 如果在删除时发生KeyError（理论上不应该发生，但为了健壮性还是加上），则忽略
-            pass
 
     # --- 指令实现 ---
     @filter.command("angelheart")
@@ -261,35 +273,6 @@ class AngelHeartPlugin(Star):
         logger.info(f"AngelHeart[{chat_id}]: 消息通过所有前置检查, 准备处理...")
         return True
 
-    async def _log_group_messages(self, chat_id: str):
-        """输出群聊的所有消息记录"""
-        try:
-            # 使用与_timer_dispatcher中相同的方法获取对话历史
-            conversation_manager = self.context.conversation_manager
-            curr_cid = await conversation_manager.get_curr_conversation_id(chat_id)
-            if not curr_cid:
-                logger.debug(f"未找到当前会话的对话ID: {chat_id}")
-                return []
-
-            conversation = await conversation_manager.get_conversation(chat_id, curr_cid)
-            if not conversation or not conversation.history:
-                logger.debug(f"对话对象为空或无历史记录: {curr_cid}")
-                return []
-
-            history = json.loads(conversation.history)
-
-            # 输出对话历史
-            logger.info(f"群聊 {chat_id} 的消息记录 (共 {len(history)} 条):")
-            for i, msg in enumerate(history[-10:], start=max(1, len(history)-9)):  # 只显示最近10条
-                role = msg.get('role', 'unknown')
-                content = msg.get('content', '')
-                logger.info(f"  [{i}] {role}: {content}")
-
-        except json.JSONDecodeError as e:
-            logger.error(f"解析对话历史JSON失败: {e}")
-        except Exception as e:
-            logger.error(f"输出群聊消息记录时出错: {e}", exc_info=True)
-
     # --- 前台与秘书协作方法 ---
     async def _cache_message_as_front_desk(self, chat_id: str, event: AstrMessageEvent):
         """前台职责：缓存新消息"""
@@ -307,7 +290,7 @@ class AngelHeartPlugin(Star):
 
     def _should_awaken_secretary(self, chat_id: str) -> bool:
         """检查是否应该唤醒秘书进行分析"""
-        current_time = time.time()
+        current_time = self._get_current_time()
         last_time = self.last_analysis_time.get(chat_id, 0)
         return current_time - last_time >= self.analysis_interval
 
@@ -316,7 +299,7 @@ class AngelHeartPlugin(Star):
         if chat_id not in self.unprocessed_messages:
             return
 
-        current_time = time.time()
+        current_time = self._get_current_time()
         expired_count = 0
 
         # 从后向前遍历，避免在迭代时修改列表
