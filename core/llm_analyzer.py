@@ -61,13 +61,42 @@ class LLMAnalyzer:
                 # 解析JSON
                 decision_data = json.loads(response_text)
 
+                # 对来自 AI 的 JSON 做健壮性处理，防止字段为 null 或类型不符合导致 pydantic 校验失败
+                raw = decision_data
+                # 解析 should_reply，兼容 bool、数字、字符串等形式
+                should_reply_raw = raw.get("should_reply", False)
+                if isinstance(should_reply_raw, bool):
+                    should_reply = should_reply_raw
+                else:
+                    try:
+                        sr = str(should_reply_raw).strip().lower()
+                        should_reply = sr in ("true", "1", "yes", "y")
+                    except Exception:
+                        should_reply = False
+
+                # 解析 reply_strategy 和 topic，确保为字符串，若为空或 None 则使用安全默认并记录警告
+                reply_strategy_raw = raw.get("reply_strategy")
+                topic_raw = raw.get("topic")
+
+                if reply_strategy_raw is None:
+                    logger.warning("AngelHeart\u5206\u6790\u5668: AI 返回的 reply_strategy 为 null，使用默认值。 原始响应: %s" % (response_text[:200]))
+                    reply_strategy = ""
+                else:
+                    reply_strategy = str(reply_strategy_raw)
+
+                if topic_raw is None:
+                    logger.warning("AngelHeart\u5206\u6790\u5668: AI 返回的 topic 为 null，使用默认值。 原始响应: %s" % (response_text[:200]))
+                    topic = ""
+                else:
+                    topic = str(topic_raw)
+
                 decision = SecretaryDecision(
-                    should_reply=decision_data["should_reply"],
-                    reply_strategy=decision_data["reply_strategy"],
-                    topic=decision_data["topic"]
+                    should_reply=should_reply,
+                    reply_strategy=reply_strategy,
+                    topic=topic
                 )
 
-                logger.debug(f"AngelHeart分析器: 轻量级AI分析完成。决策: {decision}")
+                logger.debug(f"AngelHeart分析器: 轻量级AI分析完成。决策: {decision} , 回复策略: {reply_strategy} ，话题: {topic}")
                 return decision
 
             except json.JSONDecodeError as e:
