@@ -10,114 +10,58 @@ AngelHeart插件 - 天使心智能群聊/私聊交互插件
 
 import asyncio
 import time
-import json
-from collections import OrderedDict
 from typing import Dict, List
 
 from astrbot.api.star import Star
 from astrbot.api.event import AstrMessageEvent, filter
-from astrbot.api.provider import ProviderRequest
+from astrbot.api.provider import ProviderRequest, LLMResponse
 from astrbot.core.star.context import Context
 from astrbot.api import logger
+from astrbot.core.message.components import Plain
 
-from .core.llm_analyzer import LLMAnalyzer
+from .core.config_manager import ConfigManager
 from .models.analysis_result import SecretaryDecision
-
-# 定义缓存的最大尺寸
-CACHE_MAX_SIZE = 100
+from .roles.front_desk import FrontDesk
+from .roles.secretary import Secretary
+from .core.utils import strip_markdown
 
 class AngelHeartPlugin(Star):
     """AngelHeart插件 - 专注的智能回复员"""
 
     def __init__(self, context: Context, config: dict | None = None):
         super().__init__(context)
-        self.config = config or {}
+        self.config_manager = ConfigManager(config or {})
         self.context = context
 
-        # -- 状态与统计 --
-        self.processed_messages = 0
-        self.analyses_performed = 0
-        self.replies_sent = 0
-        self.expired_messages_cleaned = 0  # 过期消息清理计数
-        self.performance_stats = {
-            'last_analysis_duration': 0.0,
-            'total_analysis_time': 0.0,
-            'cache_hit_rate': 0.0
-        }
-        # 使用OrderedDict实现有大小限制的缓存
-        self.analysis_cache: OrderedDict[str, SecretaryDecision] = OrderedDict()
-        self.analysis_locks: Dict[str, asyncio.Lock] = {}
-        """为每个会话(chat_id)维护一个锁，防止并发分析"""
-
-        # -- 前台缓存与秘书调度 --
-        self.unprocessed_messages: Dict[str, List[Dict]] = {}
-        """前台缓存：存储每个会话的未处理用户消息"""
-        self.last_analysis_time: Dict[str, float] = {}
-        """秘书上次分析时间：用于控制分析频率"""
-        self.analysis_interval = self.config.get("analysis_interval", 7.0)
-        """秘书分析间隔：两次分析之间的最小时间间隔（秒）"""
-        self.cache_expiry = self.config.get("cache_expiry", 3600)
-        """缓存过期时间：消息缓存的过期时间（秒）"""
-        # -- 常量定义 --
-        self.DEFAULT_TIMESTAMP_FALLBACK_SECONDS = 3600  # 默认时间戳回退时间（1小时）
-        self.DB_HISTORY_MERGE_LIMIT = 5  # 数据库历史记录合并限制
-        self.CLEANUP_INTERVAL_SECONDS = 3600  # 周期性清理间隔 (1小时)
-        self.INACTIVE_SESSION_THRESHOLD_SECONDS = 86400  # 不活跃会话阈值 (1天)
-
-        # -- 后台任务 --
-        self._cleanup_task: asyncio.Task | None = None
-        """周期性清理任务"""
-
-
-
-        # -- 核心组件 --
-        # 初始化 LLMAnalyzer
-        analyzer_model_name = self.config.get("analyzer_model")
-        reply_strategy_guide = self.config.get("reply_strategy_guide", "")
-        # 传递 context 对象，让 LLMAnalyzer 在需要时动态获取 provider
-        self.llm_analyzer = LLMAnalyzer(analyzer_model_name, context, reply_strategy_guide)
-
-        # 启动周期性清理任务
-        self._start_periodic_cleanup()
+        # -- 角色实例 --
+        # 先创建秘书，再创建前台，并将前台传递给秘书
+        # 使用 None 作为占位符，以打破 Secretary 和 FrontDesk 在初始化时的循环依赖
+        self.secretary = Secretary(self.config_manager, self.context, None) # 占位符，稍后设置
+        self.front_desk = FrontDesk(self.config_manager, self.secretary)
+        # 设置秘书的前台引用
+        self.secretary.front_desk = self.front_desk
 
         logger.info("💖 AngelHeart智能回复员初始化完成 (同步轻量级架构)")
 
     # --- 核心事件处理 ---
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE | filter.EventMessageType.PRIVATE_MESSAGE, priority=1)
     async def smart_reply_handler(self, event: AstrMessageEvent, *args, **kwargs):
-        """智能回复员 - 前台职责：接收并缓存消息，在适当时机唤醒秘书"""
-        chat_id = event.unified_msg_origin
-        logger.info(f"AngelHeart[{chat_id}]: 收到消息")
-
+        """智能回复员 - 事件入口：将事件委托给前台处理"""
         # 前置检查
         if not self._should_process(event):
             return
 
-        # 前台职责1：无条件缓存所有合规消息
-        await self._cache_message_as_front_desk(chat_id, event)
-
-        # 前台职责2：检查是否到达秘书的预定工作时间
-        if self._should_awaken_secretary(chat_id):
-            # 获取或创建锁
-            if chat_id not in self.analysis_locks:
-                self.analysis_locks[chat_id] = asyncio.Lock()
-
-            lock = self.analysis_locks[chat_id]
-
-            async with lock:
-                # 再次检查时间间隔，因为在等待锁的过程中条件可能已改变
-                if self._should_awaken_secretary(chat_id):
-                    # 唤醒秘书进行分析和决策
-                    await self._awaken_secretary_for_analysis(chat_id, event)
+        # 将事件处理完全委托给前台
+        await self.front_desk.handle_event(event)
 
     # --- LLM Request Hook ---
     @filter.on_llm_request()
-    async def inject_oneshot_persona_on_llm_request(self, event: AstrMessageEvent, req: ProviderRequest, *args, **kwargs):
-        """在LLM请求时，一次性注入由秘书分析得出的人格上下文"""
+    async def inject_oneshot_decision_on_llm_request(self, event: AstrMessageEvent, req: ProviderRequest, *args, **kwargs):
+        """在LLM请求时，一次性注入由秘书分析得出的决策上下文"""
         chat_id = event.unified_msg_origin
 
-        # 1. 从缓存中获取决策
-        decision = self.analysis_cache.get(chat_id)
+        # 1. 从秘书那里获取决策
+        decision = self.secretary.get_decision(chat_id)
 
         # 2. 检查决策是否存在且有效
         if not decision or not decision.should_reply:
@@ -127,116 +71,38 @@ class AngelHeartPlugin(Star):
         # 3. 严格检查参数合法性
         topic = getattr(decision, 'topic', None)
         strategy = getattr(decision, 'reply_strategy', None)
+        reply_target = getattr(decision, 'reply_target', '')  # 获取回复目标，默认为空字符串
+        persona_name = getattr(decision, 'persona_name', '')
+        alias = getattr(decision, 'alias', 'AngelHeart')
 
         if not topic or not strategy:
             # 如果话题或策略为空，则不进行任何操作，防止污染
-            logger.debug(f"AngelHeart[{chat_id}]: 决策参数不合法 (topic: {topic}, strategy: {strategy})，跳过人格注入。")
+            logger.debug(f"AngelHeart[{chat_id}]: 决策参数不合法 (topic: {topic}, strategy: {strategy})，跳过决策注入。")
             return
 
-        # 4. 构建补充提示词
-        persona_context = f"\n\n---\n[AngelHeart秘书提醒] 请围绕以下要点回复：\n- 核心话题: {topic}\n- 回复策略: {strategy}"
+        # 4. 构建补充提示词，包含人格信息和回复目标
+        decision_context = f"\n\n---\n[AngelHeart秘书提醒] 你现在的名字是 {persona_name} (别名: {alias})。请围绕以下要点回复：\n- 核心话题: {topic}\n- 回复策略: {strategy}\n- 回复目标: {reply_target}"
 
-        # 5. 注入到 req.prompt 的末尾
-        req.prompt = f"{req.prompt}{persona_context}"
-        logger.debug(f"AngelHeart[{chat_id}]: 已注入人格上下文到LLM请求。")
-
-
-    # --- 指令实现 ---
-    @filter.command("angelheart")
-    async def handle_status_command(self, event: AstrMessageEvent, *args, **kwargs):
-        status_report = []
-        status_report.append("💖 AngelHeart 运行状态 💖")
-        status_report.append("--------------------")
-        status_report.append("总览:")
-        status_report.append(f"- 已处理消息总数: {self.processed_messages}")
-        status_report.append(f"- 已执行分析总数: {self.analyses_performed}")
-        status_report.append(f"- 已发送主动回复: {self.replies_sent}")
-        status_report.append(f"- 前台缓存消息数: {sum(len(msgs) for msgs in self.unprocessed_messages.values())}")
-        status_report.append("--------------------")
-        status_report.append("分析缓存 (最近5条):")
-
-        if not self.analysis_cache:
-            status_report.append("缓存为空，还没有任何分析结果。")
+        # 5. 注入到 req.system_prompt
+        # 遵循 AstrBot 框架的设计，system_prompt 用于传递不会被存入历史记录的系统级指令
+        if req.system_prompt:
+            # 如果 system_prompt 已有内容，则追加
+            req.system_prompt += f"\n{decision_context}"
         else:
-            # 显示最近的5条分析缓存
-            cached_items = list(self.analysis_cache.items())
-            for chat_id, result in reversed(cached_items[-5:]):
-                if result:
-                    topic = result.topic
-                    status_report.append(f"- {chat_id}:")
-                    status_report.append(f"  - 话题: {topic}")
-                else:
-                    status_report.append(f"- {chat_id}: (分析数据不完整)")
+            # 否则，直接赋值
+            req.system_prompt = decision_context
+        logger.debug(f"AngelHeart[{chat_id}]: 已将决策上下文注入到 system_prompt。")
 
-        await event.reply("\n".join(status_report))
-
-    @filter.command("angelheart_reset")
-    async def handle_reset_command(self, event: AstrMessageEvent, *args, **kwargs):
-        chat_id = event.unified_msg_origin
-        # 重置前台缓存和秘书分析时间
-        if chat_id in self.unprocessed_messages:
-            self.unprocessed_messages[chat_id].clear()
-        if chat_id in self.last_analysis_time:
-            self.last_analysis_time[chat_id] = 0
-        await event.reply("✅ 本会话的 AngelHeart 状态已重置。")
-
-    @filter.command("angelheart_health")
-    async def handle_health_command(self, event: AstrMessageEvent, *args, **kwargs):
-        """健康检查命令，显示插件状态信息"""
-        chat_id = event.unified_msg_origin
-
-        # 统计信息
-        total_sessions = len(self.unprocessed_messages)
-        total_cached_messages = sum(len(messages) for messages in self.unprocessed_messages.values())
-        last_analysis = self.last_analysis_time.get(chat_id, 0)
-        analysis_interval = self.analysis_interval
-        cache_expiry = self.cache_expiry
-
-        # 当前会话信息
-        current_session_messages = len(self.unprocessed_messages.get(chat_id, []))
-
-        # 格式化时间
-        current_time = time.time()
-        time_since_last_analysis = current_time - last_analysis if last_analysis > 0 else 0
-
-        health_info = [
-            "🏥 AngelHeart 健康检查报告",
-            f"📊 总体统计:",
-            f" - 活跃会话数: {total_sessions}",
-            f"  - 缓存消息总数: {total_cached_messages}",
-            f"  - 分析间隔: {analysis_interval}秒",
-            f"  - 缓存过期时间: {cache_expiry}秒",
-            f"",
-            f"💬 当前会话 ({chat_id}):",
-            f"  - 缓存消息数: {current_session_messages}",
-            f"  - 上次分析时间: {time_since_last_analysis:.1f}秒前" if last_analysis > 0 else "  - 尚未进行分析",
-        ]
-
-        await event.reply("\n".join(health_info))
 
     # --- 内部方法 ---
-    def update_analysis_cache(self, chat_id: str, result: SecretaryDecision):
-        """更新分析缓存和统计"""
-        self.analyses_performed += 1
-        if result.should_reply:
-            self.replies_sent += 1
-
-        self.analysis_cache[chat_id] = result
-        # 如果缓存超过最大尺寸，则移除最旧的条目
-        if len(self.analysis_cache) > CACHE_MAX_SIZE:
-            self.analysis_cache.popitem(last=False)
-        logger.info(f"AngelHeart[{chat_id}]: 分析完成，已更新缓存。决策: {'回复' if result.should_reply else '不回复'} | 策略: {result.reply_strategy} | 话题: {result.topic}")
-
     def reload_config(self, new_config: dict):
         """重新加载配置"""
-        old_config = self.config.copy()
-        self.config = new_config or {}
+        self.config_manager = ConfigManager(new_config or {})
+        # 更新角色实例的配置管理器
+        self.secretary.config_manager = self.config_manager
+        self.front_desk.config_manager = self.config_manager
 
-        # 更新配置项
-        self.analysis_interval = self.config.get("analysis_interval", 7.0)
-        self.cache_expiry = self.config.get("cache_expiry", 3600)
-
-        logger.info(f"AngelHeart: 配置已更新。分析间隔: {self.analysis_interval}秒, 缓存过期时间: {self.cache_expiry}秒")
+        logger.info(f"AngelHeart: 配置已更新。分析间隔: {self.config_manager.analysis_interval}秒, 缓存过期时间: {self.config_manager.cache_expiry}秒")
 
     def _get_plain_chat_id(self, unified_id: str) -> str:
         """从 unified_msg_origin 中提取纯净的聊天ID (QQ号)"""
@@ -256,15 +122,15 @@ class AngelHeartPlugin(Star):
             return False
 
         # 2. 忽略空消息
-        if not event.message_str or not event.message_str.strip():
+        if not event.get_message_outline().strip():
             logger.info(f"AngelHeart[{chat_id}]: 消息内容为空, 已忽略")
             return False
 
         # 3. (可选) 检查白名单
-        if self.config.get("whitelist_enabled", False):
+        if self.config_manager.whitelist_enabled:
             plain_chat_id = self._get_plain_chat_id(chat_id)
             # 将配置中的ID列表转换为字符串以确保类型匹配
-            whitelist = [str(cid) for cid in self.config.get("chat_ids", [])]
+            whitelist = [str(cid) for cid in self.config_manager.chat_ids]
 
             if plain_chat_id not in whitelist:
                 logger.info(f"AngelHeart[{chat_id}]: 会话未在白名单中, 已忽略")
@@ -273,239 +139,40 @@ class AngelHeartPlugin(Star):
         logger.info(f"AngelHeart[{chat_id}]: 消息通过所有前置检查, 准备处理...")
         return True
 
-    # --- 前台与秘书协作方法 ---
-    async def _cache_message_as_front_desk(self, chat_id: str, event: AstrMessageEvent):
-        """前台职责：缓存新消息"""
-        if chat_id not in self.unprocessed_messages:
-            self.unprocessed_messages[chat_id] = []
-
-        new_message = {
-            'role': 'user',
-            'content': event.message_str,
-            'sender_name': event.get_sender_name(),
-            'timestamp': time.time()
-        }
-        self.unprocessed_messages[chat_id].append(new_message)
-        logger.debug(f"AngelHeart[{chat_id}]: 前台已缓存消息。当前缓存数: {len(self.unprocessed_messages[chat_id])}")
-
-    def _should_awaken_secretary(self, chat_id: str) -> bool:
-        """检查是否应该唤醒秘书进行分析"""
-        current_time = time.time()
-        last_time = self.last_analysis_time.get(chat_id, 0)
-        return current_time - last_time >= self.analysis_interval
-
-    def _clean_expired_messages(self, chat_id: str):
-        """清理过期的缓存消息"""
-        if chat_id not in self.unprocessed_messages:
-            return
-
-        current_time = time.time()
-        original_count = len(self.unprocessed_messages[chat_id])
-
-        # 使用列表推导式过滤掉过期的消息
-        self.unprocessed_messages[chat_id] = [
-            msg for msg in self.unprocessed_messages[chat_id]
-            if 'timestamp' not in msg or current_time - msg['timestamp'] <= self.cache_expiry
-        ]
-
-        new_count = len(self.unprocessed_messages[chat_id])
-        expired_count = original_count - new_count
-
-        if expired_count > 0:
-            logger.debug(f"AngelHeart[{chat_id}]: 清理了 {expired_count} 条过期消息，剩余 {new_count} 条")
-
-        # 如果会话消息列表为空，删除该会话的键和对应的锁
-        if not self.unprocessed_messages[chat_id]:
-            self.unprocessed_messages.pop(chat_id, None)
-            self.analysis_locks.pop(chat_id, None)
-
-    async def _awaken_secretary_for_analysis(self, chat_id: str, event: AstrMessageEvent):
-        """秘书职责：分析缓存内容并做出决策"""
-        logger.info(f"AngelHeart[{chat_id}]: 唤醒秘书进行分析...")
-        self.last_analysis_time[chat_id] = time.time()
-
-        try:
-            # 清理过期消息
-            self._clean_expired_messages(chat_id)
-
-            # 秘书职责1：整合数据库历史与前台缓存，形成完整上下文
-            db_history = await self._get_conversation_history(chat_id)
-            cached_messages = self.unprocessed_messages.get(chat_id, [])
-
-            # 智能合并上下文：基于时间戳去重
-            full_context = await self._merge_contexts_intelligently(db_history, cached_messages, chat_id)
-
-            if not full_context:
-                logger.debug(f"AngelHeart[{chat_id}]: 上下文为空，无需分析。")
-                return
-
-            # 秘书职责2：调用分析器进行决策
-            decision = await self.llm_analyzer.analyze_and_decide(conversations=full_context)
-            self.update_analysis_cache(chat_id, decision)
-
-            # 秘书职责3：执行决策
-            if decision.should_reply:
-                # 在唤醒核心前，将待处理历史（数据库历史记录）同步回数据库
-                # 不包含当前消息，因为当前消息会在后续被核心系统处理并添加到记录中
-                curr_cid = await self.context.conversation_manager.get_curr_conversation_id(chat_id)
-                if curr_cid:
-                    await self.context.conversation_manager.update_conversation(
-                        unified_msg_origin=chat_id,
-                        conversation_id=curr_cid,
-                        history=db_history  # 只同步数据库历史记录，不包含当前消息
-                    )
-                logger.info(f"AngelHeart[{chat_id}]: 决策为'参与'，已同步待处理历史并唤醒核心。策略: {decision.reply_strategy}")
-                event.is_at_or_wake_command = True
-            else:
-                logger.info(f"AngelHeart[{chat_id}]: 决策为'不参与'。")
-
-            # 所有操作成功完成后再清空当前缓存，准备接收新一轮消息
-            self.unprocessed_messages[chat_id] = []
-
-        except asyncio.TimeoutError as e:
-            logger.warning(f"AngelHeart[{chat_id}]: 秘书处理过程中发生超时: {e}")
-        except Exception as e:
-            logger.error(f"AngelHeart[{chat_id}]: 秘书处理过程中出错: {e}", exc_info=True)
-
-    async def _merge_contexts_intelligently(self, db_history: List[Dict], cached_messages: List[Dict], chat_id: str) -> List[Dict]:
-        """智能合并数据库历史和缓存消息，基于时间戳和内容去重"""
-        if not cached_messages:
-            return db_history
-
-        if not db_history:
-            return cached_messages
-
-        # 获取数据库中最新的消息时间作为基准
-        latest_db_time = self._get_latest_message_time(db_history)
-
-        # 收集数据库中的内容用于去重检查（检查最近N条消息）
-        db_contents = set()
-        for msg in db_history[-self.DB_HISTORY_MERGE_LIMIT:]:  # 只检查最近N条以避免性能问题
-            content = msg.get('content', '').strip()
-            if content:  # 只添加非空内容
-                db_contents.add(content)
-
-        # 过滤缓存消息：只保留比数据库最新消息更新且内容不重复的消息
-        fresh_cached_messages = []
-        for msg in cached_messages:
-            msg_time = msg.get('timestamp', 0)
-            msg_content = msg.get('content', '').strip()
-
-            # 只保留更新的且不重复的消息
-            if msg_time > latest_db_time and msg_content not in db_contents:
-                fresh_cached_messages.append(msg)
-
-        logger.debug(f"AngelHeart[{chat_id}]: 智能合并 - 数据库消息{len(db_history)}条, "
-                    f"缓存消息{len(cached_messages)}条 -> 过滤后{len(fresh_cached_messages)}条新鲜消息")
-
-        # 合并上下文：数据库历史 + 新鲜缓存消息
-        return db_history + fresh_cached_messages
-
-    def _get_latest_message_time(self, messages: List[Dict]) -> float:
-        """获取消息列表中最新消息的时间戳"""
-        if not messages:
-            return 0.0
-
-        # 尝试从消息中提取时间戳
-        latest_time = 0.0
-        for msg in messages:
-            # 优先使用消息自带的时间戳
-            msg_time = msg.get('timestamp', 0)
-            if isinstance(msg_time, (int, float)) and msg_time > latest_time:
-                latest_time = msg_time
-
-        # 如果所有消息都没有时间戳，使用当前时间作为基准
-        if latest_time == 0.0:
-            latest_time = time.time() - self.DEFAULT_TIMESTAMP_FALLBACK_SECONDS  # 默认1小时前
-            logger.debug(f"AngelHeart: 消息时间戳回退到默认值 {latest_time} ({self.DEFAULT_TIMESTAMP_FALLBACK_SECONDS}秒前)")
-
-        return latest_time
-
-    async def _get_conversation_history(self, chat_id: str) -> List[Dict]:
-        """获取当前会话的完整对话历史"""
-        try:
-            curr_cid = await self.context.conversation_manager.get_curr_conversation_id(chat_id)
-            if not curr_cid:
-                logger.debug(f"未找到当前会话的对话ID: {chat_id}")
-                return []
-
-            conversation = await self.context.conversation_manager.get_conversation(chat_id, curr_cid)
-            if not conversation or not conversation.history:
-                logger.debug(f"对话对象为空或无历史记录: {curr_cid}")
-                return []
-
-            history = json.loads(conversation.history)
-            return history
-
-        except json.JSONDecodeError as e:
-            logger.error(f"解析对话历史JSON失败: {e}")
-            return []
-        except (TypeError, AttributeError) as e:
-            logger.error(f"获取对话历史时发生类型或属性错误: {e}", exc_info=True)
-            return []
-        except Exception as e:
-            logger.error(f"获取对话历史时发生未知错误: {e}", exc_info=True)
-            return []
-
-    def _start_periodic_cleanup(self):
-        """启动周期性清理任务"""
-        if self._cleanup_task is None or self._cleanup_task.done():
-            self._cleanup_task = asyncio.create_task(self._periodic_cleanup())
-            logger.info("🕒 已启动 AngelHeart 周期性清理任务")
-
-    async def _periodic_cleanup(self):
-        """周期性清理不活跃会话的任务"""
-        logger.info("🕒 周期性清理任务已启动，间隔: {}秒".format(self.CLEANUP_INTERVAL_SECONDS))
-        while True:
-            try:
-                await asyncio.sleep(self.CLEANUP_INTERVAL_SECONDS)
-                logger.debug("🕒 执行周期性清理...")
-
-                current_time = time.time()
-                inactive_chat_ids = []
-
-                # 收集超过阈值的不活跃会话ID
-                for chat_id, last_analysis_time in self.last_analysis_time.items():
-                    if current_time - last_analysis_time > self.INACTIVE_SESSION_THRESHOLD_SECONDS:
-                        inactive_chat_ids.append(chat_id)
-
-                # 清理不活跃会话的相关数据
-                cleaned_count = 0
-                for chat_id in inactive_chat_ids:
-                    self.unprocessed_messages.pop(chat_id, None)
-                    self.analysis_locks.pop(chat_id, None)
-                    self.last_analysis_time.pop(chat_id, None)
-                    cleaned_count += 1
-
-                if cleaned_count > 0:
-                    logger.info(f"🕒 周期性清理完成，已清理 {cleaned_count} 个不活跃会话")
-                else:
-                    logger.debug("🕒 周期性清理完成，未发现不活跃会话")
-
-            except asyncio.CancelledError:
-                logger.info("🕒 周期性清理任务已被取消")
-                break
-            except Exception as e:
-                logger.error(f"🕒 周期性清理任务出错: {e}", exc_info=True)
-                # 即使出错也继续下一次循环
-                continue
-
-    @filter.on_llm_response()
-    async def clear_oneshot_decision_on_llm_response(self, event: AstrMessageEvent, resp, *args, **kwargs):
-        """在LLM成功响应后，清理一次性决策缓存"""
+    @filter.on_decorating_result()
+    async def strip_markdown_on_decorating_result(self, event: AstrMessageEvent, *args, **kwargs):
+        """
+        在消息发送前，对消息链中的文本内容进行Markdown清洗。
+        """
         chat_id = event.unified_msg_origin
-        # 检查缓存是否存在，如果存在则移除
-        if self.analysis_cache.get(chat_id):
-            if self.analysis_cache.pop(chat_id, None) is not None:
-                logger.debug(f"AngelHeart[{chat_id}]: LLM响应成功，已从缓存中移除一次性决策。")
+        logger.debug(f"AngelHeart[{chat_id}]: 开始清洗消息链中的Markdown格式...")
+
+        # 从 event 对象中获取消息链
+        message_chain = event.get_result().chain
+
+        # 遍历消息链中的每个元素
+        for component in message_chain:
+            # 检查是否为 Plain 类型的消息组件
+            if isinstance(component, Plain):
+                original_text = component.text
+                if original_text:
+                    # 使用 strip_markdown 函数清洗文本
+                    cleaned_text = strip_markdown(original_text)
+                    # 更新消息组件中的文本内容
+                    component.text = cleaned_text
+                    logger.debug(f"AngelHeart[{chat_id}]: 已清洗文本组件: '{original_text}' -> '{cleaned_text}'")
+
+        logger.debug(f"AngelHeart[{chat_id}]: 消息链中的Markdown格式清洗完成。")
+
+    @filter.after_message_sent()
+    async def clear_oneshot_decision_on_message_sent(self, event: AstrMessageEvent, *args, **kwargs):
+        """在消息成功发送后，清理一次性决策缓存并更新计时器"""
+        chat_id = event.unified_msg_origin
+        # 让秘书清理决策缓存
+        await self.secretary.clear_decision(chat_id)
+        # 让秘书更新最后一次事件（回复）的时间戳
+        await self.secretary.update_last_event_time(chat_id)
 
     async def on_destroy(self):
         """插件销毁时的清理工作"""
-        # 取消周期性清理任务
-        if self._cleanup_task and not self._cleanup_task.done():
-            self._cleanup_task.cancel()
-            try:
-                await self._cleanup_task
-            except asyncio.CancelledError:
-                pass # 预期的取消异常
         logger.info("💖 AngelHeart 插件已销毁")

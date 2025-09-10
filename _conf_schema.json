@@ -1,19 +1,26 @@
 {
-  "enable_angel_heart": {
-    "type": "bool",
-    "title": "启用AngelHeart插件",
-    "default": false
-  },
   "analyzer_model": {
     "type": "string",
     "title": "秘书模型",
     "description": "用于分析对话、决定是否回复的快速、低成本模型提供商名称。",
     "default": ""
   },
+  "analysis_on_mention_only": {
+    "type": "bool",
+    "title": "仅在被呼唤时分析",
+    "description": "启用后，插件仅在消息中包含人格名称或别名时才会进行分析。",
+    "default": false
+  },
+  "alias": {
+    "type": "string",
+    "title": "AI助手别名",
+    "description": "用于'仅呼唤时分析'模式的唤醒词。多个别名请用 '|' 分隔。",
+    "default": "AI|助手"
+  },
   "waiting_time": {
     "type": "float",
     "title": "等待时间（秒）",
-    "description": "最多每7秒主动回复一次。",
+    "description": "最多每X秒主动回复一次。",
     "default": 7.0
   },
   "whitelist_enabled": {
@@ -35,14 +42,38 @@
   "cache_expiry": {
     "type": "int",
     "title": "缓存过期时间（秒）",
-    "description": "消息缓存的过期时间，超过此时间的消息将被自动清理",
-    "default": 3600
+    "description": "消息缓存的过期时间（秒），超过此时间的消息将被自动清理",
+    "default": 60
+  },
+  "slap_words": {
+    "type": "string",
+    "title": "掌嘴词",
+    "description": "当消息中包含这些词时，插件将进入静默状态。多个词请用 '|' 分隔。",
+    "default": "闭嘴"
+  },
+  "silence_duration": {
+    "type": "int",
+    "title": "闭嘴时长（秒）",
+    "description": "触发掌嘴后，插件保持静默的时间。",
+    "default": 600
   },
   "reply_strategy_guide": {
-    "type": "string",
-    "title": "智能回复策略指导",
+    "type": "text",
+    "title": "相关话题和策列",
     "description": "定义AI如何根据对话情况选择回复策略",
-    "default": "下面的例子是针对不同场景的回复策略建议：\n\n1. 火药味和攻击性强时，决策：缓和气氛，语气温和友善\n2. 当出现技术性问题时，决策：技术指导，提供准确解答\n3. 当用户寻求帮助时，决策：表示共情之后给出实用建议\n4. 当出现误解时，决策：澄清解释，耐心沟通\n5. 当出现积极反馈时，决策：鼓励支持，表示认同\n\n请根据这些原则，根据对话内容判断合适的回复策略。",
-    "hint": "直接填入指导文本即可，支持多行，高版本模型会自动根据这里的指导来进行回复策略判断。"
+    "default": "编程，数学相关的话题，有人迷惑的时候可以提出自己的建议。火药味大的时候立刻闭嘴。怀疑你是不是人类的时候选择闭嘴",
+    "hint": "直接填入指导文本即可，支持多行，高版本模型会自动根据这里的指导来进行回复策略判断。请注意，这只是策略指导，完整提示词不适合自行修改。"
+  },
+  "debug_mode": {
+    "type": "bool",
+    "title": "调试模式",
+    "description": "启用后，分析器建议回复时仅记录日志，不会回复。",
+    "default": false
+  },
+  "prompt_logging_enabled": {
+    "type": "bool",
+    "title": "提示词日志增强",
+    "description": "启用后，将记录完整提示词内容，用于调试和观察。",
+    "default": false
   }
 }
