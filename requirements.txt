@@ -3,3 +3,5 @@ aiofiles>=23.0.0
 aiohttp>=3.11.18
 feedparser>=6.0.11
 httpx>=0.24.0
+markdown-it-py>=3.0.0
+mdit_plain>=1.0.0
