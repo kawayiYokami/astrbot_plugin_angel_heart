@@ -1,4 +1,4 @@
-name: 天使心秘书
+name: astrbot_plugin_angel_heart
 description: "天使心秘书，负责给大模型判断是否需要主动回复，优化大模型决策，清洗大模型回答格式，力求让AI能过图灵测试"
 author: kawayiYokami
 version: 0.0.3
