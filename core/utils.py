@@ -10,6 +10,9 @@ from mdit_plain.renderer import RendererPlain
 # 定义默认时间戳回退时间（1小时），用于当消息没有时间戳时提供一个基准时间
 DEFAULT_TIMESTAMP_FALLBACK_SECONDS = 3600
 
+# 创建一个全局的 MarkdownIt 实例用于 strip_markdown 函数，以提高性能
+_md_strip_instance = MarkdownIt(renderer_cls=RendererPlain)
+
 
 def get_latest_message_time(messages: list[dict]) -> float:
     """
@@ -113,6 +116,7 @@ def format_relative_time(timestamp: float) -> str:
     else:
         # 超过一天，可以考虑返回日期，这里简化处理
         days = int(delta / 86400)
+        return f" ({days}天前)"
 
 
 def strip_markdown(text: str) -> str:
@@ -125,10 +129,10 @@ def strip_markdown(text: str) -> str:
     Returns:
         str: 清洗后的纯文本。
     """
-    # 创建一个配置为输出纯文本的 MarkdownIt 实例
-    md = MarkdownIt(renderer_cls=RendererPlain)
+    # 使用全局的 MarkdownIt 实例以提高性能
+    global _md_strip_instance
     # 渲染并返回纯文本
-    return md.render(text)
+    return _md_strip_instance.render(text)
 
 
 def prune_old_messages(cached_messages: list[dict], db_history: list[dict]) -> list[dict]:

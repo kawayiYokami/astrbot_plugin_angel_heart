@@ -12,4 +12,4 @@ class SecretaryDecision(BaseModel):
     # --- 新增字段以支持回复目标 ---
     reply_target: str = Field(default="", description="回复的目标用户昵称或ID")
     # --- 新增字段以支持超时机制 ---
-    created_at: datetime.datetime = Field(default_factory=datetime.datetime.now, description="决策创建的时间戳")
+    created_at: datetime.datetime = Field(default_factory=lambda: datetime.datetime.now(datetime.timezone.utc), description="决策创建的时间戳")

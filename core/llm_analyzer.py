@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import string
 import datetime
+import re
 from astrbot.api import logger
 from astrbot.core.db.po import Persona
 from ..core.utils import convert_content_to_string, format_relative_time
@@ -253,7 +254,6 @@ class LLMAnalyzer:
     def _parse_and_validate_decision(self, response_text: str, persona_name: str, alias: str) -> SecretaryDecision:
         """解析并验证来自AI的响应文本，构建SecretaryDecision对象"""
 
-        import re
         # 使用正则表达式查找所有可能的JSON对象，并取最后一个
         json_matches = re.findall(r"\{.*?\}", response_text, re.DOTALL)
         if json_matches:
@@ -331,57 +331,6 @@ class LLMAnalyzer:
             f"AngelHeart分析器: 轻量级AI分析完成。决策: {decision} , 回复策略: {reply_strategy} ，话题: {topic}"
         )
         return decision
-
-    def _get_user_name_from_message(self, message: Dict) -> str:
-        """
-        从消息字典中安全地提取用户名称。
-
-        查找顺序:
-        1. 'sender_name'
-        2. 'nickname'
-        3. 'metadata' 字典中的 'user_name'
-        4. 默认值 '成员'
-
-        Args:
-            message (Dict): 包含用户信息的消息字典。
-
-        Returns:
-            str: 提取到的用户名称或默认值。
-        """
-        # 按优先级顺序尝试获取用户名
-        user_name = (
-            message.get("sender_name") or
-            message.get("nickname") or
-            message.get("metadata", {}).get("user_name") or
-            "成员"
-        )
-        return user_name
-    def _format_simple_relative_time(self, message_time: datetime.datetime) -> str:
-        """
-        格式化消息的相对时间，只显示分钟。
-
-        Args:
-            message_time (datetime.datetime): 消息的创建时间。
-
-        Returns:
-            str: 格式化后的相对时间字符串，例如 " (5分钟前)" 或 " (一小时之前)"。
-                 如果时间无效或超过一小时，则返回空字符串。
-        """
-        if not message_time:
-            return ""
-
-        now = datetime.datetime.now(datetime.timezone.utc)
-        delta = now - message_time
-        delta_seconds = delta.total_seconds()
-
-        if delta_seconds < 60:
-            return " (刚刚)"
-        elif delta_seconds < 3600:
-            minutes = int(delta_seconds / 60)
-            return f" ({minutes}分钟前)"
-        else:
-            # 超过一小时统一提示
-            return " (一小时之前)"
 
     def _format_conversation_history(self, conversations: List[Dict], persona_name: str) -> str:
         """
