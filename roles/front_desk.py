@@ -5,6 +5,7 @@ AngelHeart 插件 - 前台角色 (FrontDesk)
 
 import time
 from typing import Dict, List
+import copy
 
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
@@ -81,7 +82,6 @@ class FrontDesk:
         # self.clean_expired_messages(chat_id)
 
         # 返回消息列表的深拷贝，防止外部修改影响缓存
-        import copy
         return copy.deepcopy(self.unprocessed_messages.get(chat_id, []))
 
     def clean_expired_messages(self, chat_id: str):

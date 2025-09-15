@@ -6,6 +6,7 @@ AngelHeart 插件 - 秘书角色 (Secretary)
 import time
 import asyncio
 import json
+import datetime
 from collections import OrderedDict
 from typing import Dict, List
 from enum import Enum
@@ -87,11 +88,10 @@ class Secretary:
         Returns:
             bool: 如果决策已过期则返回 True，否则返回 False。
         """
-        from datetime import datetime, timedelta
         # 计算决策创建时间与当前时间的差值
-        time_diff = datetime.now() - decision.created_at
+        time_diff = datetime.datetime.now(datetime.timezone.utc) - decision.created_at
         # 如果差值超过设定的超时时间，则认为决策已过期
-        return time_diff > timedelta(minutes=self.DECISION_EXPIRATION_MINUTES)
+        return time_diff > datetime.timedelta(minutes=self.DECISION_EXPIRATION_MINUTES)
 
     def should_awaken(self, chat_id: str) -> tuple[bool, AwakenReason, dict]:
         """

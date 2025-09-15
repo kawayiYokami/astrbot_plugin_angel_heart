@@ -56,7 +56,7 @@ class AngelHeartPlugin(Star):
 
     # --- LLM Request Hook ---
     @filter.on_llm_request()
-    async def inject_oneshot_decision_on_llm_request(self, event: AstrMessageEvent, req: ProviderRequest, *args, **kwargs):
+    async def inject_oneshot_decision_on_llm_request(self, event: AstrMessageEvent, req: ProviderRequest):
         """在LLM请求时，一次性注入由秘书分析得出的决策上下文"""
         chat_id = event.unified_msg_origin
 
