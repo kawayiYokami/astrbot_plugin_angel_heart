@@ -13,9 +13,9 @@ from enum import Enum
 
 class AwakenReason(Enum):
     """秘书唤醒原因枚举"""
-    OK = "ok"
-    COOLING_DOWN = "cooling_down"
-    PROCESSING = "processing"
+    OK = "正常"
+    COOLING_DOWN = "冷却中"
+    PROCESSING = "处理中"
 
 from astrbot.api.event import AstrMessageEvent
 
@@ -139,11 +139,11 @@ class Secretary:
         logger.info(f"AngelHeart[Debug-LockID]: 正在使用 chat_id: '{chat_id}' 进行状态锁定。")
         logger.info(f"AngelHeart[{chat_id}]: 秘书收到前台通知")
 
-        # 1. 锁定并检查状态：决定是否启动新的分析
+        # 1. 【关键修改】在流程最前端进行原子操作：加锁、检查、设置标志
         async with self._shared_state_lock:
             should_awaken, reason, info = self.should_awaken(chat_id)
-
             if not should_awaken:
+                # 如果不满足唤醒条件（冷却或已在处理），记录日志并直接返回
                 if reason == AwakenReason.COOLING_DOWN:
                     remaining = info.get("remaining", 0)
                     interval = self.config_manager.waiting_time
@@ -152,91 +152,86 @@ class Secretary:
                     logger.info(f"AngelHeart[{chat_id}]: 放弃分析请求，原因: 专家正在处理先前的请求")
                 return
 
-            # 条件满足，准备启动分析
-            logger.debug(f"AngelHeart[{chat_id}]: 条件满足，准备启动分析。")
-        # 锁在此处被释放，允许其他会话并发检查
+            # 满足唤醒条件，立即设置“占位符”标志，阻塞后续所有请求
+            placeholder = SecretaryDecision(should_reply=True, reply_strategy="分析中...", topic="未知", reply_target="未知")
+            self._update_analysis_cache(chat_id, placeholder)
+            logger.info(f"AngelHeart[{chat_id}]: 已设置分析锁，准备启动分析。")
+        # 锁已释放，但后续请求会被占位符阻塞
 
-        decision = None
-        db_history = [] # 初始化 db_history，使其在 finally 块后可用
+        # 2. 预分析：检查是否有真正需要分析的内容
         try:
-            # 2. 执行分析 (无锁)：这可能是一个耗时操作
-            # 注意：在调用 perform_analysis 之前，先获取 db_history
+            cached_messages = self.front_desk.get_messages(chat_id)
             db_history = await self.get_conversation_history(chat_id)
-            decision = await self.perform_analysis(chat_id, db_history) # 传入 db_history
+            recent_dialogue = prune_old_messages(cached_messages, db_history)
 
-        finally:
-            # 3. 处理决策结果（无论分析成功与否）
-            if decision and decision.should_reply:
-                # 在唤醒核心前，将待处理历史（数据库历史记录）同步回数据库
-                # 不包含当前消息，因为当前消息会在后续被核心系统处理并添加到记录中
-                curr_cid = await self.context.conversation_manager.get_curr_conversation_id(
-                    chat_id
+            if not recent_dialogue:
+                # 【你的建议】如果发现没有新消息，无需分析，则立即解锁
+                logger.info(f"AngelHeart[{chat_id}]: 无新消息需要分析，提前释放分析锁。")
+                await self.clear_decision(chat_id)
+                return
+
+            # 3. 执行分析 (无锁)：这可能是一个耗时操作
+            decision = await self.perform_analysis(recent_dialogue, db_history, chat_id) # 传入 pre-processed data
+
+        except Exception as e:
+            # 任何异常都必须确保【解锁】
+            logger.error(f"AngelHeart[{chat_id}]: 分析过程中发生异常，紧急释放分析锁。", exc_info=True)
+            await self.clear_decision(chat_id)
+            return
+
+        # 4. 处理决策结果（无论分析成功与否）
+        if decision and decision.should_reply:
+            # 在唤醒核心前，将待处理历史（数据库历史记录）同步回数据库
+            # 不包含当前消息，因为当前消息会在后续被核心系统处理并添加到记录中
+            curr_cid = await self.context.conversation_manager.get_curr_conversation_id(
+                chat_id
+            )
+            if curr_cid:
+                await self.context.conversation_manager.update_conversation(
+                    unified_msg_origin=chat_id,
+                    conversation_id=curr_cid,
+                    history=db_history,  # 只同步数据库历史记录，不包含当前消息
                 )
-                if curr_cid:
-                    await self.context.conversation_manager.update_conversation(
-                        unified_msg_origin=chat_id,
-                        conversation_id=curr_cid,
-                        history=db_history,  # 只同步数据库历史记录，不包含当前消息
-                    )
-                    logger.info(
-                        f"AngelHeart[{chat_id}]: 决策为'参与'，已同步待处理历史并标记事件以唤醒核心。策略: {decision.reply_strategy}"
-                    )
+                logger.info(
+                    f"AngelHeart[{chat_id}]: 决策为'参与'，已同步待处理历史并标记事件以唤醒核心。策略: {decision.reply_strategy}"
+                )
 
-                    # 检查是否处于调试模式
-                    if self.config_manager.debug_mode:
-                        logger.info(f"AngelHeart[{chat_id}]: 调试模式已启用，分析器建议回复但阻止了实际唤醒。")
-                    else:
-                        event.is_at_or_wake_command = True  # 将此事件标记为需要LLM回复，以唤醒AstrBot的核心回复逻辑
-            elif decision:
-                logger.info(f"AngelHeart[{chat_id}]: 决策为'不参与'。")
+                # 检查是否处于调试模式
+                if self.config_manager.debug_mode:
+                    logger.info(f"AngelHeart[{chat_id}]: 调试模式已启用，分析器建议回复但阻止了实际唤醒。")
+                else:
+                    event.is_at_or_wake_command = True  # 将此事件标记为需要LLM回复，以唤醒AstrBot的核心回复逻辑
+        elif decision:
+            logger.info(f"AngelHeart[{chat_id}]: 决策为'不参与'。")
+            # 如果LLM决定不回复，也【解锁】
+            await self.clear_decision(chat_id)
 
     async def perform_analysis(
-        self, chat_id: str, db_history: List[Dict]
+        self, recent_dialogue: List[Dict], db_history: List[Dict], chat_id: str
     ) -> SecretaryDecision:
         """
         秘书职责：分析缓存内容并做出决策。
-        秘书将主动从前台获取最新的缓存消息。
+        此函数只负责调用LLM分析器，不再关心缓存和历史记录的剪枝。
 
         Args:
-            chat_id (str): 会话ID。
+            recent_dialogue (List[Dict]): 剪枝后的新消息列表。
             db_history (List[Dict]): 数据库中的历史记录。
+            chat_id (str): 会话ID。
 
         Returns:
             SecretaryDecision: 分析后得出的决策对象。
         """
-        # 主动从前台获取最新的缓存消息
-        cached_messages = self.front_desk.get_messages(chat_id)
-        logger.info(f"AngelHeart[{chat_id}]: 秘书开始分析...")
-
-        # 注意：last_analysis_time 的更新已移至 process_notification 的 finally 块中，
-        # 以确保准确记录分析完成的时间点。
+        logger.info(f"AngelHeart[{chat_id}]: 秘书开始调用LLM进行分析...")
 
         try:
-            # 1. 获取数据库历史 (前台已清理过期消息)
-            # db_history 已由调用者传入，无需在此重复获取
-
-            # 1. 智能剪枝：从 cached_messages 中移除已经存在于 db_history 中的消息
-            recent_dialogue = prune_old_messages(cached_messages, db_history)
-
-            # 2. 检查剪枝后是否还有新消息
-            if not recent_dialogue:
-                logger.debug(f"AngelHeart[{chat_id}]: 缓存中的消息均已存在于历史记录中，无需重复分析。")
-                # 返回一个默认的不参与决策
-                return SecretaryDecision(
-                    should_reply=False, reply_strategy="无新消息", topic="未知"
-                )
-
-            # 3. 调用分析器进行决策，传递结构化的上下文
+            # 调用分析器进行决策，传递结构化的上下文
             decision = await self.llm_analyzer.analyze_and_decide(
                 historical_context=db_history, recent_dialogue=recent_dialogue, chat_id=chat_id
             )
 
             logger.info(
-                f"AngelHeart[{chat_id}]: 秘书分析完成。决策: {'回复' if decision.should_reply else '不回复'} | 策略: {decision.reply_strategy} | 话题: {decision.topic} | 目标: {decision.reply_target}"
+                f"AngelHeart[{chat_id}]: 秘书LLM分析完成。决策: {'回复' if decision.should_reply else '不回复'} | 策略: {decision.reply_strategy} | 话题: {decision.topic} | 目标: {decision.reply_target}"
             )
-            # 只有在决定回复时，才更新分析缓存，以避免阻塞后续请求
-            if decision.should_reply:
-                self._update_analysis_cache(chat_id, decision)
             return decision
 
         except asyncio.TimeoutError as e:
@@ -298,14 +293,14 @@ class Secretary:
                 chat_id
             )
             if not curr_cid:
-                logger.debug(f"未找到当前会话的对话ID: {chat_id}")
+                logger.warning(f"警告: 未找到当前会话的对话ID: {chat_id}，将返回空历史记录。")
                 return []
 
             conversation = await self.context.conversation_manager.get_conversation(
                 chat_id, curr_cid
             )
             if not conversation or not conversation.history:
-                logger.debug(f"对话对象为空或无历史记录: {curr_cid}")
+                logger.warning(f"警告: 对话对象为空或无历史记录: {curr_cid}，将返回空历史记录。")
                 return []
 
             history = json.loads(conversation.history)
