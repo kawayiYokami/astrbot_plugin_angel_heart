@@ -122,9 +122,9 @@ class LLMAnalyzer:
         response_text = token.completion_text.strip()
 
         # 记录AI模型的完整响应内容
-        logger.info(f"[AngelHeart][{chat_id}]: 轻量模型的分析推理 ----------------")
-        logger.info(response_text)
-        logger.info("----------------------------------------")
+        logger.debug(f"[AngelHeart][{chat_id}]: 轻量模型的分析推理 ----------------")
+        logger.debug(response_text)
+        logger.debug("----------------------------------------")
 
         return response_text
 
