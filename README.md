@@ -1,6 +1,6 @@
 # AngelHeart - 智能群聊交互插件
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 [![AstrBot Plugin](https://img.shields.io/badge/AstrBot-Plugin-blue)](https://github.com/Soulter/AstrBot)
 
 AngelHeart 是一个专为 [AstrBot](https://github.com/Soulter/AstrBot) 平台设计的智能群聊交互插件。它采用创新的**两级AI协作架构**，实现高质量、低成本的智能对话交互，让AI成为懂分寸、有眼色的聊天伙伴。
@@ -236,7 +236,7 @@ tail -f /path/to/astrbot/logs/app.log
 
 ## 📄 许可证
 
-本项目采用 MIT 许可证 - 查看 [LICENSE](LICENSE) 文件了解详情。
+本项目采用 GNU AFFERO GENERAL PUBLIC LICENSE Version 3 许可证 - 查看 [LICENSE](LICENSE) 文件了解详情。
 
 ## 🙏 致谢
 
