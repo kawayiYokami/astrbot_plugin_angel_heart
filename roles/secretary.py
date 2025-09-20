@@ -49,6 +49,9 @@ class Secretary:
         # -- 并发控制 --
         self._shared_state_lock: asyncio.Lock = asyncio.Lock()
         """用于保护共享状态 (last_analysis_time, analysis_cache) 的全局锁"""
+        # -- 会话处理状态锁 (新) --
+        self._processing_chats: Dict[str, float] = {}
+        """用于记录每个会话是否正在被处理的门牌。键为 chat_id，值为开始处理的时间戳。"""
 
         # -- 秘书调度 --
         self.last_analysis_time: Dict[str, float] = {}
@@ -93,119 +96,78 @@ class Secretary:
         # 如果差值超过设定的超时时间，则认为决策已过期
         return time_diff > datetime.timedelta(minutes=self.DECISION_EXPIRATION_MINUTES)
 
-    def should_awaken(self, chat_id: str) -> tuple[bool, AwakenReason, dict]:
-        """
-        检查是否应该唤醒秘书进行分析。
-
-        Args:
-            chat_id (str): 会话ID。
-
-        Returns:
-            tuple[bool, AwakenReason, dict]: 一个包含三个元素的元组：
-                - bool: 如果应该唤醒则返回 True，否则返回 False。
-                - AwakenReason: 唤醒或不唤醒的具体原因。
-                - dict: 附加信息，例如剩余冷却时间。
-        """
-        current_time = time.time()
-        last_time = self.last_analysis_time.get(chat_id, 0)
-
-        # 1. 检查冷却时间：确保两次分析之间有足够的时间间隔
-        if current_time - last_time < self.config_manager.waiting_time:
-            remaining = max(0, self.config_manager.waiting_time - (current_time - last_time))
-            return False, AwakenReason.COOLING_DOWN, {"remaining": remaining}
-
-        # 2. 检查是否存在未处理的决策：防止在机器人完成回复前启动新的分析
-        existing_decision = self.analysis_cache.get(chat_id)
-        if existing_decision:
-            # 如果存在决策，检查是否已过期（超过3分钟）
-            if not self._is_decision_expired(existing_decision):
-                # 决策未过期，说明机器人仍在处理中，不应唤醒
-                return False, AwakenReason.PROCESSING, {}
-
-        # 如果冷却时间已过，且没有未过期的决策，则应唤醒秘书进行分析
-        return True, AwakenReason.OK, {}
-
     async def process_notification(
         self, event: AstrMessageEvent
     ):
         """
         处理前台发来的通知。这是秘书的核心工作入口。
-        秘书将主动从前台获取最新的缓存消息。
-
-        Args:
-            event (AstrMessageEvent): 触发此通知的原始事件。
+        采用“门牌”机制确保每个会话只有一个处理流程。
         """
         chat_id = event.unified_msg_origin
-        logger.info(f"AngelHeart[Debug-LockID]: 正在使用 chat_id: '{chat_id}' 进行状态锁定。")
         logger.info(f"AngelHeart[{chat_id}]: 秘书收到前台通知")
 
-        # 1. 【关键修改】在流程最前端进行原子操作：加锁、检查、设置标志
-        async with self._shared_state_lock:
-            should_awaken, reason, info = self.should_awaken(chat_id)
-            if not should_awaken:
-                # 如果不满足唤醒条件（冷却或已在处理），记录日志并直接返回
-                if reason == AwakenReason.COOLING_DOWN:
-                    remaining = info.get("remaining", 0)
-                    interval = self.config_manager.waiting_time
-                    logger.info(f"AngelHeart[{chat_id}]: 放弃分析请求，原因: 应答冷却中 (剩余 {remaining:.1f}s / {interval}s)")
-                elif reason == AwakenReason.PROCESSING:
-                    logger.info(f"AngelHeart[{chat_id}]: 放弃分析请求，原因: 专家正在处理先前的请求")
-                return
+        # 1. 检查门牌：如果正在处理中，则直接拒绝新请求
+        if self._is_processing(chat_id):
+            logger.info(f"AngelHeart[{chat_id}]: 拒绝请求，原因: 秘书正在处理先前的请求。")
+            return
 
-            # 满足唤醒条件，立即设置“占位符”标志，阻塞后续所有请求
-            placeholder = SecretaryDecision(should_reply=True, reply_strategy="分析中...", topic="未知", reply_target="未知")
-            self._update_analysis_cache(chat_id, placeholder, reason="已设置分析锁")
-            logger.info(f"AngelHeart[{chat_id}]: 已设置分析锁，准备启动分析。")
-        # 锁已释放，但后续请求会被占位符阻塞
-
-        # 2. 预分析：检查是否有真正需要分析的内容
+        # 2. 挂上门牌，并用 try...finally 确保门牌最终一定会被收回
+        self._hang_up_sign(chat_id)
         try:
+            # 检查冷却时间
+            current_time = time.time()
+            last_time = self.last_analysis_time.get(chat_id, 0)
+            if current_time - last_time < self.config_manager.waiting_time:
+                remaining = max(0, self.config_manager.waiting_time - (current_time - last_time))
+                logger.info(f"AngelHeart[{chat_id}]: 放弃分析请求，原因: 应答冷却中 (剩余 {remaining:.1f}s / {self.config_manager.waiting_time}s)")
+                return # 直接返回，finally 会负责收门牌
+
+            # 预分析：检查是否有真正需要分析的内容
             cached_messages = self.front_desk.get_messages(chat_id)
             db_history = await self.get_conversation_history(chat_id)
             recent_dialogue = prune_old_messages(cached_messages, db_history)
 
             if not recent_dialogue:
-                # 【你的建议】如果发现没有新消息，无需分析，则立即解锁
-                logger.info(f"AngelHeart[{chat_id}]: 无新消息需要分析，提前释放分析锁。")
-                await self.clear_decision(chat_id)
-                return
+                logger.info(f"AngelHeart[{chat_id}]: 无新消息需要分析。")
+                return # 直接返回，finally 会负责收门牌
 
-            # 3. 执行分析 (无锁)：这可能是一个耗时操作
-            decision = await self.perform_analysis(recent_dialogue, db_history, chat_id) # 传入 pre-processed data
+            # 执行分析
+            logger.info(f"AngelHeart[{chat_id}]: 开始调用LLM进行分析...")
+            decision = await self.perform_analysis(recent_dialogue, db_history, chat_id)
+
+            # 根据决策结果处理
+            if decision and decision.should_reply:
+                logger.info(f"AngelHeart[{chat_id}]: 决策为'参与'。策略: {decision.reply_strategy}")
+                await self._update_analysis_cache(chat_id, decision, reason="分析完成 (决策: 回复)")
+                
+                # 同步历史记录
+                curr_cid = await self.context.conversation_manager.get_curr_conversation_id(chat_id)
+                if curr_cid:
+                    await self.context.conversation_manager.update_conversation(
+                        unified_msg_origin=chat_id,
+                        conversation_id=curr_cid,
+                        history=db_history,
+                    )
+                    logger.debug(f"AngelHeart[{chat_id}]: 已同步待处理历史。")
+
+                # 唤醒主脑
+                if not self.config_manager.debug_mode:
+                    event.is_at_or_wake_command = True
+                else:
+                    logger.info(f"AngelHeart[{chat_id}]: 调试模式已启用，阻止了实际唤醒。")
+            
+            elif decision:
+                logger.info(f"AngelHeart[{chat_id}]: 决策为'不参与'。")
+                # 不回复 -> 清空决策缓存，以实现“不回复就清空”
+                await self.clear_decision(chat_id)
 
         except Exception as e:
-            # 任何异常都必须确保【解锁】
-            logger.error(f"AngelHeart[{chat_id}]: 分析过程中发生异常，紧急释放分析锁。", exc_info=True)
+            logger.error(f"AngelHeart[{chat_id}]: 分析过程中发生异常: {e}", exc_info=True)
+            # 异常时同样要清理决策，防止死锁
             await self.clear_decision(chat_id)
-            return
-
-        # 4. 处理决策结果（无论分析成功与否）
-        if decision and decision.should_reply:
-            # 在唤醒核心前，将待处理历史（数据库历史记录）同步回数据库
-            # 不包含当前消息，因为当前消息会在后续被核心系统处理并添加到记录中
-            curr_cid = await self.context.conversation_manager.get_curr_conversation_id(
-                chat_id
-            )
-            if curr_cid:
-                await self.context.conversation_manager.update_conversation(
-                    unified_msg_origin=chat_id,
-                    conversation_id=curr_cid,
-                    history=db_history,  # 只同步数据库历史记录，不包含当前消息
-                )
-                logger.info(
-                    f"AngelHeart[{chat_id}]: 决策为'参与'，已同步待处理历史并标记事件以唤醒核心。策略: {decision.reply_strategy}"
-                )
-                await self._update_analysis_cache(chat_id, decision, reason="分析完成 (决策: 回复)")
-
-                # 检查是否处于调试模式
-                if self.config_manager.debug_mode:
-                    logger.info(f"AngelHeart[{chat_id}]: 调试模式已启用，分析器建议回复但阻止了实际唤醒。")
-                else:
-                    event.is_at_or_wake_command = True  # 将此事件标记为需要LLM回复，以唤醒AstrBot的核心回复逻辑
-        elif decision:
-            logger.info(f"AngelHeart[{chat_id}]: 决策为'不参与'。")
-            # 如果LLM决定不回复，也【解锁】
-            await self.clear_decision(chat_id)
+        finally:
+            # 收起门牌
+            self._take_down_sign(chat_id)
 
     async def perform_analysis(
         self, recent_dialogue: List[Dict], db_history: List[Dict], chat_id: str
@@ -352,3 +314,52 @@ class Secretary:
         return SecretaryDecision(
             should_reply=False, reply_strategy=f"{context}失败", topic="未知"
         )
+
+    # --- 新增的门牌管理方法 ---
+
+    def _is_processing(self, chat_id: str) -> bool:
+        """
+        检查指定会话的“门牌”是否正挂着（即是否正在处理中）。
+        包含对“门牌卡死”的容错处理。
+
+        Args:
+            chat_id (str): 会话ID。
+
+        Returns:
+            bool: True 表示正在处理中（门牌挂着且未卡死），False 表示空闲（门牌未挂或已卡死）。
+        """
+        start_time = self._processing_chats.get(chat_id)
+        if start_time is None:
+            # 门牌未挂
+            return False
+
+        # 检查门牌是否卡死（例如，超过5分钟）
+        STALE_THRESHOLD_SECONDS = 300  # 5分钟
+        if time.time() - start_time > STALE_THRESHOLD_SECONDS:
+            logger.warning(f"AngelHeart[{chat_id}]: 检测到会话处理卡死 (超过 {STALE_THRESHOLD_SECONDS} 秒)，自动重置状态。")
+            # 自动收起卡死的门牌
+            self._take_down_sign(chat_id)
+            return False
+
+        # 门牌正挂着，且未卡死
+        return True
+
+    def _hang_up_sign(self, chat_id: str):
+        """
+        “挂上门牌”：标记指定会话正在被处理。
+
+        Args:
+            chat_id (str): 会话ID。
+        """
+        self._processing_chats[chat_id] = time.time()
+        logger.debug(f"AngelHeart[{chat_id}]: 已挂上门牌 (开始处理时间: {self._processing_chats[chat_id]})")
+
+    def _take_down_sign(self, chat_id: str):
+        """
+        “收起门牌”：标记指定会话处理完成。
+
+        Args:
+            chat_id (str): 会话ID。
+        """
+        if self._processing_chats.pop(chat_id, None) is not None:
+            logger.debug(f"AngelHeart[{chat_id}]: 已收起门牌")
