@@ -32,6 +32,7 @@ class AngelHeartPlugin(Star):
         super().__init__(context)
         self.config_manager = ConfigManager(config or {})
         self.context = context
+        self._whitelist_cache = self._prepare_whitelist()
 
         # -- 角色实例 --
         # 先创建秘书，再创建前台，并将前台传递给秘书
@@ -101,6 +102,7 @@ class AngelHeartPlugin(Star):
         # 更新角色实例的配置管理器
         self.secretary.config_manager = self.config_manager
         self.front_desk.config_manager = self.config_manager
+        self._whitelist_cache = self._prepare_whitelist()
 
         logger.info(f"AngelHeart: 配置已更新。分析间隔: {self.config_manager.analysis_interval}秒, 缓存过期时间: {self.config_manager.cache_expiry}秒")
 
@@ -129,10 +131,7 @@ class AngelHeartPlugin(Star):
         # 3. (可选) 检查白名单
         if self.config_manager.whitelist_enabled:
             plain_chat_id = self._get_plain_chat_id(chat_id)
-            # 将配置中的ID列表转换为字符串以确保类型匹配
-            whitelist = [str(cid) for cid in self.config_manager.chat_ids]
-
-            if plain_chat_id not in whitelist:
+            if plain_chat_id not in self._whitelist_cache:
                 logger.info(f"AngelHeart[{chat_id}]: 会话未在白名单中, 已忽略")
                 return False
 
@@ -163,6 +162,10 @@ class AngelHeartPlugin(Star):
                     logger.debug(f"AngelHeart[{chat_id}]: 已清洗文本组件: '{original_text}' -> '{cleaned_text}'")
 
         logger.debug(f"AngelHeart[{chat_id}]: 消息链中的Markdown格式清洗完成。")
+
+    def _prepare_whitelist(self) -> set:
+        """预处理白名单，将其转换为 set 以获得 O(1) 的查找性能。"""
+        return {str(cid) for cid in self.config_manager.chat_ids}
 
     @filter.after_message_sent()
     async def clear_oneshot_decision_on_message_sent(self, event: AstrMessageEvent, *args, **kwargs):
