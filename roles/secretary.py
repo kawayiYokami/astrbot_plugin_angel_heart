@@ -154,7 +154,7 @@ class Secretary:
 
             # 满足唤醒条件，立即设置“占位符”标志，阻塞后续所有请求
             placeholder = SecretaryDecision(should_reply=True, reply_strategy="分析中...", topic="未知", reply_target="未知")
-            self._update_analysis_cache(chat_id, placeholder)
+            self._update_analysis_cache(chat_id, placeholder, reason="已设置分析锁")
             logger.info(f"AngelHeart[{chat_id}]: 已设置分析锁，准备启动分析。")
         # 锁已释放，但后续请求会被占位符阻塞
 
@@ -239,19 +239,19 @@ class Secretary:
         except Exception as e:
             return self._handle_analysis_error(e, "秘书处理过程", chat_id)
 
-    def _update_analysis_cache(self, chat_id: str, result: SecretaryDecision):
+    def _update_analysis_cache(self, chat_id: str, result: SecretaryDecision, reason: str = "分析完成"):
         """
         更新分析缓存
 
         将新的决策结果存入缓存，并维护缓存大小不超过限制。
         注意：决策包含创建时间戳，用于后续的超时检查。
         """
-
+        
         self.analysis_cache[chat_id] = result
         # 如果缓存超过最大尺寸，则移除最旧的条目
         if len(self.analysis_cache) > self.CACHE_MAX_SIZE:
             self.analysis_cache.popitem(last=False)
-        logger.info(f"AngelHeart[{chat_id}]: 分析完成，已更新缓存。决策: {'回复' if result.should_reply else '不回复'} | 策略: {result.reply_strategy} | 话题: {result.topic} | 目标: {result.reply_target}")
+        logger.info(f"AngelHeart[{chat_id}]: {reason}，已更新缓存。决策: {'回复' if result.should_reply else '不回复'} | 策略: {result.reply_strategy} | 话题: {result.topic} | 目标: {result.reply_target}")
 
     def get_decision(self, chat_id: str) -> SecretaryDecision | None:
         """获取指定会话的决策"""
