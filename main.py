@@ -44,7 +44,7 @@ class AngelHeartPlugin(Star):
         logger.info("💖 AngelHeart智能回复员初始化完成 (同步轻量级架构)")
 
     # --- 核心事件处理 ---
-    @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE | filter.EventMessageType.PRIVATE_MESSAGE, priority=1)
+    @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE | filter.EventMessageType.PRIVATE_MESSAGE, priority=200)
     async def smart_reply_handler(self, event: AstrMessageEvent, *args, **kwargs):
         """智能回复员 - 事件入口：将事件委托给前台处理"""
         # 前置检查
@@ -55,7 +55,7 @@ class AngelHeartPlugin(Star):
         await self.front_desk.handle_event(event)
 
     # --- LLM Request Hook ---
-    @filter.on_llm_request()
+    @filter.on_llm_request(priority=-100)
     async def inject_oneshot_decision_on_llm_request(self, event: AstrMessageEvent, req: ProviderRequest):
         """在LLM请求时，一次性注入由秘书分析得出的决策上下文"""
         chat_id = event.unified_msg_origin
@@ -81,7 +81,7 @@ class AngelHeartPlugin(Star):
             return
 
         # 4. 构建补充提示词，包含人格信息和回复目标
-        decision_context = f"\n\n---\n[AngelHeart秘书提醒] 你现在的名字是 {persona_name} (别名: {alias})。请围绕以下要点回复：\n- 核心话题: {topic}\n- 回复策略: {strategy}\n- 回复目标: {reply_target}"
+        decision_context = f"\n\n---\n[经过我对聊天记录的分析，我得到了如下结论] 我现在的名字是 {persona_name} (别名: {alias})。我将围绕以下要点回复：\n- 核心话题: {topic}\n- 回复策略: {strategy}\n- 回复目标: {reply_target}"
 
         # 5. 注入到 req.system_prompt
         # 遵循 AstrBot 框架的设计，system_prompt 用于传递不会被存入历史记录的系统级指令
@@ -139,7 +139,7 @@ class AngelHeartPlugin(Star):
         logger.info(f"AngelHeart[{chat_id}]: 消息通过所有前置检查, 准备处理...")
         return True
 
-    @filter.on_decorating_result()
+    @filter.on_decorating_result(priority=-200)
     async def strip_markdown_on_decorating_result(self, event: AstrMessageEvent, *args, **kwargs):
         """
         在消息发送前，对消息链中的文本内容进行Markdown清洗。
