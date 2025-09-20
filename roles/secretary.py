@@ -265,8 +265,9 @@ class Secretary:
             if not conversation or not conversation.history:
                 logger.warning(f"警告: 对话对象为空或无历史记录: {curr_cid}，将返回空历史记录。")
                 return []
-
-            history = json.loads(conversation.history)
+            
+            # 使用 asyncio.to_thread 将同步的、CPU密集型的 json.loads 操作移到工作线程中
+            history = await asyncio.to_thread(json.loads, conversation.history)
             return history
 
         except json.JSONDecodeError as e:
