@@ -47,12 +47,23 @@ class AngelHeartPlugin(Star):
     # --- 核心事件处理 ---
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE | filter.EventMessageType.PRIVATE_MESSAGE, priority=200)
     async def smart_reply_handler(self, event: AstrMessageEvent, *args, **kwargs):
-        """智能回复员 - 事件入口：将事件委托给前台处理"""
-        # 前置检查
-        if not self._should_process(event):
-            return
+        """智能回复员 - 事件入口：处理缓存或在唤醒时清空缓存"""
+        chat_id = event.unified_msg_origin
 
-        # 将事件处理完全委托给前台
+        # 核心修改：如果是指令或@自己的消息，清空缓存并终止插件的后续处理
+        if event.is_at_or_wake_command:
+            logger.info(f"AngelHeart[{chat_id}]: 检测到指令或@消息，清空前台缓存。")
+            self.front_desk.clear_cache(chat_id)
+            return  # 终止插件逻辑，由主机器人处理
+
+        # --- 原有的 _should_process 逻辑可以移到这里 ---
+        if event.get_sender_id() == event.get_self_id():
+            return
+        if not event.get_message_outline().strip():
+            return
+        # (白名单检查等...)
+
+        # 如果是普通消息，则委托给前台缓存
         await self.front_desk.handle_event(event)
 
     # --- LLM Request Hook ---

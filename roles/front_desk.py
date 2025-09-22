@@ -183,6 +183,18 @@ class FrontDesk:
     def config_manager(self):
         return self._config_manager
 
+    def clear_cache(self, chat_id: str):
+        """
+        清空指定会话的缓存消息。
+        由主插件在检测到直接唤醒事件时调用。
+        """
+        if chat_id in self.unprocessed_messages:
+            cleared_count = len(self.unprocessed_messages[chat_id])
+            self.unprocessed_messages.pop(chat_id, None)
+            logger.debug(
+                f"AngelHeart[{chat_id}]: 前台缓存已清空，移除了 {cleared_count} 条消息。"
+            )
+
     @config_manager.setter
     def config_manager(self, value):
         self._config_manager = value
