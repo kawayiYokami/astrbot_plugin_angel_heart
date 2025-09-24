@@ -11,8 +11,9 @@ from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
 from .secretary import Secretary  # 用于类型提示
 
-# 导入公共工具函数
-from ..core.utils import convert_content_to_string
+# 导入公共工具函数和 ConversationLedger
+from ..core.utils import convert_content_to_string, format_message_for_llm
+from ..core.conversation_ledger import ConversationLedger
 
 
 class FrontDesk:
@@ -20,19 +21,21 @@ class FrontDesk:
     前台角色 - 专注的消息接收与缓存员
     """
 
-    def __init__(self, config_manager, secretary: Secretary):
+    def __init__(self, config_manager, secretary: Secretary, conversation_ledger: ConversationLedger):
         """
         初始化前台角色。
 
         Args:
             config_manager: 配置管理器实例。
             secretary (Secretary): 关联的秘书实例，用于处理通知。
+            conversation_ledger (ConversationLedger): 对话总账实例，用于存储消息。
         """
         self._config_manager = config_manager
         self.secretary = secretary
+        self.conversation_ledger = conversation_ledger
 
-        # 前台缓存：存储每个会话的未处理用户消息
-        self.unprocessed_messages: Dict[str, List[Dict]] = {}
+        # 移除本地缓存：存储每个会话的未处理用户消息
+        # self.unprocessed_messages: Dict[str, List[Dict]] = {}
 
         # 新增状态：记录每个会话的闭嘴截止时间戳
         self.silenced_until: Dict[str, float] = {}
@@ -45,77 +48,26 @@ class FrontDesk:
             chat_id (str): 会话ID。
             event: 消息事件对象。
         """
-        # 在缓存新消息前，先清理该会话的过期消息
-        self.clean_expired_messages(chat_id)
-
-        if chat_id not in self.unprocessed_messages:
-            self.unprocessed_messages[chat_id] = []
-
+        # 直接将消息添加到 ConversationLedger
+        # 不再需要手动清理过期消息，因为 ConversationLedger.add_message 会自动处理
         new_message = {
             "role": "user",
             "content": event.get_message_outline(),
             "sender_id": event.get_sender_id(),
             "sender_name": event.get_sender_name(),
-            "timestamp": time.time(),
+            "timestamp": event.get_timestamp() if hasattr(event, 'get_timestamp') and event.get_timestamp() else time.time(), # 使用事件自带的时间戳，如果不可用则使用当前时间
         }
-        self.unprocessed_messages[chat_id].append(new_message)
+        self.conversation_ledger.add_message(chat_id, new_message)
         logger.debug(
-            f"AngelHeart[{chat_id}]: 前台已缓存消息。当前缓存数: {len(self.unprocessed_messages[chat_id])}"
+            f"AngelHeart[{chat_id}]: 消息已添加到 Ledger。"
         )
         # 增强日志：打印最新缓存的消息内容（截取前100个字符）
         latest_content = new_message.get("content", "")[:100]
         logger.debug(
-            f"AngelHeart[{chat_id}]: 最新缓存消息内容: {latest_content}"
+            f"AngelHeart[{chat_id}]: 最新添加消息内容: {latest_content}"
         )
 
-    def get_messages(self, chat_id: str) -> List[Dict]:
-        """
-        获取指定会话的缓存消息副本。
 
-        Args:
-            chat_id (str): 会话ID。
-
-        Returns:
-            List[Dict]: 该会话的缓存消息列表副本。
-        """
-        # 清理操作已移至 cache_message，此处不再需要
-        # self.clean_expired_messages(chat_id)
-
-        # 返回消息列表的深拷贝，防止外部修改影响缓存
-        return copy.deepcopy(self.unprocessed_messages.get(chat_id, []))
-
-    def clean_expired_messages(self, chat_id: str):
-        """
-        清理过期的缓存消息。
-
-        Args:
-            chat_id (str): 会话ID。
-        """
-        if chat_id not in self.unprocessed_messages:
-            return
-
-        current_time = time.time()
-        original_count = len(self.unprocessed_messages[chat_id])
-
-        # 使用列表推导式过滤掉过期的消息
-        self.unprocessed_messages[chat_id] = [
-            msg
-            for msg in self.unprocessed_messages[chat_id]
-            if "timestamp" not in msg
-            or current_time - msg["timestamp"] <= self.config_manager.cache_expiry
-        ]
-
-        new_count = len(self.unprocessed_messages[chat_id])
-        expired_count = original_count - new_count
-
-        if expired_count > 0:
-            logger.debug(
-                f"AngelHeart[{chat_id}]: 前台清理了 {expired_count} 条过期消息，剩余 {new_count} 条"
-            )
-
-        # 如果会话消息列表为空，删除该会话的键
-        if not self.unprocessed_messages[chat_id]:
-            self.unprocessed_messages.pop(chat_id, None)
 
     async def handle_event(self, event: AstrMessageEvent):
         """
@@ -154,21 +106,23 @@ class FrontDesk:
         self.cache_message(chat_id, event)
 
         # 5. 唤醒词检测
-        # 设计意图：此处的缓存 (unprocessed_messages) 模拟了 AI 的“看群时间”或“短期记忆”。
+        # 设计意图：此处的缓存模拟了 AI 的"看群时间"或"短期记忆"。
         # 在 'analysis_on_mention_only' 模式下，只要在这段记忆中出现过一次别名，
         # AI 就会认为当前对话值得关注，从而触发后续的分析。
-        # 这并非要求每条消息都包含别名，而是模拟一种“被唤醒后持续观察”的行为。
+        # 这并非要求每条消息都包含别名，而是模拟一种"被唤醒后持续观察"的行为。
         if self.config_manager.analysis_on_mention_only:
             alias_str = self.config_manager.alias
             if not alias_str:
                 return
 
             aliases = [name.strip() for name in alias_str.split('|') if name.strip()]
-            current_cache = self.unprocessed_messages.get(chat_id, [])
+            # 从 ConversationLedger 获取所有消息（包括历史消息），因为AI应该记住被呼唤的状态
+            historical_context, unprocessed_dialogue, _ = self.conversation_ledger.get_context_snapshot(chat_id)
+            all_messages = historical_context + unprocessed_dialogue
 
             found_mention = any(
                 alias in convert_content_to_string(msg.get("content", ""))
-                for msg in current_cache
+                for msg in all_messages
                 for alias in aliases
             )
 
@@ -183,17 +137,52 @@ class FrontDesk:
     def config_manager(self):
         return self._config_manager
 
-    def clear_cache(self, chat_id: str):
+
+    async def rewrite_prompt_for_llm(self, chat_id: str, req):
         """
-        清空指定会话的缓存消息。
-        由主插件在检测到直接唤醒事件时调用。
+        为 LLM 重写 ProviderRequest 的 prompt，将对话上下文整合为单一的格式化字符串。
+
+        Args:
+            chat_id (str): 会话ID。
+            req: ProviderRequest 对象。
         """
-        if chat_id in self.unprocessed_messages:
-            cleared_count = len(self.unprocessed_messages[chat_id])
-            self.unprocessed_messages.pop(chat_id, None)
-            logger.debug(
-                f"AngelHeart[{chat_id}]: 前台缓存已清空，移除了 {cleared_count} 条消息。"
-            )
+        # 1. 获取对话快照
+        historical_context, unprocessed_dialogue, _ = self.conversation_ledger.get_context_snapshot(chat_id)
+
+        # 2. 获取决策信息（用于确定人格名称）
+        decision = self.secretary.get_decision(chat_id)
+        persona_name = decision.persona_name if decision else 'AngelHeart'
+
+        # 3. 构建新的 prompt 列表
+        new_prompt_parts = [f"你正在一个群聊中聊天，你是助理。你的名字是 {persona_name}。"]
+
+        # 添加历史记录
+        if historical_context:
+            new_prompt_parts.append("\n--- 对话历史记录 (已处理) ---")
+            for msg in historical_context:
+                formatted_msg = format_message_for_llm(msg, persona_name)
+                new_prompt_parts.append(formatted_msg)
+
+        # 添加未回应的对话
+        if unprocessed_dialogue:
+            new_prompt_parts.append("\n--- 未回应的对话 ---")
+            for msg in unprocessed_dialogue:
+                formatted_msg = format_message_for_llm(msg, persona_name)
+                new_prompt_parts.append(formatted_msg)
+
+        # 合并决策上下文（回复策略）到 prompt
+        if hasattr(req, 'angelheart_decision_context') and req.angelheart_decision_context:
+            new_prompt_parts.append(f"\n{req.angelheart_decision_context}")
+
+        # 添加最终指令
+        new_prompt_parts.append("\n请根据以上对话内容，结合你的回答策略，做出回应。")
+
+        # 4. 更新 ProviderRequest 对象
+        req.prompt = "\n".join(new_prompt_parts)
+        req.contexts = []  # 清空 contexts
+        # req.system_prompt 保持不变，不进行任何操作
+
+        logger.debug(f"AngelHeart[{chat_id}]: LLM Prompt 已重写，决策上下文已合并到 prompt。")
 
     @config_manager.setter
     def config_manager(self, value):

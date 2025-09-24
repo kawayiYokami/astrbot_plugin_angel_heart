@@ -33,7 +33,7 @@ class Secretary:
     秘书角色 - 专注的分析与决策员
     """
 
-    def __init__(self, config_manager, context, front_desk):
+    def __init__(self, config_manager, context, front_desk, conversation_ledger):
         """
         初始化秘书角色。
 
@@ -41,10 +41,12 @@ class Secretary:
             config_manager: 配置管理器实例。
             context: 插件上下文对象。
             front_desk: 前台角色实例。
+            conversation_ledger: 对话总账实例。
         """
-        self.config_manager = config_manager
+        self._config_manager = config_manager
         self.context = context
         self.front_desk = front_desk
+        self.conversation_ledger = conversation_ledger
 
         # -- 并发控制 --
         self._shared_state_lock: asyncio.Lock = asyncio.Lock()
@@ -122,40 +124,31 @@ class Secretary:
                 logger.info(f"AngelHeart[{chat_id}]: 放弃分析请求，原因: 应答冷却中 (剩余 {remaining:.1f}s / {self.config_manager.waiting_time}s)")
                 return # 直接返回，finally 会负责收门牌
 
-            # 预分析：检查是否有真正需要分析的内容
-            cached_messages = self.front_desk.get_messages(chat_id)
-            db_history = await self.get_conversation_history(chat_id)
-            recent_dialogue = prune_old_messages(cached_messages, db_history)
+            # 预分析：从 ConversationLedger 获取上下文快照
+            historical_context, recent_dialogue, boundary_ts = self.conversation_ledger.get_context_snapshot(chat_id)
 
+            # 将快照边界时间戳存入决策，以便后续使用
             if not recent_dialogue:
                 logger.info(f"AngelHeart[{chat_id}]: 无新消息需要分析。")
                 return # 直接返回，finally 会负责收门牌
 
             # 执行分析
             logger.info(f"AngelHeart[{chat_id}]: 开始调用LLM进行分析...")
-            decision = await self.perform_analysis(recent_dialogue, db_history, chat_id)
+            decision = await self.perform_analysis(recent_dialogue, historical_context, chat_id)
 
             # 根据决策结果处理
             if decision and decision.should_reply:
                 logger.info(f"AngelHeart[{chat_id}]: 决策为'参与'。策略: {decision.reply_strategy}")
+                # 将快照边界时间戳存入决策
+                decision.boundary_timestamp = boundary_ts
                 await self._update_analysis_cache(chat_id, decision, reason="分析完成 (决策: 回复)")
-                
-                # 同步历史记录
-                curr_cid = await self.context.conversation_manager.get_curr_conversation_id(chat_id)
-                if curr_cid:
-                    await self.context.conversation_manager.update_conversation(
-                        unified_msg_origin=chat_id,
-                        conversation_id=curr_cid,
-                        history=db_history,
-                    )
-                    logger.debug(f"AngelHeart[{chat_id}]: 已同步待处理历史。")
 
                 # 唤醒主脑
                 if not self.config_manager.debug_mode:
                     event.is_at_or_wake_command = True
                 else:
                     logger.info(f"AngelHeart[{chat_id}]: 调试模式已启用，阻止了实际唤醒。")
-            
+
             elif decision:
                 logger.info(f"AngelHeart[{chat_id}]: 决策为'不参与'。")
                 # 不回复 -> 清空决策缓存，以实现“不回复就清空”
@@ -249,36 +242,6 @@ class Secretary:
 
 
 
-    async def get_conversation_history(self, chat_id: str) -> List[Dict]:
-        """获取当前会话的完整对话历史"""
-        try:
-            curr_cid = await self.context.conversation_manager.get_curr_conversation_id(
-                chat_id
-            )
-            if not curr_cid:
-                logger.warning(f"警告: 未找到当前会话的对话ID: {chat_id}，将返回空历史记录。")
-                return []
-
-            conversation = await self.context.conversation_manager.get_conversation(
-                chat_id, curr_cid
-            )
-            if not conversation or not conversation.history:
-                logger.warning(f"警告: 对话对象为空或无历史记录: {curr_cid}，将返回空历史记录。")
-                return []
-            
-            # 使用 asyncio.to_thread 将同步的、CPU密集型的 json.loads 操作移到工作线程中
-            history = await asyncio.to_thread(json.loads, conversation.history)
-            return history
-
-        except json.JSONDecodeError as e:
-            logger.error(f"解析对话历史JSON失败: {e}")
-            return []
-        except (TypeError, AttributeError) as e:
-            logger.error(f"获取对话历史时发生类型或属性错误: {e}", exc_info=True)
-            return []
-        except Exception as e:
-            logger.error(f"获取对话历史时发生未知错误: {e}", exc_info=True)
-            return []
 
     @property
     def config_manager(self):

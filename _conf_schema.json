@@ -45,6 +45,12 @@
     "description": "消息缓存的过期时间（秒），超过此时间的消息将被自动清理",
     "default": 60
   },
+  "group_chat_enhancement": {
+    "type": "bool",
+    "title": "群聊上下文增强",
+    "description": "完全接管群聊上下文支持服务，请关闭原生的群聊上下文。",
+    "default": true
+  },
   "slap_words": {
     "type": "string",
     "title": "掌嘴词",
