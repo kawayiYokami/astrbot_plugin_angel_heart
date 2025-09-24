@@ -13,3 +13,5 @@ class SecretaryDecision(BaseModel):
     reply_target: str = Field(default="", description="回复的目标用户昵称或ID")
     # --- 新增字段以支持超时机制 ---
     created_at: datetime.datetime = Field(default_factory=lambda: datetime.datetime.now(datetime.timezone.utc), description="决策创建的时间戳")
+    # --- 新增字段以支持上下文状态管理 ---
+    boundary_timestamp: float = Field(default=0.0, description="分析快照的边界时间戳，用于状态推进")

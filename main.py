@@ -23,7 +23,8 @@ from .core.config_manager import ConfigManager
 from .models.analysis_result import SecretaryDecision
 from .roles.front_desk import FrontDesk
 from .roles.secretary import Secretary
-from .core.utils import strip_markdown
+from .core.utils import strip_markdown, format_message_for_llm
+from .core.conversation_ledger import ConversationLedger
 
 class AngelHeartPlugin(Star):
     """AngelHeart插件 - 专注的智能回复员"""
@@ -34,11 +35,15 @@ class AngelHeartPlugin(Star):
         self.context = context
         self._whitelist_cache = self._prepare_whitelist()
 
+        # -- 创建 ConversationLedger 实例 --
+        self.conversation_ledger = ConversationLedger(cache_expiry=self.config_manager.cache_expiry)
+
         # -- 角色实例 --
         # 先创建秘书，再创建前台，并将前台传递给秘书
         # 使用 None 作为占位符，以打破 Secretary 和 FrontDesk 在初始化时的循环依赖
-        self.secretary = Secretary(self.config_manager, self.context, None) # 占位符，稍后设置
-        self.front_desk = FrontDesk(self.config_manager, self.secretary)
+        # 同时注入 conversation_ledger
+        self.secretary = Secretary(self.config_manager, self.context, None, self.conversation_ledger) # 占位符，稍后设置
+        self.front_desk = FrontDesk(self.config_manager, self.secretary, self.conversation_ledger)
         # 设置秘书的前台引用
         self.secretary.front_desk = self.front_desk
 
@@ -58,11 +63,15 @@ class AngelHeartPlugin(Star):
         # 如果是需要处理的消息，则委托给前台缓存
         await self.front_desk.handle_event(event)
 
-    # --- LLM Request Hook ---
-    @filter.on_llm_request(priority=-100)
+
+    @filter.on_llm_request(priority=0) # 默认优先级
     async def inject_oneshot_decision_on_llm_request(self, event: AstrMessageEvent, req: ProviderRequest):
         """在LLM请求时，一次性注入由秘书分析得出的决策上下文"""
         chat_id = event.unified_msg_origin
+
+        # 如果启用群聊上下文增强，则跳过此方法（使用新的 prompt 重写方式）
+        if self.config_manager.group_chat_enhancement:
+            return
 
         # 1. 从秘书那里获取决策
         decision = self.secretary.get_decision(chat_id)
@@ -87,15 +96,32 @@ class AngelHeartPlugin(Star):
         # 4. 构建补充提示词，包含人格信息和回复目标
         decision_context = f"\n\n---\n[经过我对聊天记录的分析，我得到了如下结论] 我现在的名字是 {persona_name} (别名: {alias})。我将围绕以下要点回复：\n- 核心话题: {topic}\n- 回复策略: {strategy}\n- 回复目标: {reply_target}"
 
-        # 5. 注入到 req.system_prompt
-        # 遵循 AstrBot 框架的设计，system_prompt 用于传递不会被存入历史记录的系统级指令
-        if req.system_prompt:
-            # 如果 system_prompt 已有内容，则追加
-            req.system_prompt += f"\n{decision_context}"
+        # 5. 根据是否启用增强模式，选择不同的注入方式
+        if self.config_manager.group_chat_enhancement:
+            # 增强模式：将决策上下文存储到临时属性中，由 rewrite_prompt_for_llm 处理
+            req.angelheart_decision_context = decision_context
+            logger.debug(f"AngelHeart[{chat_id}]: 已将决策上下文存储到临时属性中。")
         else:
-            # 否则，直接赋值
-            req.system_prompt = decision_context
-        logger.debug(f"AngelHeart[{chat_id}]: 已将决策上下文注入到 system_prompt。")
+            # 传统模式：注入到 req.system_prompt
+            # 遵循 AstrBot 框架的设计，system_prompt 用于传递不会被存入历史记录的系统级指令
+            if req.system_prompt:
+                # 如果 system_prompt 已有内容，则追加
+                req.system_prompt += f"\n{decision_context}"
+            else:
+                # 否则，直接赋值
+                req.system_prompt = decision_context
+            logger.debug(f"AngelHeart[{chat_id}]: 已将决策上下文注入到 system_prompt。")
+
+    @filter.on_llm_request(priority=-50) # 在决策注入之后，日志之前执行
+    async def delegate_prompt_rewriting(self, event: AstrMessageEvent, req: ProviderRequest):
+        """将 Prompt 重写任务委托给 FrontDesk 处理"""
+        chat_id = event.unified_msg_origin
+
+        # 如果未启用群聊上下文增强，则跳过此方法（使用旧的 system_prompt 注入方式）
+        if not self.config_manager.group_chat_enhancement:
+            return
+
+        await self.front_desk.rewrite_prompt_for_llm(chat_id, req)
 
 
     # --- 内部方法 ---
@@ -107,6 +133,10 @@ class AngelHeartPlugin(Star):
         self.front_desk.config_manager = self.config_manager
         self._whitelist_cache = self._prepare_whitelist()
 
+        # 更新 ConversationLedger 的缓存过期时间
+        # 注意：这里我们不能直接修改 ConversationLedger 的 cache_expiry
+        # 因为它是初始化时设置的。我们可以考虑重新创建实例或添加一个更新方法
+        # 为了简单，我们暂时只记录日志，实际更新需要更复杂的逻辑
         logger.info(f"AngelHeart: 配置已更新。分析间隔: {self.config_manager.analysis_interval}秒, 缓存过期时间: {self.config_manager.cache_expiry}秒")
 
     def _get_plain_chat_id(self, unified_id: str) -> str:
@@ -123,11 +153,11 @@ class AngelHeartPlugin(Star):
             if event.is_at_or_wake_command:
                 # 预缓存ID以提高性能
                 self_id = str(event.get_self_id())
-                
+
                 # 检查是否为需要特殊处理的@消息（At机器人或引用机器人消息）
                 is_at_self = False
                 has_at_all = False
-                
+
                 try:
                     messages = event.get_messages()
                     for message in messages:
@@ -141,7 +171,7 @@ class AngelHeartPlugin(Star):
                     logger.warning(f"AngelHeart[{chat_id}]: 解析消息链异常: {e}")
                     # 异常时保守处理，视为非@自己消息
                     return False
-                
+
                 # 如果是@自己或引用自己，应该处理（返回True）
                 if is_at_self:
                     logger.debug(f"AngelHeart[{chat_id}]: 检测到@自己的消息，准备处理...")
@@ -173,7 +203,7 @@ class AngelHeartPlugin(Star):
 
             logger.debug(f"AngelHeart[{chat_id}]: 消息通过所有前置检查, 准备处理...")
             return True
-            
+
         except Exception as e:
             logger.error(f"AngelHeart[{chat_id}]: _should_process方法执行异常: {e}", exc_info=True)
             return False  # 异常时保守处理，不处理消息
@@ -211,10 +241,106 @@ class AngelHeartPlugin(Star):
     async def clear_oneshot_decision_on_message_sent(self, event: AstrMessageEvent, *args, **kwargs):
         """在消息成功发送后，清理一次性决策缓存并更新计时器"""
         chat_id = event.unified_msg_origin
-        # 让秘书清理决策缓存
+
+        # 1. 从秘书缓存中获取决策
+        decision = self.secretary.get_decision(chat_id)
+
+        # 2. 如果决策有效，使用其边界时间戳来推进 Ledger 状态
+        if decision and hasattr(decision, 'boundary_timestamp') and decision.boundary_timestamp > 0:
+            # 在推进状态前，先记录发送前的状态
+            logger.info(f"AngelHeart[{chat_id}]: === 发送前对话状态 ===")
+            self._log_conversation_ledger_state(chat_id)
+
+            self.conversation_ledger.mark_as_processed(chat_id, decision.boundary_timestamp)
+            logger.debug(f"AngelHeart[{chat_id}]: 上下文状态已推进至 {decision.boundary_timestamp}")
+
+            # 3. 将AI的回复加入到对话总账中
+            # 获取发送的消息内容
+            sent_message = self._extract_sent_message_content(event)
+            if sent_message:
+                ai_message = {
+                    "role": "assistant",
+                    "content": sent_message,
+                    "sender_id": str(event.get_self_id()),
+                    "sender_name": decision.alias if decision else "AngelHeart",
+                    "timestamp": time.time(),
+                }
+                self.conversation_ledger.add_message(chat_id, ai_message)
+                logger.debug(f"AngelHeart[{chat_id}]: AI回复已加入对话总账")
+
+            # 4. 生产环境调试：输出发送后的完整聊天记录
+            logger.info(f"AngelHeart[{chat_id}]: === 发送后对话状态 ===")
+            self._log_conversation_ledger_state(chat_id)
+
+        # 5. 让秘书清理决策缓存
         await self.secretary.clear_decision(chat_id)
-        # 让秘书更新最后一次事件（回复）的时间戳
+        # 6. 让秘书更新最后一次事件（回复）的时间戳
         await self.secretary.update_last_event_time(chat_id)
+
+    def _extract_sent_message_content(self, event: AstrMessageEvent) -> str:
+        """从事件中提取发送的消息内容"""
+        try:
+            # 从event的result中获取发送的消息内容
+            if hasattr(event, 'get_result') and event.get_result():
+                result = event.get_result()
+                if hasattr(result, 'chain') and result.chain:
+                    # 提取chain中的文本内容
+                    text_parts = []
+                    for component in result.chain:
+                        if hasattr(component, 'text'):
+                            text_parts.append(component.text)
+                        elif hasattr(component, 'data') and isinstance(component.data, dict):
+                            # 处理其他类型的组件
+                            text_parts.append(str(component.data.get('text', '')))
+                    return ''.join(text_parts).strip()
+
+            # 如果上面的方法失败，尝试从event的message中获取
+            if hasattr(event, 'get_message_outline'):
+                return event.get_message_outline()
+
+        except Exception as e:
+            logger.warning(f"AngelHeart[{event.unified_msg_origin}]: 提取发送消息内容时出错: {e}")
+
+        return ""
+
+    def _log_conversation_ledger_state(self, chat_id: str):
+        """生产环境调试：以轻量模型能看到的格式输出指定会话的完整聊天记录状态"""
+        try:
+            # 获取当前会话的快照
+            historical_context, unprocessed_dialogue, boundary_ts = self.conversation_ledger.get_context_snapshot(chat_id)
+
+            # 计算统计信息
+            total_messages = len(historical_context) + len(unprocessed_dialogue)
+
+            logger.info(f"AngelHeart[{chat_id}]: === 对话总账状态快照 ===")
+            logger.info(f"AngelHeart[{chat_id}]: 总消息数: {total_messages} | 历史消息: {len(historical_context)} | 未处理消息: {len(unprocessed_dialogue)}")
+            logger.info(f"AngelHeart[{chat_id}]: 快照边界时间戳: {boundary_ts}")
+
+            # 输出历史消息
+            if historical_context:
+                logger.info(f"AngelHeart[{chat_id}]: --- 历史消息 (已处理，仅作为策略参考，不需要回应) ---")
+                for msg in historical_context[-10:]:  # 只显示最近10条
+                    formatted = format_message_for_llm(msg, "AngelHeart")  # 使用默认人格名
+                    logger.info(f"AngelHeart[{chat_id}]: {formatted}")
+                if len(historical_context) > 10:
+                    logger.info(f"AngelHeart[{chat_id}]: ... 还有 {len(historical_context)-10} 条较早的历史消息")
+            else:
+                logger.info(f"AngelHeart[{chat_id}]: --- 无历史消息 ---")
+
+            # 输出未处理消息
+            if unprocessed_dialogue:
+                logger.info(f"AngelHeart[{chat_id}]: --- 未处理消息 (你需要分辨出里面的人是不是在对你说话) ---")
+                for msg in unprocessed_dialogue:
+                    formatted = format_message_for_llm(msg, "AngelHeart")
+                    logger.info(f"AngelHeart[{chat_id}]: {formatted}")
+            else:
+                logger.info(f"AngelHeart[{chat_id}]: --- 无未处理消息 ---")
+
+            logger.info(f"AngelHeart[{chat_id}]: === 快照结束 ===")
+
+        except Exception as e:
+            logger.error(f"AngelHeart[{chat_id}]: 输出对话总账状态时发生错误: {e}", exc_info=True)
+
 
     async def on_destroy(self):
         """插件销毁时的清理工作"""

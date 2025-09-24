@@ -77,3 +77,8 @@ class ConfigManager:
     def silence_duration(self) -> int:
         """触发闭嘴后的静默时长（秒）"""
         return self._config.get("silence_duration", 600)
+
+    @property
+    def group_chat_enhancement(self) -> bool:
+        """是否启用群聊上下文增强模式"""
+        return self._config.get("group_chat_enhancement", True)
