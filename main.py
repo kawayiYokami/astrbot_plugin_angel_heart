@@ -17,7 +17,7 @@ from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.provider import ProviderRequest, LLMResponse
 from astrbot.core.star.context import Context
 from astrbot.api import logger
-from astrbot.core.message.components import Plain
+from astrbot.core.message.components import Plain, At, AtAll, Reply
 
 from .core.config_manager import ConfigManager
 from .models.analysis_result import SecretaryDecision
@@ -50,20 +50,12 @@ class AngelHeartPlugin(Star):
         """智能回复员 - 事件入口：处理缓存或在唤醒时清空缓存"""
         chat_id = event.unified_msg_origin
 
-        # 核心修改：如果是指令或@自己的消息，清空缓存并终止插件的后续处理
-        if event.is_at_or_wake_command:
-            logger.info(f"AngelHeart[{chat_id}]: 检测到指令或@消息，清空前台缓存。")
-            self.front_desk.clear_cache(chat_id)
-            return  # 终止插件逻辑，由主机器人处理
-
-        # --- 原有的 _should_process 逻辑可以移到这里 ---
-        if event.get_sender_id() == event.get_self_id():
+        # 使用 _should_process 方法来判断是否需要处理此消息
+        if not self._should_process(event):
+            # 如果 _should_process 返回 False，直接返回，不进行任何处理
             return
-        if not event.get_message_outline().strip():
-            return
-        # (白名单检查等...)
 
-        # 如果是普通消息，则委托给前台缓存
+        # 如果是需要处理的消息，则委托给前台缓存
         await self.front_desk.handle_event(event)
 
     # --- LLM Request Hook ---
@@ -126,28 +118,65 @@ class AngelHeartPlugin(Star):
         """检查是否需要处理此消息"""
         chat_id = event.unified_msg_origin
 
-        # 1. 忽略指令或@自己的消息
-        if event.is_at_or_wake_command:
-            # logger.info(f"AngelHeart[{chat_id}]: 消息是指令或@, 已忽略")
-            return False
-        if event.get_sender_id() == event.get_self_id():
-            logger.info(f"AngelHeart[{chat_id}]: 消息由自己发出, 已忽略")
-            return False
+        try:
+            # 1. 检查是否为@消息，区分@自己和@全体成员
+            if event.is_at_or_wake_command:
+                # 预缓存ID以提高性能
+                self_id = str(event.get_self_id())
+                
+                # 检查是否为需要特殊处理的@消息（At机器人或引用机器人消息）
+                is_at_self = False
+                has_at_all = False
+                
+                try:
+                    messages = event.get_messages()
+                    for message in messages:
+                        if isinstance(message, AtAll):
+                            has_at_all = True
+                        elif isinstance(message, At) and str(message.qq) == self_id:
+                            is_at_self = True
+                        elif isinstance(message, Reply) and str(message.sender_id) == self_id:
+                            is_at_self = True
+                except Exception as e:
+                    logger.warning(f"AngelHeart[{chat_id}]: 解析消息链异常: {e}")
+                    # 异常时保守处理，视为非@自己消息
+                    return False
+                
+                # 如果是@自己或引用自己，应该处理（返回True）
+                if is_at_self:
+                    logger.debug(f"AngelHeart[{chat_id}]: 检测到@自己的消息，准备处理...")
+                    return True
+                # 如果是@全体成员，不应该处理（返回False）
+                elif has_at_all:
+                    logger.debug(f"AngelHeart[{chat_id}]: 检测到@全体成员消息，已忽略")
+                    return False
+                # 如果是指令（非@），不应该处理（返回False）
+                else:
+                    logger.debug(f"AngelHeart[{chat_id}]: 检测到指令或@他人消息，已忽略")
+                    return False
 
-        # 2. 忽略空消息
-        if not event.get_message_outline().strip():
-            logger.info(f"AngelHeart[{chat_id}]: 消息内容为空, 已忽略")
-            return False
-
-        # 3. (可选) 检查白名单
-        if self.config_manager.whitelist_enabled:
-            plain_chat_id = self._get_plain_chat_id(chat_id)
-            if plain_chat_id not in self._whitelist_cache:
-                logger.info(f"AngelHeart[{chat_id}]: 会话未在白名单中, 已忽略")
+            if event.get_sender_id() == event.get_self_id():
+                logger.debug(f"AngelHeart[{chat_id}]: 消息由自己发出, 已忽略")
                 return False
 
-        logger.info(f"AngelHeart[{chat_id}]: 消息通过所有前置检查, 准备处理...")
-        return True
+            # 2. 忽略空消息
+            if not event.get_message_outline().strip():
+                logger.debug(f"AngelHeart[{chat_id}]: 消息内容为空, 已忽略")
+                return False
+
+            # 3. (可选) 检查白名单
+            if self.config_manager.whitelist_enabled:
+                plain_chat_id = self._get_plain_chat_id(chat_id)
+                if plain_chat_id not in self._whitelist_cache:
+                    logger.debug(f"AngelHeart[{chat_id}]: 会话未在白名单中, 已忽略")
+                    return False
+
+            logger.debug(f"AngelHeart[{chat_id}]: 消息通过所有前置检查, 准备处理...")
+            return True
+            
+        except Exception as e:
+            logger.error(f"AngelHeart[{chat_id}]: _should_process方法执行异常: {e}", exc_info=True)
+            return False  # 异常时保守处理，不处理消息
 
     @filter.on_decorating_result(priority=-200)
     async def strip_markdown_on_decorating_result(self, event: AstrMessageEvent, *args, **kwargs):
