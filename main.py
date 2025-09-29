@@ -211,7 +211,7 @@ class AngelHeartPlugin(Star):
     @filter.on_decorating_result(priority=-200)
     async def strip_markdown_on_decorating_result(self, event: AstrMessageEvent, *args, **kwargs):
         """
-        在消息发送前，对消息链中的文本内容进行Markdown清洗。
+        在消息发送前，对消息链中的文本内容进行Markdown清洗，并检测错误信息。
         """
         chat_id = event.unified_msg_origin
         logger.debug(f"AngelHeart[{chat_id}]: 开始清洗消息链中的Markdown格式...")
@@ -219,7 +219,23 @@ class AngelHeartPlugin(Star):
         # 从 event 对象中获取消息链
         message_chain = event.get_result().chain
 
-        # 遍历消息链中的每个元素
+        # 1. 检测 AstrBot 错误信息，如果是错误信息则停止发送
+        full_text_content = ""
+        for component in message_chain:
+            if isinstance(component, Plain):
+                if component.text:
+                    full_text_content += component.text
+            elif hasattr(component, 'data') and isinstance(component.data, dict):
+                text_content = component.data.get('text', '')
+                if text_content:
+                    full_text_content += text_content
+
+        if self._is_astrbot_error_message(full_text_content):
+            logger.info(f"AngelHeart[{chat_id}]: 检测到 AstrBot 错误信息，停止发送。")
+            event.stop_event()
+            return
+
+        # 2. 遍历消息链中的每个元素，进行 Markdown 清洗
         for component in message_chain:
             # 检查是否为 Plain 类型的消息组件
             if isinstance(component, Plain):
@@ -293,6 +309,27 @@ class AngelHeartPlugin(Star):
             logger.warning(f"AngelHeart[{event.unified_msg_origin}]: 提取发送消息内容时出错: {e}")
 
         return ""
+
+    def _is_astrbot_error_message(self, text_content: str) -> bool:
+        """
+        检测文本内容是否为 AstrBot 的错误信息。
+
+        Args:
+            text_content (str): 要检测的文本内容。
+
+        Returns:
+            bool: 如果是错误信息则返回 True，否则返回 False。
+        """
+        if not text_content:
+            return False
+
+        # 检测 AstrBot 错误信息的特征
+        text_lower = text_content.lower()
+        return (
+            "astrbot 请求失败" in text_lower and
+            "错误类型:" in text_lower and
+            "错误信息:" in text_lower
+        )
 
 
     async def on_destroy(self):
