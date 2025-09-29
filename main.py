@@ -247,12 +247,7 @@ class AngelHeartPlugin(Star):
 
         # 2. 如果决策有效，使用其边界时间戳来推进 Ledger 状态
         if decision and hasattr(decision, 'boundary_timestamp') and decision.boundary_timestamp > 0:
-            # 在推进状态前，先记录发送前的状态
-            logger.info(f"AngelHeart[{chat_id}]: === 发送前对话状态 ===")
-            self._log_conversation_ledger_state(chat_id)
-
             self.conversation_ledger.mark_as_processed(chat_id, decision.boundary_timestamp)
-            logger.debug(f"AngelHeart[{chat_id}]: 上下文状态已推进至 {decision.boundary_timestamp}")
 
             # 3. 将AI的回复加入到对话总账中
             # 获取发送的消息内容
@@ -267,10 +262,6 @@ class AngelHeartPlugin(Star):
                 }
                 self.conversation_ledger.add_message(chat_id, ai_message)
                 logger.debug(f"AngelHeart[{chat_id}]: AI回复已加入对话总账")
-
-            # 4. 生产环境调试：输出发送后的完整聊天记录
-            logger.info(f"AngelHeart[{chat_id}]: === 发送后对话状态 ===")
-            self._log_conversation_ledger_state(chat_id)
 
         # 5. 让秘书清理决策缓存
         await self.secretary.clear_decision(chat_id)
@@ -302,44 +293,6 @@ class AngelHeartPlugin(Star):
             logger.warning(f"AngelHeart[{event.unified_msg_origin}]: 提取发送消息内容时出错: {e}")
 
         return ""
-
-    def _log_conversation_ledger_state(self, chat_id: str):
-        """生产环境调试：以轻量模型能看到的格式输出指定会话的完整聊天记录状态"""
-        try:
-            # 获取当前会话的快照
-            historical_context, unprocessed_dialogue, boundary_ts = self.conversation_ledger.get_context_snapshot(chat_id)
-
-            # 计算统计信息
-            total_messages = len(historical_context) + len(unprocessed_dialogue)
-
-            logger.info(f"AngelHeart[{chat_id}]: === 对话总账状态快照 ===")
-            logger.info(f"AngelHeart[{chat_id}]: 总消息数: {total_messages} | 历史消息: {len(historical_context)} | 未处理消息: {len(unprocessed_dialogue)}")
-            logger.info(f"AngelHeart[{chat_id}]: 快照边界时间戳: {boundary_ts}")
-
-            # 输出历史消息
-            if historical_context:
-                logger.info(f"AngelHeart[{chat_id}]: --- 历史消息 (已处理，仅作为策略参考，不需要回应) ---")
-                for msg in historical_context[-10:]:  # 只显示最近10条
-                    formatted = format_message_for_llm(msg, "AngelHeart")  # 使用默认人格名
-                    logger.info(f"AngelHeart[{chat_id}]: {formatted}")
-                if len(historical_context) > 10:
-                    logger.info(f"AngelHeart[{chat_id}]: ... 还有 {len(historical_context)-10} 条较早的历史消息")
-            else:
-                logger.info(f"AngelHeart[{chat_id}]: --- 无历史消息 ---")
-
-            # 输出未处理消息
-            if unprocessed_dialogue:
-                logger.info(f"AngelHeart[{chat_id}]: --- 未处理消息 (你需要分辨出里面的人是不是在对你说话) ---")
-                for msg in unprocessed_dialogue:
-                    formatted = format_message_for_llm(msg, "AngelHeart")
-                    logger.info(f"AngelHeart[{chat_id}]: {formatted}")
-            else:
-                logger.info(f"AngelHeart[{chat_id}]: --- 无未处理消息 ---")
-
-            logger.info(f"AngelHeart[{chat_id}]: === 快照结束 ===")
-
-        except Exception as e:
-            logger.error(f"AngelHeart[{chat_id}]: 输出对话总账状态时发生错误: {e}", exc_info=True)
 
 
     async def on_destroy(self):
