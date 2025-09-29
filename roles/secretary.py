@@ -150,7 +150,7 @@ class Secretary:
                     logger.info(f"AngelHeart[{chat_id}]: 调试模式已启用，阻止了实际唤醒。")
 
             elif decision:
-                logger.info(f"AngelHeart[{chat_id}]: 决策为'不参与'。")
+                logger.info(f"AngelHeart[{chat_id}]: 决策为'不参与'。原因: {decision.reply_strategy}")
                 # 不回复 -> 清空决策缓存，以实现“不回复就清空”
                 await self.clear_decision(chat_id)
 

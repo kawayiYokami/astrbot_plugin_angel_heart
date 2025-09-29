@@ -254,13 +254,21 @@ class LLMAnalyzer:
     def _parse_and_validate_decision(self, response_text: str, persona_name: str, alias: str) -> SecretaryDecision:
         """解析并验证来自AI的响应文本，构建SecretaryDecision对象"""
 
-        # 使用正则表达式查找所有可能的JSON对象，并取最后一个
-        json_matches = re.findall(r"\{.*?\}", response_text, re.DOTALL)
-        if json_matches:
-            # 取最后一个匹配到的JSON对象
-            json_text = json_matches[-1].strip()
+        json_text = ""
+        # 1. 优先尝试从Markdown代码块 (```json ... ```) 中提取JSON
+        code_block_match = re.search(r"```(json)?\s*(\{.*?\})\s*```", response_text, re.DOTALL)
+
+        if code_block_match:
+            # 如果匹配成功，提取第二个捕获组的内容
+            json_text = code_block_match.group(2).strip()
         else:
-            # 如果没有找到任何JSON对象，则记录错误并返回默认决策
+            # 2. 如果没有找到代码块，则回退到原始方法，查找最后一个独立的JSON对象
+            json_matches = re.findall(r"\{.*?\}", response_text, re.DOTALL)
+            if json_matches:
+                json_text = json_matches[-1].strip()
+
+        # 如果 json_text 仍然为空，则执行原有的错误处理逻辑
+        if not json_text:
             logger.warning(
                 f"AngelHeart分析器: AI响应中未找到有效的JSON对象。原始响应: {response_text[:200]}..."
             )
@@ -346,7 +354,6 @@ class LLMAnalyzer:
         # Phase 3: 增加空数据保护机制 - 开始
         # 防止空数据导致崩溃的保护机制
         if not conversations:
-            logger.warning("_format_conversation_history 收到空数据流")
             return ""
         # Phase 3: 增加空数据保护机制 - 结束
 
