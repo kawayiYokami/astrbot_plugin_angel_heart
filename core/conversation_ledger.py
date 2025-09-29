@@ -12,11 +12,13 @@ class ConversationLedger:
         # 每个 chat_id 对应一个独立的账本
         self._ledgers: Dict[str, Dict] = {}
         self.cache_expiry = cache_expiry
-        
+
         # 每个会话的最大消息数量
         self.PER_CHAT_LIMIT = 1000
         # 总消息数量上限
         self.TOTAL_MESSAGE_LIMIT = 100000
+        # 最小保留消息数量（即使过期也保留）
+        self.MIN_RETAIN_COUNT = 7
 
     def _get_or_create_ledger(self, chat_id: str) -> Dict:
         """获取或创建指定会话的账本。"""
@@ -43,12 +45,12 @@ class ConversationLedger:
             ledger["messages"].append(message)
             # 确保消息列表始终按时间戳排序
             ledger["messages"].sort(key=lambda m: m.get("timestamp", 0))
-            
+
             # 限制每个会话的消息数量
             if len(ledger["messages"]) > self.PER_CHAT_LIMIT:
                 # 保留最新的PER_CHAT_LIMIT条消息
                 ledger["messages"] = ledger["messages"][-self.PER_CHAT_LIMIT:]
-        
+
         # 3. 检查并限制总消息数量
         self._enforce_total_message_limit()
 
@@ -87,30 +89,62 @@ class ConversationLedger:
 
     def _prune_expired_messages(self, chat_id: str):
         """清理指定会话的过期消息。
-        清理所有已过期的消息，不管是否已处理。
+        确保至少保留最新的 MIN_RETAIN_COUNT 条消息，即使过期。
         """
         ledger = self._get_or_create_ledger(chat_id)
         with self._lock:
             current_time = time.time()
             expiry_threshold = current_time - self.cache_expiry
+            all_messages = ledger["messages"]
 
-            # 只保留未过期的消息（不管是否已处理）
-            ledger["messages"] = [
-                m for m in ledger["messages"]
-                if m["timestamp"] > expiry_threshold
-            ]
+            # 如果总消息数不超过最小保留数量，跳过清理
+            if len(all_messages) <= self.MIN_RETAIN_COUNT:
+                return
+
+            # 按时间戳降序排序（最新的在前）
+            sorted_messages = sorted(all_messages, key=lambda m: m["timestamp"], reverse=True)
+
+            # 强制保留最新的 MIN_RETAIN_COUNT 条消息
+            retained_latest = sorted_messages[:self.MIN_RETAIN_COUNT]
+
+            # 对剩余消息进行正常的过期清理
+            remaining_messages = sorted_messages[self.MIN_RETAIN_COUNT:]
+            retained_remaining = [m for m in remaining_messages if m["timestamp"] > expiry_threshold]
+
+            # 合并保留的消息并按时间戳重新排序
+            new_messages = retained_latest + retained_remaining
+            new_messages.sort(key=lambda m: m["timestamp"])
+
+            ledger["messages"] = new_messages
 
     def _prune_all_expired_messages(self):
-        """清理所有会话的过期消息。"""
+        """清理所有会话的过期消息，确保每个会话至少保留最新的 MIN_RETAIN_COUNT 条消息。"""
         with self._lock:
             current_time = time.time()
             expiry_threshold = current_time - self.cache_expiry
-            
-            for ledger_data in self._ledgers.values():
-                ledger_data["messages"] = [
-                    m for m in ledger_data["messages"]
-                    if m["timestamp"] > expiry_threshold
-                ]
+
+            for chat_id, ledger_data in self._ledgers.items():
+                all_messages = ledger_data["messages"]
+
+                # 如果总消息数不超过最小保留数量，跳过清理
+                if len(all_messages) <= self.MIN_RETAIN_COUNT:
+                    continue
+
+                # 按时间戳降序排序（最新的在前）
+                sorted_messages = sorted(all_messages, key=lambda m: m["timestamp"], reverse=True)
+
+                # 强制保留最新的 MIN_RETAIN_COUNT 条消息
+                retained_latest = sorted_messages[:self.MIN_RETAIN_COUNT]
+
+                # 对剩余消息进行正常的过期清理
+                remaining_messages = sorted_messages[self.MIN_RETAIN_COUNT:]
+                retained_remaining = [m for m in remaining_messages if m["timestamp"] > expiry_threshold]
+
+                # 合并保留的消息并按时间戳重新排序
+                new_messages = retained_latest + retained_remaining
+                new_messages.sort(key=lambda m: m["timestamp"])
+
+                ledger_data["messages"] = new_messages
 
     def _enforce_total_message_limit(self):
         """强制执行总消息数量限制。
@@ -120,20 +154,20 @@ class ConversationLedger:
             # 计算当前总消息数
             total_messages = 0
             all_messages_with_info = []
-            
+
             for chat_id, ledger_data in self._ledgers.items():
                 for msg in ledger_data["messages"]:
                     all_messages_with_info.append((msg["timestamp"], chat_id, msg))
                     total_messages += 1
-            
+
             # 如果超过总限制，删除最旧的消息
             if total_messages > self.TOTAL_MESSAGE_LIMIT:
                 # 按时间戳排序（升序，最旧的在前）
                 all_messages_with_info.sort(key=lambda x: x[0])
-                
+
                 # 计算需要删除多少条消息
                 excess_count = total_messages - self.TOTAL_MESSAGE_LIMIT
-                
+
                 # 创建一个字典来跟踪每个会话需要删除的消息
                 messages_to_remove = {}
                 for i in range(excess_count):
@@ -141,7 +175,7 @@ class ConversationLedger:
                     if chat_id not in messages_to_remove:
                         messages_to_remove[chat_id] = []
                     messages_to_remove[chat_id].append(msg)
-                
+
                 # 从每个会话中删除对应的消息
                 for chat_id, msgs_to_remove in messages_to_remove.items():
                     if chat_id in self._ledgers:
@@ -152,7 +186,7 @@ class ConversationLedger:
                         # 由于消息是字典，我们基于时间戳和内容来识别
                         new_messages = []
                         msgs_to_remove_copy = msgs_to_remove.copy()
-                        
+
                         for msg in original_messages:
                             # 检查是否是要删除的消息
                             msg_to_remove_idx = -1
@@ -163,12 +197,12 @@ class ConversationLedger:
                                     msg.get("role") == msg_to_remove.get("role")):
                                     msg_to_remove_idx = i
                                     break
-                            
+
                             if msg_to_remove_idx != -1:
                                 # 这是要删除的消息，从待删除列表中移除
                                 msgs_to_remove_copy.pop(msg_to_remove_idx)
                             else:
                                 # 保留这条消息
                                 new_messages.append(msg)
-                        
+
                         ledger_data["messages"] = new_messages
