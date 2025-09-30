@@ -9,7 +9,9 @@ import copy
 
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
+from astrbot.core.message.components import Image, Plain  # 导入 Image 和 Plain 组件
 from .secretary import Secretary  # 用于类型提示
+from typing import List, Dict, Any  # 导入类型提示
 
 # 导入公共工具函数和 ConversationLedger
 from ..core.utils import convert_content_to_string, format_message_for_llm
@@ -40,32 +42,60 @@ class FrontDesk:
         # 新增状态：记录每个会话的闭嘴截止时间戳
         self.silenced_until: Dict[str, float] = {}
 
-    def cache_message(self, chat_id: str, event):
+    def cache_message(self, chat_id: str, event: AstrMessageEvent):
         """
-        前台职责：缓存新消息
+        前台职责：将 MessageChain 转换为标准多模态 content 列表并缓存。
 
         Args:
             chat_id (str): 会话ID。
-            event: 消息事件对象。
+            event (AstrMessageEvent): 消息事件对象。
         """
-        # 直接将消息添加到 ConversationLedger
-        # 不再需要手动清理过期消息，因为 ConversationLedger.add_message 会自动处理
+        # 1. 获取原始 MessageChain
+        message_chain = event.get_messages()
+        logger.debug(f"AngelHeart[{chat_id}]: 缓存消息，原始 MessageChain: {[repr(comp) for comp in message_chain]}")
+
+        # 2. 转换为标准多模态 content 列表
+        content_list = []
+        for component in message_chain:
+            if isinstance(component, Plain):
+                content_list.append({
+                    "type": "text",
+                    "text": component.text
+                })
+            elif isinstance(component, Image):
+                content_list.append({
+                    "type": "image_url",
+                    "image_url": {"url": component.url}
+                })
+            else:
+                # 处理其他类型的组件（At, Face 等）
+                try:
+                    fallback_text = str(component)
+                    if fallback_text:
+                        content_list.append({
+                            "type": "text",
+                            "text": fallback_text
+                        })
+                    logger.warning(f"AngelHeart[{chat_id}]: 遇到未支持的组件类型 {type(component).__name__}，已转换为文本: '{fallback_text}'")
+                except Exception as e:
+                    logger.error(f"AngelHeart[{chat_id}]: 转换未知组件 {type(component).__name__} 时出错: {e}")
+                    content_list.append({
+                        "type": "text",
+                        "text": f"[{type(component).__name__}]"
+                    })
+
+        # 3. 构建完整的消息字典
         new_message = {
             "role": "user",
-            "content": event.get_message_outline(),
+            "content": content_list,  # 标准多模态列表
             "sender_id": event.get_sender_id(),
             "sender_name": event.get_sender_name(),
-            "timestamp": event.get_timestamp() if hasattr(event, 'get_timestamp') and event.get_timestamp() else time.time(), # 使用事件自带的时间戳，如果不可用则使用当前时间
+            "timestamp": event.get_timestamp() if hasattr(event, 'get_timestamp') and event.get_timestamp() else time.time(),
         }
+
+        # 4. 将消息添加到 Ledger
         self.conversation_ledger.add_message(chat_id, new_message)
-        logger.debug(
-            f"AngelHeart[{chat_id}]: 消息已添加到 Ledger。"
-        )
-        # 增强日志：打印最新缓存的消息内容（截取前100个字符）
-        latest_content = new_message.get("content", "")[:100]
-        logger.debug(
-            f"AngelHeart[{chat_id}]: 最新添加消息内容: {latest_content}"
-        )
+        logger.info(f"AngelHeart[{chat_id}]: 标准多模态消息已缓存，包含 {len(content_list)} 个组件。")
 
 
 
@@ -140,49 +170,79 @@ class FrontDesk:
 
     async def rewrite_prompt_for_llm(self, chat_id: str, req):
         """
-        为 LLM 重写 ProviderRequest 的 prompt，将对话上下文整合为单一的格式化字符串。
-
-        Args:
-            chat_id (str): 会话ID。
-            req: ProviderRequest 对象。
+        重构请求体：
+        1. 直接使用缓存的标准多模态 content 列表，填充 req.contexts。
+        2. 将插件指令放入 req.prompt。
+        3. 清空 req.image_urls。
         """
-        # 1. 获取对话快照
+        # 1. 从 Ledger 获取历史
         historical_context, unprocessed_dialogue, _ = self.conversation_ledger.get_context_snapshot(chat_id)
+        full_history = historical_context + unprocessed_dialogue
 
-        # 2. 获取决策信息（用于确定人格名称）
+        # 2. 获取决策
         decision = self.secretary.get_decision(chat_id)
         persona_name = decision.persona_name if decision else 'AngelHeart'
 
-        # 3. 构建新的 prompt 列表
-        new_prompt_parts = [f"你正在一个群聊中聊天，你是助理。你的名字是 {persona_name}。"]
+        # 3. 构建新的 contexts（注入元数据后使用缓存的 content）
+        new_contexts = []
+        for msg in full_history:
+            role = msg.get("role", "user")
+            content = msg.get("content")
 
-        # 添加历史记录
-        if historical_context:
-            new_prompt_parts.append("\n--- 对话历史记录 (已处理) ---")
-            for msg in historical_context:
-                formatted_msg = format_message_for_llm(msg, persona_name)
-                new_prompt_parts.append(formatted_msg)
+            # 处理消息内容
+            if isinstance(content, list):
+                message_content = content.copy()  # 使用副本避免修改原始数据
+            elif isinstance(content, str):
+                # 兼容旧的纯文本消息
+                message_content = [{"type": "text", "text": content}]
+            else:
+                # 其他情况，转换为文本
+                message_content = [{"type": "text", "text": str(content)}]
 
-        # 添加未回应的对话
-        if unprocessed_dialogue:
-            new_prompt_parts.append("\n--- 未回应的对话 ---")
-            for msg in unprocessed_dialogue:
-                formatted_msg = format_message_for_llm(msg, persona_name)
-                new_prompt_parts.append(formatted_msg)
+            # 为用户消息注入元数据头信息
+            if role == "user":
+                # 生成元数据头
+                sender_name = msg.get("sender_name", "成员")
+                sender_id = msg.get("sender_id", "Unknown")
+                timestamp = msg.get("timestamp")
+                relative_time_str = format_relative_time(timestamp) if timestamp else ""
 
-        # 合并决策上下文（回复策略）到 prompt
-        if hasattr(req, 'angelheart_decision_context') and req.angelheart_decision_context:
-            new_prompt_parts.append(f"\n{req.angelheart_decision_context}")
+                header = f"[群友: {sender_name} (ID: {sender_id})]{relative_time_str}\n[内容: 文本]\n"
 
-        # 添加最终指令
-        new_prompt_parts.append("\n请根据以上对话内容，结合你的回答策略，做出回应。")
+                # 寻找第一个文本组件并注入头信息
+                found_text = False
+                for item in message_content:
+                    if item.get("type") == "text":
+                        original_text = item.get("text", "")
+                        item["text"] = header + original_text
+                        found_text = True
+                        break
 
-        # 4. 更新 ProviderRequest 对象
-        req.prompt = "\n".join(new_prompt_parts)
-        req.contexts = []  # 清空 contexts
-        # req.system_prompt 保持不变，不进行任何操作
+                # 如果没有文本组件（例如，只有一张图片），则手动添加一个包含头的文本组件
+                if not found_text:
+                    message_content.insert(0, {"type": "text", "text": header.strip()})
 
-        logger.debug(f"AngelHeart[{chat_id}]: LLM Prompt 已重写，决策上下文已合并到 prompt。")
+            new_contexts.append({
+                "role": "assistant" if role == "assistant" else "user",
+                "content": message_content
+            })
+
+        # 4. 完全覆盖原生 contexts
+        req.contexts = new_contexts
+
+        # 5. 构建纯指令 prompt
+        if decision:
+            req.prompt = f"任务指令：请根据以上对话历史，执行以下策略：'{decision.reply_strategy}'。"
+        else:
+            req.prompt = "任务指令：请根据以上对话进行回复。"
+
+        # 6. (关键) 确保 image_urls 为空（因为图片已嵌入 contexts 中）
+        req.image_urls = []
+
+        # 7. (可选) 注入系统提示词
+        req.system_prompt = f"你正在一个群聊中扮演 '{persona_name}' 的角色。"
+
+        logger.debug(f"AngelHeart[{chat_id}]: 基于标准多模态内容的请求体已重构，包含 {len(new_contexts)} 条消息。")
 
     @config_manager.setter
     def config_manager(self, value):
