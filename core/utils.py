@@ -48,35 +48,26 @@ def get_latest_message_time(messages: list[dict]) -> float:
 
 def convert_content_to_string(content) -> str:
     """
-    将消息内容（可能是字符串或组件列表）转换为用于去重的字符串表示。
+    将消息内容转换为用于分析器的纯文本字符串。
+    支持标准多模态 content 列表，只提取文本部分。
     """
     if isinstance(content, str):
         # 如果 content 是字符串，直接返回其 strip 后的结果
         return content.strip()
+
     elif isinstance(content, list):
-        # 如果 content 是组件列表，将其转换为概要字符串
-        # 例如: [{"type": "text", "data": {"text": "Hello"}}, {"type": "image", "data": {}}]
-        # 转换为: "Hello [图片]"
-        outline_parts = []
-        for component in content:
-            if isinstance(component, dict):
-                comp_type = component.get("type", "")
-                comp_data = component.get("data", {})
-                if comp_type == "text":
-                    text_content = comp_data.get("text", "")
-                    if text_content:
-                        outline_parts.append(text_content)
-                elif comp_type == "image":
-                    outline_parts.append("[图片]")
-                elif comp_type == "at":
-                    qq = comp_data.get("qq", "")
-                    outline_parts.append(f"[At:{qq}]")
-                else:
-                    # 对于其他类型，添加一个通用的占位符
-                    outline_parts.append(f"[{comp_type}]")
-        return " ".join(outline_parts).strip()
+        # 处理标准多模态 content 列表：[{"type": "text", "text": "..."}, {"type": "image_url", ...}]
+        text_parts = []
+        for item in content:
+            if isinstance(item, dict) and item.get("type") == "text":
+                text_content = item.get("text", "")
+                if text_content:
+                    text_parts.append(text_content)
+        # 拼接所有文本部分
+        return "".join(text_parts).strip()
+
     else:
-        # 如果 content 是其他类型（理论上不应该发生），尝试转换为字符串
+        # 如果 content 是其他类型，尝试转换为字符串
         return str(content).strip()
 
 

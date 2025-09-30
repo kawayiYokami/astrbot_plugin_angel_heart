@@ -13,7 +13,7 @@ class TestConversationLedger(unittest.TestCase):
 
         # 使用模拟时间戳，从当前时间开始
         base_time = time.time()
-        
+
         # 添加消息 1, 2
         ledger.add_message(chat_id, {"content": "1", "timestamp": base_time, "role": "user"})
         ledger.add_message(chat_id, {"content": "2", "timestamp": base_time + 1, "role": "user"})
@@ -79,35 +79,46 @@ class TestConversationLedger(unittest.TestCase):
 
         # 记录初始时间
         initial_time = time.time()
-        
-        # 添加一个将来会被认为过期的消息（时间戳远早于当前）
-        old_timestamp = initial_time - 3  # 3秒前的消息，将超过1秒的过期时间
-        ledger.add_message(chat_id, {"content": "old", "timestamp": old_timestamp, "role": "user"})
 
-        # 添加一个新消息
-        new_timestamp = initial_time
-        ledger.add_message(chat_id, {"content": "new", "timestamp": new_timestamp, "role": "user"})
+        # 添加超过 MIN_RETAIN_COUNT (7) 条消息，确保清理逻辑会被触发
+        # 先添加7条最新的消息（这些会被强制保留，即使过期）
+        for i in range(7):
+            timestamp = initial_time + i * 0.1  # 间隔0.1秒
+            ledger.add_message(chat_id, {"content": f"keep_{i}", "timestamp": timestamp, "role": "user"})
 
-        # 等待足够时间确保旧消息过期，但新消息不过期
-        time.sleep(2.1)  # 等待2.1秒，这样old消息(3秒前)已过期(3 > 1+2.1-2.1=1)，new消息(0秒前)也已过期(0 -> 在initial_time时添加，到sleep后已经超过1秒)
+        # 再添加一些过期消息（时间戳远早于当前）
+        for i in range(3):
+            old_timestamp = initial_time - 3 - i  # 3秒前及更早的消息，将超过1秒的过期时间
+            ledger.add_message(chat_id, {"content": f"old_{i}", "timestamp": old_timestamp, "role": "user"})
 
-        # 重新计算时间，添加一个当前时间的新消息，这会触发清理
+        # 等待足够时间确保旧消息过期
+        time.sleep(2.1)
+
+        # 添加一个当前时间的新消息，这会触发清理
         current_time = time.time()
-        ledger.add_message(chat_id, {"content": "newer", "timestamp": current_time, "role": "user"})
+        ledger.add_message(chat_id, {"content": "newest", "timestamp": current_time, "role": "user"})
 
-        # 检查是否只剩下未过期的消息
-        # old消息: timestamp=initial_time-3, expiry_threshold=current_time-1, 所以 (initial_time-3) > (current_time-1) 应该是 False，且 <= last_ts(0) 也是 False -> 被删除
-        # new消息: timestamp=initial_time, expiry_threshold=current_time-1, (initial_time) > (current_time-1) -> 取决于时间差
-        # 如果 current_time > initial_time + 1，则 new 消息也会被删除
-        # newer消息: timestamp=current_time, expiry_threshold=current_time-1, (current_time) > (current_time-1) -> True -> 保留
+        # 检查清理结果
+        # 应该保留：7条最新的keep_*消息 + newest消息 = 8条消息
+        # 应该删除：3条old_*消息
         history, unprocessed, _ = ledger.get_context_snapshot(chat_id)
         all_messages = history + unprocessed
-        # 现在应该只剩下 "newer" 消息，因为 old 和 new 都过期了
-        self.assertEqual(len(all_messages), 1)
+
+        # 验证总消息数量：7(keep) + 1(newest) = 8
+        self.assertEqual(len(all_messages), 8)
+
         content_list = [m["content"] for m in all_messages]
-        self.assertIn("newer", content_list)
-        self.assertNotIn("old", content_list)
-        self.assertNotIn("new", content_list)
+
+        # 验证保留了最新的keep消息
+        for i in range(7):
+            self.assertIn(f"keep_{i}", content_list)
+
+        # 验证保留了最新的newest消息
+        self.assertIn("newest", content_list)
+
+        # 验证删除了过期的old消息
+        for i in range(3):
+            self.assertNotIn(f"old_{i}", content_list)
 
 
     def test_mark_as_processed_idempotency(self):
@@ -116,7 +127,7 @@ class TestConversationLedger(unittest.TestCase):
         chat_id = "group_idempotency"
 
         base_time = time.time()
-        
+
         # 添加消息
         ledger.add_message(chat_id, {"content": "1", "timestamp": base_time, "role": "user"})
         ledger.add_message(chat_id, {"content": "2", "timestamp": base_time + 1, "role": "user"})
