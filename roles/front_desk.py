@@ -255,7 +255,7 @@ class FrontDesk:
 
         # 5. 构建纯指令 prompt
         if decision:
-            req.prompt = f"任务指令：请根据以上对话历史，执行以下策略：'{decision.reply_strategy}'。"
+            req.prompt = f"任务指令：请根据以上对话历史，围绕核心话题 '{decision.topic}'，向 '{decision.reply_target}' 执行以下策略：'{decision.reply_strategy}'。"
         else:
             req.prompt = "任务指令：请根据以上对话进行回复。"
 
@@ -265,7 +265,7 @@ class FrontDesk:
         # 7. (可选) 注入系统提示词
         # 获取别名
         alias = self.config_manager.alias
-        
+
         # 构建新的系统提示词（追加而非覆盖）
         original_system_prompt = getattr(req, 'system_prompt', '')
         new_system_prompt = f"{original_system_prompt}\n\n你正在一个群聊中扮演 '{persona_name}' 的角色，你的别名是 '{alias}'。"
