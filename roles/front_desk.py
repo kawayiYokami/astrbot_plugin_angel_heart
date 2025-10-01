@@ -189,19 +189,19 @@ class FrontDesk:
             role = msg.get("role", "user")
             content = msg.get("content")
 
-            # 处理消息内容
-            if isinstance(content, list):
-                message_content = content.copy()  # 使用副本避免修改原始数据
-            elif isinstance(content, str):
-                # 兼容旧的纯文本消息
-                message_content = [{"type": "text", "text": content}]
-            else:
-                # 其他情况，转换为文本
-                message_content = [{"type": "text", "text": str(content)}]
-
-            # 为用户消息注入元数据头信息
+            # 根据角色类型分别处理消息内容
             if role == "user":
-                # 生成元数据头
+                # 用户角色：保持多模态 list 格式
+                if isinstance(content, list):
+                    message_content = content.copy()  # 使用副本避免修改原始数据
+                elif isinstance(content, str):
+                    # 兼容旧的纯文本消息
+                    message_content = [{"type": "text", "text": content}]
+                else:
+                    # 其他情况，转换为文本
+                    message_content = [{"type": "text", "text": str(content)}]
+
+                # 为用户消息注入元数据头信息
                 sender_name = msg.get("sender_name", "成员")
                 sender_id = msg.get("sender_id", "Unknown")
                 timestamp = msg.get("timestamp")
@@ -222,6 +222,29 @@ class FrontDesk:
                 if not found_text:
                     message_content.insert(0, {"type": "text", "text": header.strip()})
 
+            elif role == "assistant":
+                # 助理角色：确保 content 是 string 格式
+                if isinstance(content, list):
+                    # 从 list 中提取所有文本部分合并为 string
+                    text_parts = []
+                    for item in content:
+                        if isinstance(item, dict) and item.get("type") == "text":
+                            text_content = item.get("text", "")
+                            if text_content:
+                                text_parts.append(text_content)
+                    message_content = "".join(text_parts).strip()
+                else:
+                    message_content = str(content)
+
+            else:
+                # 其他角色：保持原有逻辑
+                if isinstance(content, list):
+                    message_content = content.copy()
+                elif isinstance(content, str):
+                    message_content = [{"type": "text", "text": content}]
+                else:
+                    message_content = [{"type": "text", "text": str(content)}]
+
             new_contexts.append({
                 "role": "assistant" if role == "assistant" else "user",
                 "content": message_content
@@ -240,7 +263,13 @@ class FrontDesk:
         req.image_urls = []
 
         # 7. (可选) 注入系统提示词
-        req.system_prompt = f"你正在一个群聊中扮演 '{persona_name}' 的角色。"
+        # 获取别名
+        alias = self.config_manager.alias
+        
+        # 构建新的系统提示词（追加而非覆盖）
+        original_system_prompt = getattr(req, 'system_prompt', '')
+        new_system_prompt = f"{original_system_prompt}\n\n你正在一个群聊中扮演 '{persona_name}' 的角色，你的别名是 '{alias}'。"
+        req.system_prompt = new_system_prompt
 
         logger.debug(f"AngelHeart[{chat_id}]: 基于标准多模态内容的请求体已重构，包含 {len(new_contexts)} 条消息。")
 
