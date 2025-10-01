@@ -10,6 +10,7 @@ AngelHeart插件 - 天使心智能群聊/私聊交互插件
 
 import asyncio
 import time
+import json
 from typing import Dict, List
 
 from astrbot.api.star import Star
@@ -68,6 +69,25 @@ class AngelHeartPlugin(Star):
     async def inject_oneshot_decision_on_llm_request(self, event: AstrMessageEvent, req: ProviderRequest):
         """在LLM请求时，一次性注入由秘书分析得出的决策上下文"""
         chat_id = event.unified_msg_origin
+
+        # 示例：读取 angelheart_context（供其他插件参考）
+        if hasattr(event, 'angelheart_context'):
+            try:
+                context = json.loads(event.angelheart_context)
+                # 检查上下文是否包含错误信息
+                if context.get('error'):
+                    logger.warning(f"AngelHeart[{chat_id}]: 上下文包含错误: {context['error']}")
+
+                # 安全地提取数据
+                chat_records = context.get('chat_records', [])
+                secretary_decision = context.get('secretary_decision', {})
+                needs_search = context.get('needs_search', False)
+
+                logger.debug(f"AngelHeart[{chat_id}]: 读取到上下文 - 记录数: {len(chat_records)}, 决策: {secretary_decision.get('reply_strategy', '未知')}, 需搜索: {needs_search}")
+            except json.JSONDecodeError as e:
+                logger.warning(f"AngelHeart[{chat_id}]: 解析 angelheart_context JSON 失败: {e}")
+            except Exception as e:
+                logger.warning(f"AngelHeart[{chat_id}]: 处理 angelheart_context 时发生意外错误: {e}")
 
         # 如果启用群聊上下文增强，则跳过此方法（使用新的 prompt 重写方式）
         if self.config_manager.group_chat_enhancement:
