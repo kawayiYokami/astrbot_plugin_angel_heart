@@ -43,6 +43,7 @@
   - **触发时机**: 在准备向大语言模型（LLM）发送请求之前
   - **用途**: 修改请求参数、添加系统提示词、记录日志等
   - **参数**: `event: AstrMessageEvent`, `request: ProviderRequest`
+  - **额外属性**: `event.angelheart_context` (AngelHeart插件注入的上下文，JSON字符串，包含聊天记录、秘书决策和搜索标志)
   - **定义位置**: [`star_handler.py:282`](astrbot/core/star/register/star_handler.py:282)
 
 - **`@filter.on_llm_response()`**

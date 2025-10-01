@@ -11,3 +11,6 @@ __pycache__/
 
 # Local config
 config.local.yaml
+
+# Claude Code Router
+.claude-code-router/

@@ -3,7 +3,24 @@ AngelHeart 插件 - 核心工具函数
 """
 
 import time
-from astrbot.api import logger
+import json
+from typing import List, Dict, TYPE_CHECKING, Union
+
+if TYPE_CHECKING:
+    from ..models.analysis_result import SecretaryDecision
+
+# 条件导入：当缺少astrbot依赖时使用Mock
+try:
+    from astrbot.api import logger
+except ImportError:
+    # 创建Mock logger用于测试
+    class MockLogger:
+        def debug(self, msg): pass
+        def info(self, msg): pass  
+        def warning(self, msg): pass
+        def error(self, msg): pass
+    logger = MockLogger()
+
 from markdown_it import MarkdownIt
 from mdit_plain.renderer import RendererPlain
 
@@ -209,3 +226,61 @@ def format_message_for_llm(msg: dict, persona_name: str) -> str:
         # 对于其他角色
         formatted_content = convert_content_to_string(content)
         return f"[{role}]\n[内容: 文本]\n{formatted_content}"
+
+
+def json_serialize_context(chat_records: List[Dict], decision: Union["SecretaryDecision", Dict], needs_search: bool = False) -> str:
+    """
+    将聊天记录、秘书决策和搜索标志序列化为 JSON 字符串，用于注入到 AstrMessageEvent。
+
+    Args:
+        chat_records (List[Dict]): 聊天记录列表，每条记录为消息 Dict。
+        decision (Union[SecretaryDecision, Dict]): 秘书决策对象或字典。
+        needs_search (bool): 是否需要搜索，默认 False。
+
+    Returns:
+        str: JSON 字符串，包含 angelheart_context 数据。
+    """
+    # 输入验证
+    if not isinstance(chat_records, list):
+        logger.warning("chat_records 必须是列表类型，使用空列表代替")
+        chat_records = []
+
+    # 确保所有聊天记录都是字典类型
+    validated_records = []
+    for record in chat_records:
+        if isinstance(record, dict):
+            validated_records.append(record)
+        else:
+            logger.warning(f"跳过非字典类型的聊天记录: {type(record)}")
+
+    try:
+        # 从决策对象中获取 needs_search 信息
+        if hasattr(decision, 'needs_search'):
+            needs_search = decision.needs_search
+        elif isinstance(decision, dict) and 'needs_search' in decision:
+            needs_search = decision['needs_search']
+        
+        # 使用 model_dump() 替代过时的 dict() 方法
+        if hasattr(decision, 'model_dump'):
+            decision_dict = decision.model_dump()
+        elif hasattr(decision, 'dict'):
+            decision_dict = decision.dict()
+        else:
+            decision_dict = decision
+        
+        context_data = {
+            "chat_records": validated_records,
+            "secretary_decision": decision_dict,
+            "needs_search": needs_search
+        }
+        return json.dumps(context_data, ensure_ascii=False, default=str)
+    except (TypeError, ValueError) as e:
+        logger.error(f"序列化上下文失败: {e}")
+        # 返回一个最小化的安全上下文
+        fallback_context = {
+            "chat_records": [],
+            "secretary_decision": {"should_reply": False, "error": "序列化失败"},
+            "needs_search": needs_search,
+            "error": "序列化失败"
+        }
+        return json.dumps(fallback_context, ensure_ascii=False)

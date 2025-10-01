@@ -14,7 +14,7 @@ from .secretary import Secretary  # 用于类型提示
 from typing import List, Dict, Any  # 导入类型提示
 
 # 导入公共工具函数和 ConversationLedger
-from ..core.utils import convert_content_to_string, format_message_for_llm
+from ..core.utils import convert_content_to_string, format_message_for_llm, format_relative_time
 from ..core.conversation_ledger import ConversationLedger
 
 

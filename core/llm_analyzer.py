@@ -301,6 +301,14 @@ class LLMAnalyzer:
             sr = str(should_reply_raw).strip().lower()
             should_reply = sr in ("true", "1", "yes", "y")
 
+        # 解析 needs_search，兼容 bool、数字、字符串等形式
+        needs_search_raw = raw.get("needs_search", False)
+        if isinstance(needs_search_raw, bool):
+            needs_search = needs_search_raw
+        else:
+            ns = str(needs_search_raw).strip().lower()
+            needs_search = ns in ("true", "1", "yes", "y")
+
         # 解析 reply_strategy、topic 和 reply_target，确保为字符串，若为空或 None 则使用安全默认并记录警告
         reply_strategy_raw = raw.get("reply_strategy")
         topic_raw = raw.get("topic")
@@ -332,7 +340,8 @@ class LLMAnalyzer:
 
         decision = SecretaryDecision(
             should_reply=should_reply, reply_strategy=reply_strategy, topic=topic,
-            reply_target=reply_target, persona_name=persona_name, alias=alias
+            reply_target=reply_target, persona_name=persona_name, alias=alias,
+            needs_search=needs_search
         )
 
         logger.debug(

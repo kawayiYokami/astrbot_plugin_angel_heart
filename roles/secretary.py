@@ -22,7 +22,7 @@ from astrbot.api.event import AstrMessageEvent
 from astrbot.api import logger
 
 # 导入公共工具函数
-from ..core.utils import get_latest_message_time, convert_content_to_string, prune_old_messages
+from ..core.utils import get_latest_message_time, convert_content_to_string, prune_old_messages, json_serialize_context
 
 from ..core.llm_analyzer import LLMAnalyzer
 from ..models.analysis_result import SecretaryDecision
@@ -142,6 +142,21 @@ class Secretary:
                 # 将快照边界时间戳存入决策
                 decision.boundary_timestamp = boundary_ts
                 await self._update_analysis_cache(chat_id, decision, reason="分析完成 (决策: 回复)")
+
+                # 注入上下文到 event
+                full_snapshot = historical_context + recent_dialogue
+                try:
+                    event.angelheart_context = json_serialize_context(full_snapshot, decision)
+                    logger.info(f"AngelHeart[{chat_id}]: 上下文已注入 event.angelheart_context (包含 {len(full_snapshot)} 条记录)")
+                except Exception as e:
+                    logger.error(f"AngelHeart[{chat_id}]: 注入上下文失败: {e}")
+                    # 设置一个最小化的错误上下文，确保其他插件能够处理
+                    event.angelheart_context = json.dumps({
+                        "chat_records": [],
+                        "secretary_decision": {"should_reply": False, "error": "注入失败"},
+                        "needs_search": False,
+                        "error": "注入失败"
+                    }, ensure_ascii=False)
 
                 # 唤醒主脑
                 if not self.config_manager.debug_mode:
