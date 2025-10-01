@@ -16,6 +16,7 @@ from typing import List, Dict, Any  # 导入类型提示
 # 导入公共工具函数和 ConversationLedger
 from ..core.utils import convert_content_to_string, format_message_for_llm, format_relative_time
 from ..core.conversation_ledger import ConversationLedger
+from ..core.image_processor import ImageProcessor
 
 
 class FrontDesk:
@@ -41,8 +42,11 @@ class FrontDesk:
 
         # 新增状态：记录每个会话的闭嘴截止时间戳
         self.silenced_until: Dict[str, float] = {}
+        
+        # 初始化图片处理器
+        self.image_processor = ImageProcessor()
 
-    def cache_message(self, chat_id: str, event: AstrMessageEvent):
+    async def cache_message(self, chat_id: str, event: AstrMessageEvent):
         """
         前台职责：将 MessageChain 转换为标准多模态 content 列表并缓存。
 
@@ -63,9 +67,11 @@ class FrontDesk:
                     "text": component.text
                 })
             elif isinstance(component, Image):
+                # 调用图片处理器异步转换URL为Data URL
+                data_url = await self.image_processor.convert_url_to_data_url(component.url)
                 content_list.append({
                     "type": "image_url",
-                    "image_url": {"url": component.url}
+                    "image_url": {"url": data_url}
                 })
             else:
                 # 处理其他类型的组件（At, Face 等）
@@ -133,7 +139,7 @@ class FrontDesk:
                     return
 
         # 4. 缓存消息
-        self.cache_message(chat_id, event)
+        await self.cache_message(chat_id, event)
 
         # 5. 唤醒词检测
         # 设计意图：此处的缓存模拟了 AI 的"看群时间"或"短期记忆"。
