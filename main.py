@@ -251,8 +251,11 @@ class AngelHeartPlugin(Star):
                     full_text_content += text_content
 
         if self._is_astrbot_error_message(full_text_content):
-            logger.info(f"AngelHeart[{chat_id}]: 检测到 AstrBot 错误信息，停止发送。")
-            event.stop_event()
+            logger.info(f"AngelHeart[{chat_id}]: 检测到 AstrBot 错误信息，清空消息链。")
+            # 清空消息链，这样 RespondStage 就会跳过发送
+            result = event.get_result()
+            if result:
+                result.chain = []  # 清空消息链
             return
 
         # 2. 遍历消息链中的每个元素，进行 Markdown 清洗
