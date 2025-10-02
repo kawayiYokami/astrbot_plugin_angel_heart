@@ -4,7 +4,7 @@ AngelHeart 插件 - 核心工具函数
 
 import time
 import json
-from typing import List, Dict, TYPE_CHECKING, Union
+from typing import List, Dict, TYPE_CHECKING, Union, Tuple
 
 if TYPE_CHECKING:
     from ..models.analysis_result import SecretaryDecision
@@ -16,7 +16,7 @@ except ImportError:
     # 创建Mock logger用于测试
     class MockLogger:
         def debug(self, msg): pass
-        def info(self, msg): pass  
+        def info(self, msg): pass
         def warning(self, msg): pass
         def error(self, msg): pass
     logger = MockLogger()
@@ -259,7 +259,7 @@ def json_serialize_context(chat_records: List[Dict], decision: Union["SecretaryD
             needs_search = decision.needs_search
         elif isinstance(decision, dict) and 'needs_search' in decision:
             needs_search = decision['needs_search']
-        
+
         # 使用 model_dump() 替代过时的 dict() 方法
         if hasattr(decision, 'model_dump'):
             decision_dict = decision.model_dump()
@@ -267,7 +267,7 @@ def json_serialize_context(chat_records: List[Dict], decision: Union["SecretaryD
             decision_dict = decision.dict()
         else:
             decision_dict = decision
-        
+
         context_data = {
             "chat_records": validated_records,
             "secretary_decision": decision_dict,
@@ -284,3 +284,61 @@ def json_serialize_context(chat_records: List[Dict], decision: Union["SecretaryD
             "error": "序列化失败"
         }
         return json.dumps(fallback_context, ensure_ascii=False)
+
+
+def partition_dialogue(
+    ledger: 'ConversationLedger',
+    chat_id: str
+) -> Tuple[List[Dict], List[Dict], float]:
+    """
+    根据指定会话的最后处理时间戳，将对话记录分割为历史和新对话。
+    这是从 ConversationLedger.get_context_snapshot 提取的核心逻辑。
+
+    Args:
+        ledger: ConversationLedger 的实例。
+        chat_id: 会话 ID。
+
+    Returns:
+        一个元组 (historical_context, recent_dialogue, boundary_timestamp)。
+    """
+    # _get_or_create_ledger 是 protected, 但在这里为了重构暂时使用
+    # 理想情况下 ledger 应该提供一个公共的获取消息的方法
+    ledger_data = ledger._get_or_create_ledger(chat_id)
+
+    with ledger._lock:
+        last_ts = ledger_data["last_processed_timestamp"]
+        all_messages = ledger_data["messages"]
+
+        historical_context = [m for m in all_messages if m.get("timestamp", 0) <= last_ts]
+        recent_dialogue = [m for m in all_messages if m.get("timestamp", 0) > last_ts]
+
+        boundary_ts = 0.0
+        if recent_dialogue:
+            boundary_ts = recent_dialogue[-1].get("timestamp", 0.0)
+
+        return historical_context, recent_dialogue, boundary_ts
+
+
+def format_final_prompt(recent_dialogue: List[Dict], decision: 'SecretaryDecision') -> str:
+    """
+    为大模型生成最终的、自包含的用户指令字符串 (Prompt)。
+    """
+    # 1. 将需要回应的新对话格式化为字符串
+    dialogue_str = "\n".join([
+        f"{msg.get('sender_name', '未知用户')}：{convert_content_to_string(msg.get('content', ''))}"
+        for msg in recent_dialogue
+    ])
+
+    # 2. 从决策中获取核心信息
+    topic = decision.topic
+    target = decision.reply_target
+    strategy = decision.reply_strategy
+
+    # 3. 组装最终的 Prompt 字符串
+    prompt = f"""需要你分析的最新对话（这是你唯一需要回应的对话，过去的对话已经过去了，仅供参考）
+---
+{dialogue_str}
+---
+任务指令：请根据以上对话历史，围绕核心话题 '{topic}'，向 '{target}' 执行以下策略：'{strategy}'。"""
+
+    return prompt

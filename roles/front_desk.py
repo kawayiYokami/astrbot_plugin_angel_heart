@@ -15,6 +15,7 @@ from typing import List, Dict, Any  # 导入类型提示
 
 # 导入公共工具函数和 ConversationLedger
 from ..core.utils import convert_content_to_string, format_message_for_llm, format_relative_time
+from ..core.utils import partition_dialogue, format_final_prompt
 from ..core.conversation_ledger import ConversationLedger
 from ..core.image_processor import ImageProcessor
 
@@ -42,7 +43,7 @@ class FrontDesk:
 
         # 新增状态：记录每个会话的闭嘴截止时间戳
         self.silenced_until: Dict[str, float] = {}
-        
+
         # 初始化图片处理器
         self.image_processor = ImageProcessor()
 
@@ -174,110 +175,47 @@ class FrontDesk:
         return self._config_manager
 
 
-    async def rewrite_prompt_for_llm(self, chat_id: str, req):
+    async def rewrite_prompt_for_llm(self, chat_id: str, req: Any):
         """
-        重构请求体：
-        1. 直接使用缓存的标准多模态 content 列表，填充 req.contexts。
-        2. 将插件指令放入 req.prompt。
-        3. 清空 req.image_urls。
+        重构请求体，以实现将指令作为最后一条用户消息注入的精确调用方式。
         """
-        # 1. 从 Ledger 获取历史
-        historical_context, unprocessed_dialogue, _ = self.conversation_ledger.get_context_snapshot(chat_id)
-        full_history = historical_context + unprocessed_dialogue
+        logger.debug(f"AngelHeart[{chat_id}]: 开始重构LLM请求体...")
 
-        # 2. 获取决策
+        # 1. 获取决策，如果不存在则无法继续
         decision = self.secretary.get_decision(chat_id)
-        persona_name = decision.persona_name if decision else 'AngelHeart'
+        if not decision:
+            logger.debug(f"AngelHeart[{chat_id}]: 私聊不参与重构。")
+            return
 
-        # 3. 构建新的 contexts（注入元数据后使用缓存的 content）
-        new_contexts = []
-        for msg in full_history:
-            role = msg.get("role", "user")
-            content = msg.get("content")
+        # 2. 使用新的通用函数分割对话
+        historical_context, recent_dialogue, _ = utils.partition_dialogue(self.conversation_ledger, chat_id)
 
-            # 根据角色类型分别处理消息内容
-            if role == "user":
-                # 用户角色：保持多模态 list 格式
-                if isinstance(content, list):
-                    message_content = content.copy()  # 使用副本避免修改原始数据
-                elif isinstance(content, str):
-                    # 兼容旧的纯文本消息
-                    message_content = [{"type": "text", "text": content}]
-                else:
-                    # 其他情况，转换为文本
-                    message_content = [{"type": "text", "text": str(content)}]
+        # 3. 准备完整的对话历史 (Context)
+        # 注意：我们不再修改原始消息，而是直接使用它们
+        final_context_messages = historical_context + recent_dialogue
 
-                # 为用户消息注入元数据头信息
-                sender_name = msg.get("sender_name", "成员")
-                sender_id = msg.get("sender_id", "Unknown")
-                timestamp = msg.get("timestamp")
-                relative_time_str = format_relative_time(timestamp) if timestamp else ""
+        # 4. 调用新的格式化函数，生成最终的用户指令字符串 (Prompt)
+        final_prompt_str = utils.format_final_prompt(recent_dialogue, decision)
 
-                header = f"[群友: {sender_name} (ID: {sender_id})]{relative_time_str}\n[内容: 文本]\n"
+        # 5. 将 Prompt 字符串包装成最后一条 user 消息，并附加到 Context 后面
+        final_context_messages.append({
+            "role": "user",
+            "content": final_prompt_str
+        })
 
-                # 寻找第一个文本组件并注入头信息
-                found_text = False
-                for item in message_content:
-                    if item.get("type") == "text":
-                        original_text = item.get("text", "")
-                        item["text"] = header + original_text
-                        found_text = True
-                        break
-
-                # 如果没有文本组件（例如，只有一张图片），则手动添加一个包含头的文本组件
-                if not found_text:
-                    message_content.insert(0, {"type": "text", "text": header.strip()})
-
-            elif role == "assistant":
-                # 助理角色：确保 content 是 string 格式
-                if isinstance(content, list):
-                    # 从 list 中提取所有文本部分合并为 string
-                    text_parts = []
-                    for item in content:
-                        if isinstance(item, dict) and item.get("type") == "text":
-                            text_content = item.get("text", "")
-                            if text_content:
-                                text_parts.append(text_content)
-                    message_content = "".join(text_parts).strip()
-                else:
-                    message_content = str(content)
-
-            else:
-                # 其他角色：保持原有逻辑
-                if isinstance(content, list):
-                    message_content = content.copy()
-                elif isinstance(content, str):
-                    message_content = [{"type": "text", "text": content}]
-                else:
-                    message_content = [{"type": "text", "text": str(content)}]
-
-            new_contexts.append({
-                "role": "assistant" if role == "assistant" else "user",
-                "content": message_content
-            })
-
-        # 4. 完全覆盖原生 contexts
-        req.contexts = new_contexts
-
-        # 5. 构建纯指令 prompt
-        if decision:
-            req.prompt = f"任务指令：请根据以上对话历史，围绕核心话题 '{decision.topic}'，向 '{decision.reply_target}' 执行以下策略：'{decision.reply_strategy}'。"
-        else:
-            req.prompt = "任务指令：请根据以上对话进行回复。"
-
-        # 6. (关键) 确保 image_urls 为空（因为图片已嵌入 contexts 中）
-        req.image_urls = []
+        # 6. 完全覆盖原有的 contexts 和 prompt
+        req.contexts = final_context_messages
+        req.prompt = ""  # 主 prompt 清空，因为所有指令都在最后一条消息里
+        req.image_urls = [] # 确保图片URL为空
 
         # 7. (可选) 注入系统提示词
-        # 获取别名
+        persona_name = decision.persona_name if decision else 'AngelHeart'
         alias = self.config_manager.alias
-
-        # 构建新的系统提示词（追加而非覆盖）
         original_system_prompt = getattr(req, 'system_prompt', '')
         new_system_prompt = f"{original_system_prompt}\n\n你正在一个群聊中扮演 '{persona_name}' 的角色，你的别名是 '{alias}'。"
         req.system_prompt = new_system_prompt
 
-        logger.debug(f"AngelHeart[{chat_id}]: 基于标准多模态内容的请求体已重构，包含 {len(new_contexts)} 条消息。")
+        logger.info(f"AngelHeart[{chat_id}]: LLM请求体已重构，采用最终指令注入模式。")
 
     @config_manager.setter
     def config_manager(self, value):
