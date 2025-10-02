@@ -1,6 +1,7 @@
 import time
 import threading
 from typing import List, Dict, Tuple
+from . import utils
 
 class ConversationLedger:
     """
@@ -57,21 +58,10 @@ class ConversationLedger:
     def get_context_snapshot(self, chat_id: str) -> Tuple[List[Dict], List[Dict], float]:
         """
         获取用于分析的上下文快照。
-        返回: (历史会话, 未处理会话, 快照边界时间戳)
+        现在调用外部工具函数来实现逻辑分离。
         """
-        ledger = self._get_or_create_ledger(chat_id)
-        with self._lock:
-            last_ts = ledger["last_processed_timestamp"]
-            all_messages = ledger["messages"]
-
-            historical_context = [m for m in all_messages if m["timestamp"] <= last_ts]
-            unprocessed_dialogue = [m for m in all_messages if m["timestamp"] > last_ts]
-
-            snapshot_boundary_ts = 0.0
-            if unprocessed_dialogue:
-                snapshot_boundary_ts = unprocessed_dialogue[-1].get("timestamp", 0.0)
-
-            return historical_context, unprocessed_dialogue, snapshot_boundary_ts
+        # 直接调用新的、独立的工具函数
+        return utils.partition_dialogue(self, chat_id)
 
     def mark_as_processed(self, chat_id: str, boundary_timestamp: float):
         """
