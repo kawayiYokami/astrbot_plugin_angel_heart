@@ -47,6 +47,67 @@ class TestFrontDesk(unittest.TestCase):
         # 创建 FrontDesk 实例
         self.front_desk = FrontDesk(self.config_manager, self.secretary, self.ledger)
 
+    async def test_cache_message(self):
+        """测试 cache_message 方法使用 outline 作为正文"""
+        # 创建模拟事件
+        event = MagicMock()
+        event.get_message_outline.return_value = "Test message outline"
+        event.get_messages.return_value = []  # 没有图片
+        event.get_sender_id.return_value = "user123"
+        event.get_sender_name.return_value = "TestUser"
+        event.get_timestamp.return_value = time.time()
+
+        # 调用缓存方法
+        await self.front_desk.cache_message(self.chat_id, event)
+
+        # 验证消息被添加到 ledger
+        historical, recent, _ = self.front_desk.conversation_ledger.get_context_snapshot(self.chat_id)
+        all_messages = historical + recent
+
+        self.assertEqual(len(all_messages), 1)
+        msg = all_messages[0]
+        self.assertEqual(msg["sender_id"], "user123")
+        self.assertEqual(msg["sender_name"], "TestUser")
+
+        # 验证 content 使用 outline
+        self.assertEqual(len(msg["content"]), 1)
+        self.assertEqual(msg["content"][0]["type"], "text")
+        self.assertEqual(msg["content"][0]["text"], "Test message outline")
+
+    async def test_cache_message_with_image(self):
+        """测试 cache_message 方法处理图片组件"""
+        # 创建模拟事件
+        event = MagicMock()
+        event.get_message_outline.return_value = "Message with image"
+        event.get_messages.return_value = [MagicMock(Image)]  # 模拟图片组件
+        event.get_sender_id.return_value = "user123"
+        event.get_sender_name.return_value = "TestUser"
+        event.get_timestamp.return_value = time.time()
+
+        # 模拟图片处理器
+        self.front_desk.image_processor.convert_url_to_data_url = AsyncMock(return_value="data:image/png;base64,fake")
+
+        # 调用缓存方法
+        await self.front_desk.cache_message(self.chat_id, event)
+
+        # 验证消息被添加到 ledger
+        historical, recent, _ = self.front_desk.conversation_ledger.get_context_snapshot(self.chat_id)
+        all_messages = historical + recent
+
+        self.assertEqual(len(all_messages), 1)
+        msg = all_messages[0]
+
+        # 验证 content 包含文本和图片
+        self.assertEqual(len(msg["content"]), 2)
+        text_part = msg["content"][0]
+        image_part = msg["content"][1]
+
+        self.assertEqual(text_part["type"], "text")
+        self.assertEqual(text_part["text"], "Message with image")
+
+        self.assertEqual(image_part["type"], "image_url")
+        self.assertEqual(image_part["image_url"]["url"], "data:image/png;base64,fake")
+
     async def test_rewrite_prompt_for_llm_success(self):
         """测试 rewrite_prompt_for_llm 方法成功重构请求"""
         # 创建模拟的 req 对象
