@@ -3,6 +3,18 @@ import threading
 from typing import List, Dict, Tuple
 from . import utils
 
+# 条件导入：当缺少astrbot依赖时使用Mock
+try:
+    from astrbot.api import logger
+except ImportError:
+    # 创建Mock logger用于测试
+    class MockLogger:
+        def debug(self, msg): pass
+        def info(self, msg): pass
+        def warning(self, msg): pass
+        def error(self, msg): pass
+    logger = MockLogger()
+
 class ConversationLedger:
     """
     对话总账 - 插件内部权威的、唯一的对话记录中心。
@@ -51,6 +63,9 @@ class ConversationLedger:
             if len(ledger["messages"]) > self.PER_CHAT_LIMIT:
                 # 保留最新的PER_CHAT_LIMIT条消息
                 ledger["messages"] = ledger["messages"][-self.PER_CHAT_LIMIT:]
+
+            # 输出原始信息
+            logger.info(f"AngelHeart[{chat_id}]: 添加消息 - {message}")
 
         # 3. 检查并限制总消息数量
         self._enforce_total_message_limit()

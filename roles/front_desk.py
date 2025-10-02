@@ -49,49 +49,46 @@ class FrontDesk:
 
     async def cache_message(self, chat_id: str, event: AstrMessageEvent):
         """
-        前台职责：将 MessageChain 转换为标准多模态 content 列表并缓存。
+        前台职责：使用消息概要作为主要正文，处理图片组件并缓存。
 
         Args:
             chat_id (str): 会话ID。
             event (AstrMessageEvent): 消息事件对象。
         """
-        # 1. 获取原始 MessageChain
-        message_chain = event.get_messages()
-        logger.debug(f"AngelHeart[{chat_id}]: 缓存消息，原始 MessageChain: {[repr(comp) for comp in message_chain]}")
+        # 1. 获取消息概要作为主要正文
+        outline = event.get_message_outline()
+        text_content = outline if outline and outline.strip() else ""
 
-        # 2. 转换为标准多模态 content 列表
+        # 2. 获取 MessageChain 用于图片处理
+        message_chain = event.get_messages()
+        logger.debug(f"AngelHeart[{chat_id}]: 缓存消息，消息概要: '{text_content}'")
+
+        # 3. 构建标准多模态 content 列表
         content_list = []
+        if text_content:
+            content_list.append({
+                "type": "text",
+                "text": text_content
+            })
+
+        # 4. 处理图片组件
         for component in message_chain:
-            if isinstance(component, Plain):
-                content_list.append({
-                    "type": "text",
-                    "text": component.text
-                })
-            elif isinstance(component, Image):
+            if isinstance(component, Image):
                 # 调用图片处理器异步转换URL为Data URL
                 data_url = await self.image_processor.convert_url_to_data_url(component.url)
                 content_list.append({
                     "type": "image_url",
                     "image_url": {"url": data_url}
                 })
-            else:
-                # 处理其他类型的组件（At, Face 等）
-                try:
-                    fallback_text = str(component)
-                    if fallback_text:
-                        content_list.append({
-                            "type": "text",
-                            "text": fallback_text
-                        })
-                    logger.warning(f"AngelHeart[{chat_id}]: 遇到未支持的组件类型 {type(component).__name__}，已转换为文本: '{fallback_text}'")
-                except Exception as e:
-                    logger.error(f"AngelHeart[{chat_id}]: 转换未知组件 {type(component).__name__} 时出错: {e}")
-                    content_list.append({
-                        "type": "text",
-                        "text": f"[{type(component).__name__}]"
-                    })
 
-        # 3. 构建完整的消息字典
+        # 5. 如果没有内容，创建一个空文本
+        if not content_list:
+            content_list.append({
+                "type": "text",
+                "text": ""
+            })
+
+        # 6. 构建完整的消息字典
         new_message = {
             "role": "user",
             "content": content_list,  # 标准多模态列表
@@ -100,9 +97,9 @@ class FrontDesk:
             "timestamp": event.get_timestamp() if hasattr(event, 'get_timestamp') and event.get_timestamp() else time.time(),
         }
 
-        # 4. 将消息添加到 Ledger
+        # 7. 将消息添加到 Ledger
         self.conversation_ledger.add_message(chat_id, new_message)
-        logger.info(f"AngelHeart[{chat_id}]: 标准多模态消息已缓存，包含 {len(content_list)} 个组件。")
+        logger.info(f"AngelHeart[{chat_id}]: 消息已缓存，使用概要作为正文，包含 {len(content_list)} 个组件。")
 
 
 
@@ -177,7 +174,7 @@ class FrontDesk:
 
     async def rewrite_prompt_for_llm(self, chat_id: str, req: Any):
         """
-        重构请求体，以实现将指令作为最后一条用户消息注入的精确调用方式。
+        重构请求体，实现完整的对话历史格式化和指令注入。
         """
         logger.debug(f"AngelHeart[{chat_id}]: 开始重构LLM请求体...")
 
@@ -188,34 +185,60 @@ class FrontDesk:
             return
 
         # 2. 使用新的通用函数分割对话
-        historical_context, recent_dialogue, _ = utils.partition_dialogue(self.conversation_ledger, chat_id)
+        historical_context, recent_dialogue, _ = partition_dialogue(self.conversation_ledger, chat_id)
+
+        # 生成聚焦指令
+        final_prompt_str = format_final_prompt(recent_dialogue, decision)
 
         # 3. 准备完整的对话历史 (Context)
-        # 注意：我们不再修改原始消息，而是直接使用它们
-        final_context_messages = historical_context + recent_dialogue
+        full_history = historical_context + recent_dialogue
 
-        # 4. 调用新的格式化函数，生成最终的用户指令字符串 (Prompt)
-        final_prompt_str = utils.format_final_prompt(recent_dialogue, decision)
+        # 4. 遍历 full_history 并动态注入元数据
+        new_contexts = []
+        for msg in full_history:
+            if msg.get("role") == "user":
+                # 对于 user 消息，生成 header 并注入到 content 中
+                header = f"[群友: {msg.get('sender_name', '成员')}/{msg.get('sender_id', 'Unknown')}]{format_relative_time(msg.get('timestamp'))}: "
 
-        # 5. 将 Prompt 字符串包装成最后一条 user 消息，并附加到 Context 后面
-        final_context_messages.append({
-            "role": "user",
-            "content": final_prompt_str
-        })
+                # 复制 content 列表以进行修改
+                new_content = msg.get("content", [])
+                if isinstance(new_content, list) and new_content:
+                    # 找到第一个 text 组件并注入 header
+                    found_text = False
+                    for item in new_content:
+                        if item.get("type") == "text":
+                            item["text"] = header + item.get("text", "")
+                            found_text = True
+                            break
+                    # 如果没有 text 组件（纯图片），则在开头插入一个
+                    if not found_text:
+                        new_content.insert(0, {"type": "text", "text": header.strip()})
 
-        # 6. 完全覆盖原有的 contexts 和 prompt
-        req.contexts = final_context_messages
-        req.prompt = ""  # 主 prompt 清空，因为所有指令都在最后一条消息里
-        req.image_urls = [] # 确保图片URL为空
+                new_contexts.append({
+                    "role": "user",
+                    "content": new_content
+                })
+            else:
+                # assistant 消息保持不变
+                new_contexts.append(msg)
 
-        # 7. (可选) 注入系统提示词
+        # 5. 完全覆盖原有的 contexts
+        req.contexts = new_contexts
+
+        # 6. 聚焦指令并赋值给 req.prompt
+        req.prompt = final_prompt_str
+
+        # 7. 清空 image_urls 并注入系统提示词
+        req.image_urls = []  # 图片已在 contexts 中
+
+        # 注入系统提示词
         persona_name = decision.persona_name if decision else 'AngelHeart'
         alias = self.config_manager.alias
         original_system_prompt = getattr(req, 'system_prompt', '')
         new_system_prompt = f"{original_system_prompt}\n\n你正在一个群聊中扮演 '{persona_name}' 的角色，你的别名是 '{alias}'。"
         req.system_prompt = new_system_prompt
 
-        logger.info(f"AngelHeart[{chat_id}]: LLM请求体已重构，采用最终指令注入模式。")
+        logger.info(f"AngelHeart[{chat_id}]: LLM请求体已重构，采用'完整上下文+聚焦指令'模式。")
 
     @config_manager.setter
     def config_manager(self, value):
