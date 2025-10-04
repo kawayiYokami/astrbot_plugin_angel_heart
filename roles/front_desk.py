@@ -200,8 +200,8 @@ class FrontDesk:
                 # 对于 user 消息，生成 header 并注入到 content 中
                 header = f"[群友: {msg.get('sender_name', '成员')}/{msg.get('sender_id', 'Unknown')}]{format_relative_time(msg.get('timestamp'))}: "
 
-                # 复制 content 列表以进行修改
-                new_content = msg.get("content", [])
+                # 使用深拷贝复制 content 列表以进行修改，确保不污染原始数据
+                new_content = copy.deepcopy(msg.get("content", []))
                 if isinstance(new_content, list) and new_content:
                     # 找到第一个 text 组件并注入 header
                     found_text = False
