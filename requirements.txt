@@ -5,3 +5,4 @@ feedparser>=6.0.11
 httpx>=0.24.0
 markdown-it-py>=3.0.0
 mdit_plain>=1.0.0
+Pillow>=10.0.0
