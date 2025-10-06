@@ -309,6 +309,7 @@ def partition_dialogue(
         last_ts = ledger_data["last_processed_timestamp"]
         all_messages = ledger_data["messages"]
 
+        # 以last_processed_timestamp为准来分割消息
         historical_context = [m for m in all_messages if m.get("timestamp", 0) <= last_ts]
         recent_dialogue = [m for m in all_messages if m.get("timestamp", 0) > last_ts]
 

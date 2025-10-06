@@ -54,6 +54,9 @@ class ConversationLedger:
         # 2. 添加新消息
         ledger = self._get_or_create_ledger(chat_id)
         with self._lock:
+            # 添加一个字段标记消息是否已处理，默认为False
+            message["is_processed"] = False
+
             # 为了保证顺序，可以考虑在插入前排序或使用bisect.insort
             ledger["messages"].append(message)
             # 确保消息列表始终按时间戳排序
