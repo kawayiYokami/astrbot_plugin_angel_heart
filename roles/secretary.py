@@ -143,6 +143,9 @@ class Secretary:
                 decision.boundary_timestamp = boundary_ts
                 await self._update_analysis_cache(chat_id, decision, reason="分析完成 (决策: 回复)")
 
+                # 标记对话为已处理（在锁保护下进行）
+                self.conversation_ledger.mark_as_processed(chat_id, boundary_ts)
+
                 # 注入上下文到 event
                 full_snapshot = historical_context + recent_dialogue
                 try:
@@ -166,8 +169,11 @@ class Secretary:
 
             elif decision:
                 logger.info(f"AngelHeart[{chat_id}]: 决策为'不参与'。原因: {decision.reply_strategy}")
-                # 不回复 -> 清空决策缓存，以实现“不回复就清空”
+                # 不回复 -> 清空决策缓存，以实现"不回复就清空"
                 await self.clear_decision(chat_id)
+
+                # 即使不回复，也要标记对话为已处理，避免重复分析（在锁保护下进行）
+                self.conversation_ledger.mark_as_processed(chat_id, boundary_ts)
 
         except Exception as e:
             logger.error(f"AngelHeart[{chat_id}]: 分析过程中发生异常: {e}", exc_info=True)
