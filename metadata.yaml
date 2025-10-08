@@ -1,5 +1,5 @@
 name: astrbot_plugin_angel_heart
-description: "天使心秘书，是一个专为 AstrBot 平台设计的智能群聊交互插件。它采用创新的两级AI协作架构，实现高质量、低成本的智能对话交互，让AI成为懂分寸、有眼色的聊天伙伴。"
+description: "天使心秘书，让astrbot拥有极其聪明，有分寸的群聊介入，和极其完备的群聊上下文管理"
 author: kawayiYokami
-version: 0.0.3
+version: 0.1.0
 repo: https://github.com/kawayiYokami/astrbot_plugin_angel_heart
