@@ -67,9 +67,6 @@ class ConversationLedger:
                 # 保留最新的PER_CHAT_LIMIT条消息
                 ledger["messages"] = ledger["messages"][-self.PER_CHAT_LIMIT:]
 
-            # 输出原始信息
-            logger.info(f"AngelHeart[{chat_id}]: 添加消息 - {message}")
-
         # 3. 检查并限制总消息数量
         self._enforce_total_message_limit()
 
