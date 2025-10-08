@@ -306,15 +306,17 @@ def partition_dialogue(
     ledger_data = ledger._get_or_create_ledger(chat_id)
 
     with ledger._lock:
-        last_ts = ledger_data["last_processed_timestamp"]
         all_messages = ledger_data["messages"]
 
-        # 以last_processed_timestamp为准来分割消息
-        historical_context = [m for m in all_messages if m.get("timestamp", 0) <= last_ts]
-        recent_dialogue = [m for m in all_messages if m.get("timestamp", 0) > last_ts]
+        # 根据 is_processed 标志进行分割
+        historical_context = [m for m in all_messages if m.get("is_processed", False)]
+        recent_dialogue = [m for m in all_messages if not m.get("is_processed", False)]
 
+        # 边界时间戳是新对话中最后一条消息的时间戳
         boundary_ts = 0.0
         if recent_dialogue:
+            # 为确保准确，最好在取最后一个元素前按时间戳排序
+            recent_dialogue.sort(key=lambda m: m.get("timestamp", 0))
             boundary_ts = recent_dialogue[-1].get("timestamp", 0.0)
 
         return historical_context, recent_dialogue, boundary_ts
