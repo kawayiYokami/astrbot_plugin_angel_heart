@@ -83,16 +83,24 @@ class ConversationLedger:
 
     def mark_as_processed(self, chat_id: str, boundary_timestamp: float):
         """
-        将指定时间戳之前的所有消息标记为已处理。
-        这是解决竞态条件的关键。
+        将指定时间戳之前的所有未处理消息标记为已处理，并原子化地更新处理边界。
+        此操作通过检查 last_processed_timestamp 来处理并发，确保处理状态不倒退。
         """
         if boundary_timestamp <= 0:
             return
 
         ledger = self._get_or_create_ledger(chat_id)
         with self._lock:
-            # 只在新的时间戳大于旧的情况下更新，防止状态倒退
+            # 关键并发控制：只有当新的边界时间戳大于当前记录时，才进行处理。
+            # 这可以防止旧的或乱序的调用覆盖新的状态。
             if boundary_timestamp > ledger["last_processed_timestamp"]:
+
+                # 遍历所有消息，更新 is_processed 标志
+                for message in ledger["messages"]:
+                    if not message.get("is_processed") and message.get("timestamp", 0) <= boundary_timestamp:
+                        message["is_processed"] = True
+
+                # 在完成所有标记后，更新“高水位标记”
                 ledger["last_processed_timestamp"] = boundary_timestamp
 
     def _prune_expired_messages(self, chat_id: str):
