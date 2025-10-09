@@ -68,15 +68,29 @@ class LLMAnalyzer:
 
         # 加载外部 Prompt 模板
         try:
-            prompt_path = Path(__file__).parent.parent / "prompts" / "secretary_analyzer.md"
+            # 根据配置选择不同的prompt文件
+            prompt_filename = "secretary_analyzer_json.md" if config_manager and config_manager.is_reasoning_model else "secretary_analyzer.md"
+            prompt_path = Path(__file__).parent.parent / "prompts" / prompt_filename
             self.base_prompt_template = prompt_path.read_text(encoding="utf-8")
             self.is_ready = True # 成功加载后，标记为就绪
-            logger.info("AngelHeart分析器: Prompt模板加载成功。")
+            logger.info(f"AngelHeart分析器: Prompt模板 '{prompt_filename}' 加载成功。")
         except FileNotFoundError:
-            logger.critical("AngelHeart分析器: 核心Prompt模板文件 'prompts/secretary_analyzer.md' 未找到。分析器将无法工作。")
+            logger.critical(f"AngelHeart分析器: 核心Prompt模板文件 'prompts/{prompt_filename}' 未找到。分析器将无法工作。")
 
         if not self.analyzer_model_name:
             logger.warning("AngelHeart的分析模型未配置，功能将受限。")
+
+    def reload_config(self, new_config_manager):
+        """重新加载配置"""
+        self.config_manager = new_config_manager
+        # 根据新配置重新加载prompt
+        try:
+            prompt_filename = "secretary_analyzer_json.md" if self.config_manager and self.config_manager.is_reasoning_model else "secretary_analyzer.md"
+            prompt_path = Path(__file__).parent.parent / "prompts" / prompt_filename
+            self.base_prompt_template = prompt_path.read_text(encoding="utf-8")
+            logger.info(f"AngelHeart分析器: Prompt模板 '{prompt_filename}' 重新加载成功。")
+        except FileNotFoundError:
+            logger.critical(f"AngelHeart分析器: 重新加载时未找到Prompt模板文件 'prompts/{prompt_filename}'。")
 
     def _parse_response(self, response_text: str, persona_name: str, alias: str) -> SecretaryDecision:
         """
@@ -150,16 +164,13 @@ class LLMAnalyzer:
         # 获取配置中的别名
         alias = self.config_manager.alias if self.config_manager else "AngelHeart"
 
-        # 使用安全的格式化器来构建提示词，传递结构化的上下文
-        formatter = SafeFormatter()
-        base_prompt = formatter.format(
-            self.base_prompt_template,
-            persona_name=persona_name,
-            historical_context=historical_text,
-            recent_dialogue=recent_text,
-            reply_strategy_guide=self.strategy_guide,
-            alias=alias
-        )
+        # 使用直接的字符串替换来构建提示词，规避.format()方法对特殊字符的解析问题
+        base_prompt = self.base_prompt_template.replace("{persona_name}", persona_name if persona_name else "")
+        base_prompt = base_prompt.replace("{historical_context}", historical_text)
+        base_prompt = base_prompt.replace("{recent_dialogue}", recent_text)
+        base_prompt = base_prompt.replace("{reply_strategy_guide}", self.strategy_guide)
+        base_prompt = base_prompt.replace("{alias}", alias)
+        base_prompt = base_prompt.replace("{ai_self_identity}", self.config_manager.ai_self_identity if self.config_manager else "")
 
         return base_prompt
 

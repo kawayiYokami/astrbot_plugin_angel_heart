@@ -151,6 +151,8 @@ class AngelHeartPlugin(Star):
         # 更新角色实例的配置管理器
         self.secretary.config_manager = self.config_manager
         self.front_desk.config_manager = self.config_manager
+        # 重新加载LLM分析器的配置
+        self.secretary.llm_analyzer.reload_config(self.config_manager)
         self._whitelist_cache = self._prepare_whitelist()
 
         # 更新 ConversationLedger 的缓存过期时间
