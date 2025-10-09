@@ -5,6 +5,12 @@
     "description": "用于分析对话、决定是否回复的快速、低成本模型提供商名称。",
     "default": ""
   },
+  "is_reasoning_model": {
+    "type": "bool",
+    "title": "是否是思维模型",
+    "description": "供应商是否是思维模型，非思维模型会引导推理。",
+    "default": false
+  },
   "analysis_on_mention_only": {
     "type": "bool",
     "title": "仅在被呼唤时分析",

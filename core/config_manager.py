@@ -82,3 +82,13 @@ class ConfigManager:
     def group_chat_enhancement(self) -> bool:
         """是否启用群聊上下文增强模式"""
         return self._config.get("group_chat_enhancement", True)
+
+    @property
+    def is_reasoning_model(self) -> bool:
+        """是否是思维模型（如果是，则直接输出json）"""
+        return self._config.get("is_reasoning_model", False)
+
+    @property
+    def ai_self_identity(self) -> str:
+        """AI的自我身份定位"""
+        return self._config.get("ai_self_identity", "你拥有强大的检索能力和庞大的知识储备和记忆能力。\n你喜爱跟群友进行语言游戏沟通。\n群友对AI的善意测试你必须回应满足群友的期待，展示你的能力。")
