@@ -7,13 +7,9 @@ from . import utils
 try:
     from astrbot.api import logger
 except ImportError:
-    # 创建Mock logger用于测试
-    class MockLogger:
-        def debug(self, msg): pass
-        def info(self, msg): pass
-        def warning(self, msg): pass
-        def error(self, msg): pass
-    logger = MockLogger()
+    import logging
+    logger = logging.getLogger(__name__)
+
 
 class ConversationLedger:
     """

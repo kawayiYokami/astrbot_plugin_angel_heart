@@ -14,3 +14,4 @@ config.local.yaml
 
 # Claude Code Router
 .claude-code-router/
+.*/
