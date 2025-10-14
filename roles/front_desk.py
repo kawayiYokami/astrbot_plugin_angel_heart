@@ -188,8 +188,11 @@ class FrontDesk:
             logger.debug(f"AngelHeart[{chat_id}]: 私聊不参与重构。")
             return
 
-        # 2. 使用新的通用函数分割对话
-        historical_context, recent_dialogue, _ = partition_dialogue(self.conversation_ledger, chat_id)
+        # 2. 使用决策中保存的对话快照（而不是重新获取，避免被标记为已处理的消息丢失）
+        recent_dialogue = decision.recent_dialogue
+
+        # 获取历史对话用于构建完整上下文
+        historical_context, _, _ = partition_dialogue(self.conversation_ledger, chat_id)
 
         # 生成聚焦指令
         final_prompt_str = format_final_prompt(recent_dialogue, decision)

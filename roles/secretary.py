@@ -143,8 +143,9 @@ class Secretary:
             # 根据决策结果处理
             if decision and decision.should_reply:
                 logger.info(f"AngelHeart[{chat_id}]: 决策为'参与'。策略: {decision.reply_strategy}")
-                # 将快照边界时间戳存入决策
+                # 将快照边界时间戳和对话快照存入决策
                 decision.boundary_timestamp = boundary_ts
+                decision.recent_dialogue = recent_dialogue
                 await self._update_analysis_cache(chat_id, decision, reason="分析完成 (决策: 回复)")
 
                 # 标记对话为已处理（在锁保护下进行）
