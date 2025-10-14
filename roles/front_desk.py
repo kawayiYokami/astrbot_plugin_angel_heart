@@ -4,6 +4,7 @@ AngelHeart 插件 - 前台角色 (FrontDesk)
 """
 
 import time
+import os
 from typing import Dict
 import copy
 
@@ -78,12 +79,47 @@ class FrontDesk:
         # 4. 处理图片组件
         for component in message_chain:
             if isinstance(component, Image):
-                # 调用图片处理器异步转换URL为Data URL
-                data_url = await self.image_processor.convert_url_to_data_url(component.url)
-                content_list.append({
-                    "type": "image_url",
-                    "image_url": {"url": data_url}
-                })
+                # 首先尝试使用官方方法处理本地文件或可访问的URL
+                try:
+                    # 检查是否是本地文件或可访问的URL
+                    url = component.url or component.file
+                    if url and (url.startswith("file:///") or url.startswith("base64://") or os.path.exists(url or "")):
+                        # 对于本地文件，直接使用官方方法
+                        base64_data = await component.convert_to_base64()
+                        if base64_data:
+                            # 转换为 data URL 格式
+                            if base64_data.startswith("base64://"):
+                                image_data = base64_data.replace("base64://", "")
+                            else:
+                                image_data = base64_data
+                            data_url = f"data:image/jpeg;base64,{image_data}"
+                            content_list.append({
+                                "type": "image_url",
+                                "image_url": {"url": data_url}
+                            })
+                        else:
+                            raise Exception("convert_to_base64 返回空值")
+                    else:
+                        # 对于网络URL，尝试下载，如果失败则跳过
+                        base64_data = await component.convert_to_base64()
+                        if base64_data:
+                            # 转换为 data URL 格式
+                            if base64_data.startswith("base64://"):
+                                image_data = base64_data.replace("base64://", "")
+                            else:
+                                image_data = base64_data
+                            data_url = f"data:image/jpeg;base64,{image_data}"
+                            content_list.append({
+                                "type": "image_url",
+                                "image_url": {"url": data_url}
+                            })
+                        else:
+                            raise Exception("网络图片下载失败")
+                except Exception as e:
+                    # 图片处理失败时，用文本占位符替换，避免传递空或无效URL
+                    original_url = component.url or component.file or "未知URL"
+                    logger.debug(f"AngelHeart[{chat_id}]: 图片处理跳过，URL: {original_url}, 原因: {str(e)[:100]}")
+                    # 不添加任何内容，完全跳过图片，保持原有文本消息不变
 
         # 5. 如果没有内容，创建一个空文本
         if not content_list:
