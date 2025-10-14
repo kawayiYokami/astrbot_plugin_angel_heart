@@ -8,23 +8,24 @@ AngelHeart插件 - 天使心智能群聊/私聊交互插件
 - 秘书：定时分析缓存内容，决定是否回复
 """
 
-import asyncio
 import time
 import json
-from typing import Dict, List
 
 from astrbot.api.star import Star
 from astrbot.api.event import AstrMessageEvent, filter
-from astrbot.api.provider import ProviderRequest, LLMResponse
+from astrbot.api.provider import ProviderRequest
 from astrbot.core.star.context import Context
-from astrbot.api import logger
+try:
+    from astrbot.api import logger
+except ImportError:
+    import logging
+    logger = logging.getLogger(__name__)
 from astrbot.core.message.components import Plain, At, AtAll, Reply
 
 from .core.config_manager import ConfigManager
-from .models.analysis_result import SecretaryDecision
 from .roles.front_desk import FrontDesk
 from .roles.secretary import Secretary
-from .core.utils import strip_markdown, format_message_for_llm
+from .core.utils import strip_markdown
 from .core.conversation_ledger import ConversationLedger
 
 class AngelHeartPlugin(Star):
@@ -54,7 +55,6 @@ class AngelHeartPlugin(Star):
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE | filter.EventMessageType.PRIVATE_MESSAGE, priority=200)
     async def smart_reply_handler(self, event: AstrMessageEvent, *args, **kwargs):
         """智能回复员 - 事件入口：处理缓存或在唤醒时清空缓存"""
-        chat_id = event.unified_msg_origin
 
         # 使用 _should_process 方法来判断是否需要处理此消息
         if not self._should_process(event):

@@ -4,17 +4,21 @@ AngelHeart 插件 - 前台角色 (FrontDesk)
 """
 
 import time
-from typing import Dict, List
+from typing import Dict
 import copy
 
-from astrbot.api import logger
+try:
+    from astrbot.api import logger
+except ImportError:
+    import logging
+    logger = logging.getLogger(__name__)
 from astrbot.api.event import AstrMessageEvent
-from astrbot.core.message.components import Image, Plain  # 导入 Image 和 Plain 组件
+from astrbot.core.message.components import Image  # 导入 Image 和 Plain 组件
 from .secretary import Secretary  # 用于类型提示
-from typing import List, Dict, Any  # 导入类型提示
+from typing import Any  # 导入类型提示
 
 # 导入公共工具函数和 ConversationLedger
-from ..core.utils import convert_content_to_string, format_message_for_llm, format_relative_time
+from ..core.utils import convert_content_to_string, format_relative_time
 from ..core.utils import partition_dialogue, format_final_prompt
 from ..core.conversation_ledger import ConversationLedger
 from ..core.image_processor import ImageProcessor

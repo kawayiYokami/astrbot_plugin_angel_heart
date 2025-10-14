@@ -3,11 +3,17 @@ from typing import List, Dict
 import json
 from pathlib import Path
 import string
-import datetime
-import re
-from astrbot.api import logger
+try:
+    from astrbot.api import logger
+except ImportError:
+    import logging
+    logger = logging.getLogger(__name__)
 from astrbot.core.db.po import Persona
-from ..core.utils import convert_content_to_string, format_relative_time
+from ..core.utils import (
+    convert_content_to_string,
+    format_relative_time,
+    JsonParser
+)
 from ..models.analysis_result import SecretaryDecision
 
 
@@ -65,6 +71,9 @@ class LLMAnalyzer:
         self.config_manager = config_manager  # 存储 config_manager 对象，用于访问配置
         self.is_ready = False  # 默认认为分析器未就绪
         self.base_prompt_template = "" # 初始化为空字符串
+
+        # 初始化JSON解析器
+        self.json_parser = JsonParser()
 
         # 加载外部 Prompt 模板
         try:
@@ -235,7 +244,7 @@ class LLMAnalyzer:
 
         # 2. 增强检查：如果生成的提示词为空，则记录警告日志并返回一个明确的决策
         if not prompt:
-            logger.warning(f"AngelHeart分析器: 生成的分析提示词为空，将返回'分析内容为空'的决策。")
+            logger.warning("AngelHeart分析器: 生成的分析提示词为空，将返回'分析内容为空'的决策。")
             return SecretaryDecision(
                 should_reply=False, reply_strategy="分析内容为空", topic="未知"
             )
@@ -265,40 +274,31 @@ class LLMAnalyzer:
     def _parse_and_validate_decision(self, response_text: str, persona_name: str, alias: str) -> SecretaryDecision:
         """解析并验证来自AI的响应文本，构建SecretaryDecision对象"""
 
-        json_text = ""
-        # 1. 优先尝试从Markdown代码块 (```json ... ```) 中提取JSON
-        code_block_match = re.search(r"```(json)?\s*(\{.*?\})\s*```", response_text, re.DOTALL)
+        # 定义SecretaryDecision的字段要求
+        required_fields = ["should_reply", "reply_strategy", "topic", "reply_target"]
+        optional_fields = ["needs_search"]
 
-        if code_block_match:
-            # 如果匹配成功，提取第二个捕获组的内容
-            json_text = code_block_match.group(2).strip()
-        else:
-            # 2. 如果没有找到代码块，则回退到原始方法，查找最后一个独立的JSON对象
-            json_matches = re.findall(r"\{.*?\}", response_text, re.DOTALL)
-            if json_matches:
-                json_text = json_matches[-1].strip()
-
-        # 如果 json_text 仍然为空，则执行原有的错误处理逻辑
-        if not json_text:
+        # 使用JsonParser提取JSON数据
+        try:
+            decision_data = self.json_parser.extract_json(
+                text=response_text,
+                required_fields=required_fields,
+                optional_fields=optional_fields
+            )
+        except Exception as e:
             logger.warning(
-                f"AngelHeart分析器: AI响应中未找到有效的JSON对象。原始响应: {response_text[:200]}..."
+                f"AngelHeart分析器: JsonParser提取JSON时发生异常: {e}. 原始响应: {response_text[:200]}..."
+            )
+            decision_data = None
+
+        # 如果JsonParser未能提取到有效的JSON
+        if decision_data is None:
+            logger.warning(
+                f"AngelHeart分析器: JsonParser无法从响应中提取有效的JSON。原始响应: {response_text[:200]}..."
             )
             # 返回一个默认的不参与决策
             return SecretaryDecision(
                 should_reply=False, reply_strategy="分析内容无有效JSON", topic="未知",
-                persona_name=persona_name, alias=alias
-            )
-
-        # 解析JSON
-        try:
-            decision_data = json.loads(json_text)
-        except json.JSONDecodeError as e:
-            logger.warning(
-                f"AngelHeart分析器: 提取的JSON对象解析失败: {e}. 原始提取的JSON: {json_text[:200]}..."
-            )
-            # 返回一个默认的不参与决策
-            return SecretaryDecision(
-                should_reply=False, reply_strategy="分析内容JSON解析失败", topic="未知",
                 persona_name=persona_name, alias=alias
             )
 
@@ -327,7 +327,7 @@ class LLMAnalyzer:
 
         if reply_strategy_raw is None:
             logger.warning(
-                f"AngelHeart分析器: AI 返回的 reply_strategy 为 null，使用默认值。 原始提取的JSON: {json_text[:200]}"
+                "AngelHeart分析器: AI 返回的 reply_strategy 为 null，使用默认值。"
             )
             reply_strategy = ""
         else:
@@ -335,7 +335,7 @@ class LLMAnalyzer:
 
         if topic_raw is None:
             logger.warning(
-                f"AngelHeart分析器: AI 返回的 topic 为 null，使用默认值。 原始提取的JSON: {json_text[:200]}"
+                "AngelHeart分析器: AI 返回的 topic 为 null，使用默认值。"
             )
             topic = ""
         else:
@@ -343,7 +343,7 @@ class LLMAnalyzer:
 
         if reply_target_raw is None:
             logger.warning(
-                f"AngelHeart分析器: AI 返回的 reply_target 为 null，使用默认值。 原始提取的JSON: {json_text[:200]}"
+                "AngelHeart分析器: AI 返回的 reply_target 为 null，使用默认值。"
             )
             reply_target = ""
         else:
@@ -380,8 +380,6 @@ class LLMAnalyzer:
         lines = []
         # 定义历史与新消息的分隔符对象
         SEPARATOR_OBJ = {"role": "system", "content": "history_separator"}
-        # 状态标记：False表示处理历史消息，True表示处理新消息
-        is_after_separator = False
 
         # 遍历最近的 MAX_CONVERSATION_LENGTH 条对话
         for conv in conversations[-self.MAX_CONVERSATION_LENGTH:]:
@@ -392,7 +390,6 @@ class LLMAnalyzer:
 
             # 检查是否遇到分隔符
             if conv == SEPARATOR_OBJ:
-                is_after_separator = True
                 lines.append("\n--- 以上是历史消息，仅作为策略参考，不需要回应 ---\n")
                 lines.append("\n--- 后续的最新对话，你需要分辨出里面的人是不是在对你说话 ---\n")
                 continue  # 跳过分隔符本身，不添加到最终输出

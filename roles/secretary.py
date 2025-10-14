@@ -11,21 +11,25 @@ from collections import OrderedDict
 from typing import Dict, List
 from enum import Enum
 
+# 导入公共工具函数
+from ..core.utils import json_serialize_context
+
+from ..core.llm_analyzer import LLMAnalyzer
+from ..models.analysis_result import SecretaryDecision
+
+try:
+    from astrbot.api import logger
+except ImportError:
+    import logging
+    logger = logging.getLogger(__name__)
+
+from astrbot.api.event import AstrMessageEvent
+
 class AwakenReason(Enum):
     """秘书唤醒原因枚举"""
     OK = "正常"
     COOLING_DOWN = "冷却中"
     PROCESSING = "处理中"
-
-from astrbot.api.event import AstrMessageEvent
-
-from astrbot.api import logger
-
-# 导入公共工具函数
-from ..core.utils import get_latest_message_time, convert_content_to_string, prune_old_messages, json_serialize_context
-
-from ..core.llm_analyzer import LLMAnalyzer
-from ..models.analysis_result import SecretaryDecision
 
 
 class Secretary:
@@ -108,13 +112,13 @@ class Secretary:
         chat_id = event.unified_msg_origin
         logger.info(f"AngelHeart[{chat_id}]: 秘书收到前台通知")
 
-        # 1. 检查门牌：如果正在处理中，则直接拒绝新请求
-        if self._is_processing(chat_id):
-            logger.info(f"AngelHeart[{chat_id}]: 拒绝请求，原因: 秘书正在处理先前的请求。")
+        # 1. 原子性地挂上门牌：如果门牌已被占用，则直接拒绝新请求
+        acquired = await self._hang_up_sign_atomic(chat_id)
+        if not acquired:
+            logger.info(f"AngelHeart[{chat_id}]: 拒绝请求，原因: 会话正在处理中 (门牌已被占用)。")
             return
 
-        # 2. 挂上门牌，并用 try...finally 确保门牌最终一定会被收回
-        self._hang_up_sign(chat_id)
+        # 2. 已成功挂上门牌，try...finally 确保门牌最终一定会被收回
         try:
             # 检查冷却时间
             current_time = time.time()
@@ -180,8 +184,8 @@ class Secretary:
             # 异常时同样要清理决策，防止死锁
             await self.clear_decision(chat_id)
         finally:
-            # 收起门牌
-            self._take_down_sign(chat_id)
+            # 原子性地收起门牌
+            await self._take_down_sign_atomic(chat_id)
 
     async def perform_analysis(
         self, recent_dialogue: List[Dict], db_history: List[Dict], chat_id: str
@@ -300,51 +304,48 @@ class Secretary:
             should_reply=False, reply_strategy=f"{context}失败", topic="未知"
         )
 
-    # --- 新增的门牌管理方法 ---
+    # --- 原子化改造的门牌管理方法 ---
 
-    def _is_processing(self, chat_id: str) -> bool:
+    async def _hang_up_sign_atomic(self, chat_id: str) -> bool:
         """
-        检查指定会话的“门牌”是否正挂着（即是否正在处理中）。
-        包含对“门牌卡死”的容错处理。
+        原子性地尝试"挂上门牌"：标记指定会话正在被处理。
+        此方法确保在任何时刻，同一会话只能有一个处理流程在运行。
 
         Args:
             chat_id (str): 会话ID。
 
         Returns:
-            bool: True 表示正在处理中（门牌挂着且未卡死），False 表示空闲（门牌未挂或已卡死）。
+            bool: 成功挂上门牌返回 True，如果门牌已被占用则返回 False。
         """
-        start_time = self._processing_chats.get(chat_id)
-        if start_time is None:
-            # 门牌未挂
-            return False
+        async with self._shared_state_lock:
+            start_time = self._processing_chats.get(chat_id)
 
-        # 检查门牌是否卡死（例如，超过5分钟）
-        STALE_THRESHOLD_SECONDS = 300  # 5分钟
-        if time.time() - start_time > STALE_THRESHOLD_SECONDS:
-            logger.warning(f"AngelHeart[{chat_id}]: 检测到会话处理卡死 (超过 {STALE_THRESHOLD_SECONDS} 秒)，自动重置状态。")
-            # 自动收起卡死的门牌
-            self._take_down_sign(chat_id)
-            return False
+            # 检查门牌是否卡死（例如，超过5分钟）
+            if start_time is not None:
+                STALE_THRESHOLD_SECONDS = 300  # 5分钟
+                if time.time() - start_time > STALE_THRESHOLD_SECONDS:
+                    logger.warning(f"AngelHeart[{chat_id}]: 检测到会话处理卡死 (超过 {STALE_THRESHOLD_SECONDS} 秒)，自动重置门牌。")
+                    # 自动清理卡死的门牌
+                    self._processing_chats.pop(chat_id, None)
+                    start_time = None
 
-        # 门牌正挂着，且未卡死
-        return True
+            # 如果门牌不存在（或刚被清理），则挂上新门牌
+            if start_time is None:
+                self._processing_chats[chat_id] = time.time()
+                logger.debug(f"AngelHeart[{chat_id}]: 已挂上门牌 (开始处理时间: {self._processing_chats[chat_id]})")
+                return True
+            else:
+                # 门牌正挂着，且未卡死
+                logger.debug(f"AngelHeart[{chat_id}]: 门牌已被占用 (开始时间: {start_time})")
+                return False
 
-    def _hang_up_sign(self, chat_id: str):
+    async def _take_down_sign_atomic(self, chat_id: str):
         """
-        “挂上门牌”：标记指定会话正在被处理。
+        原子性地"收起门牌"：标记指定会话处理完成。
 
         Args:
             chat_id (str): 会话ID。
         """
-        self._processing_chats[chat_id] = time.time()
-        logger.debug(f"AngelHeart[{chat_id}]: 已挂上门牌 (开始处理时间: {self._processing_chats[chat_id]})")
-
-    def _take_down_sign(self, chat_id: str):
-        """
-        “收起门牌”：标记指定会话处理完成。
-
-        Args:
-            chat_id (str): 会话ID。
-        """
-        if self._processing_chats.pop(chat_id, None) is not None:
-            logger.debug(f"AngelHeart[{chat_id}]: 已收起门牌")
+        async with self._shared_state_lock:
+            if self._processing_chats.pop(chat_id, None) is not None:
+                logger.debug(f"AngelHeart[{chat_id}]: 已收起门牌")
