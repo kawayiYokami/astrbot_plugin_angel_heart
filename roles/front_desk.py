@@ -5,7 +5,6 @@ AngelHeart 插件 - 前台角色 (FrontDesk)
 
 import time
 import os
-from typing import Dict
 import copy
 
 try:
@@ -15,13 +14,11 @@ except ImportError:
     logger = logging.getLogger(__name__)
 from astrbot.api.event import AstrMessageEvent
 from astrbot.core.message.components import Image  # 导入 Image 和 Plain 组件
-from .secretary import Secretary  # 用于类型提示
 from typing import Any  # 导入类型提示
 
 # 导入公共工具函数和 ConversationLedger
 from ..core.utils import convert_content_to_string, format_relative_time
 from ..core.utils import partition_dialogue, format_final_prompt
-from ..core.conversation_ledger import ConversationLedger
 from ..core.image_processor import ImageProcessor
 
 
@@ -30,27 +27,27 @@ class FrontDesk:
     前台角色 - 专注的消息接收与缓存员
     """
 
-    def __init__(self, config_manager, secretary: Secretary, conversation_ledger: ConversationLedger):
+    def __init__(self, config_manager, angel_context):
         """
         初始化前台角色。
 
         Args:
             config_manager: 配置管理器实例。
-            secretary (Secretary): 关联的秘书实例，用于处理通知。
-            conversation_ledger (ConversationLedger): 对话总账实例，用于存储消息。
+            angel_context: AngelHeart全局上下文实例。
         """
         self._config_manager = config_manager
-        self.secretary = secretary
-        self.conversation_ledger = conversation_ledger
+        self.context = angel_context
 
         # 移除本地缓存：存储每个会话的未处理用户消息
         # self.unprocessed_messages: Dict[str, List[Dict]] = {}
 
-        # 新增状态：记录每个会话的闭嘴截止时间戳
-        self.silenced_until: Dict[str, float] = {}
+        # 闭嘴状态已迁移到 angel_context.silenced_until
 
         # 初始化图片处理器
         self.image_processor = ImageProcessor()
+
+        # secretary 引用将由 main.py 设置
+        self.secretary = None
 
     async def cache_message(self, chat_id: str, event: AstrMessageEvent):
         """
@@ -138,7 +135,7 @@ class FrontDesk:
         }
 
         # 7. 将消息添加到 Ledger
-        self.conversation_ledger.add_message(chat_id, new_message)
+        self.context.conversation_ledger.add_message(chat_id, new_message)
         logger.info(f"AngelHeart[{chat_id}]: 消息已缓存，使用概要作为正文，包含 {len(content_list)} 个组件。")
 
 
@@ -152,9 +149,9 @@ class FrontDesk:
         current_time = time.time()
         message_content = event.get_message_outline()
 
-        # 1. 闭嘴状态检查 (最高优先级)
-        if chat_id in self.silenced_until and current_time < self.silenced_until[chat_id]:
-            remaining = self.silenced_until[chat_id] - current_time
+        # 1. 闭嘴状态检查 (最高优先级) - 从全局上下文读取
+        if chat_id in self.context.silenced_until and current_time < self.context.silenced_until[chat_id]:
+            remaining = self.context.silenced_until[chat_id] - current_time
             logger.info(f"AngelHeart[{chat_id}]: 处于闭嘴状态 (剩余 {remaining:.1f} 秒)，事件已终止。")
             event.stop_event() # 彻底中断
             return
@@ -171,7 +168,7 @@ class FrontDesk:
             for word in slap_words:
                 if word in message_content:
                     silence_duration = self.config_manager.silence_duration
-                    self.silenced_until[chat_id] = current_time + silence_duration
+                    self.context.silenced_until[chat_id] = current_time + silence_duration
                     logger.info(f"AngelHeart[{chat_id}]: 检测到掌嘴词 '{word}'，启动闭嘴模式 {silence_duration} 秒，事件已终止。")
                     event.stop_event() # 彻底中断
                     return
@@ -191,7 +188,7 @@ class FrontDesk:
 
             aliases = [name.strip() for name in alias_str.split('|') if name.strip()]
             # 从 ConversationLedger 获取所有消息（包括历史消息），因为AI应该记住被呼唤的状态
-            historical_context, unprocessed_dialogue, _ = self.conversation_ledger.get_context_snapshot(chat_id)
+            historical_context, unprocessed_dialogue, _ = self.context.conversation_ledger.get_context_snapshot(chat_id)
             all_messages = historical_context + unprocessed_dialogue
 
             found_mention = any(
@@ -204,8 +201,34 @@ class FrontDesk:
                 logger.info(f"AngelHeart[{chat_id}]: '仅呼唤'模式开启，但缓存中未检测到别名，不通知秘书。")
                 return
 
-        # 6. 通知秘书
-        await self.secretary.process_notification(event)
+        # 6. 【核心逻辑 V2】检查 Secretary 是否忙中
+        if await self.context.is_chat_processing(chat_id):
+            # Secretary 忙中：阻塞事件，等待观察期结束或被新事件取代
+            logger.debug(f"AngelHeart[{chat_id}]: Secretary 忙中，进入事件扣押与阻塞流程")
+
+            # 获取 Future 并阻塞当前事件传播链
+            future = await self.context.hold_and_start_observation(chat_id)
+            result = await future  # 阻塞在这里，直到收到信号
+
+            # 处理唤醒信号
+            if result == "KILL":
+                # 被新消息取代，干净地终止此事件
+                logger.debug(f"AngelHeart[{chat_id}]: 此事件已被新消息取代，正在终止...")
+                # 核心：产生空回复并停止事件传播
+                event.get_result().chain = []
+                event.stop_event()
+                return
+            elif result == "PROCESS":
+                # 观察期结束，轮到自己处理
+                logger.info(f"AngelHeart[{chat_id}]: 观察期结束，开始处理此事件")
+                await self.secretary.process_notification(event)
+            else:
+                # 未知信号，记录警告
+                logger.warning(f"AngelHeart[{chat_id}]: 收到未知信号 '{result}'，忽略处理")
+                return
+        else:
+            # Secretary 空闲：直接通知处理
+            await self.secretary.process_notification(event)
 
     @property
     def config_manager(self):
@@ -228,7 +251,7 @@ class FrontDesk:
         recent_dialogue = decision.recent_dialogue
 
         # 获取历史对话用于构建完整上下文
-        historical_context, _, _ = partition_dialogue(self.conversation_ledger, chat_id)
+        historical_context, _, _ = partition_dialogue(self.context.conversation_ledger, chat_id)
 
         # 生成聚焦指令
         final_prompt_str = format_final_prompt(recent_dialogue, decision)
