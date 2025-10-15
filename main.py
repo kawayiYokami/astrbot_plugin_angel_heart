@@ -26,7 +26,7 @@ from .core.config_manager import ConfigManager
 from .roles.front_desk import FrontDesk
 from .roles.secretary import Secretary
 from .core.utils import strip_markdown
-from .core.conversation_ledger import ConversationLedger
+from .core.angel_heart_context import AngelHeartContext
 
 class AngelHeartPlugin(Star):
     """AngelHeart插件 - 专注的智能回复员"""
@@ -37,19 +37,25 @@ class AngelHeartPlugin(Star):
         self.context = context
         self._whitelist_cache = self._prepare_whitelist()
 
-        # -- 创建 ConversationLedger 实例 --
-        self.conversation_ledger = ConversationLedger(cache_expiry=self.config_manager.cache_expiry)
+        # -- 创建 AngelHeartContext 全局上下文（包含 ConversationLedger）--
+        self.angel_context = AngelHeartContext(self.config_manager)
 
         # -- 角色实例 --
-        # 先创建秘书，再创建前台，并将前台传递给秘书
-        # 使用 None 作为占位符，以打破 Secretary 和 FrontDesk 在初始化时的循环依赖
-        # 同时注入 conversation_ledger
-        self.secretary = Secretary(self.config_manager, self.context, None, self.conversation_ledger) # 占位符，稍后设置
-        self.front_desk = FrontDesk(self.config_manager, self.secretary, self.conversation_ledger)
-        # 设置秘书的前台引用
-        self.secretary.front_desk = self.front_desk
+        # 创建秘书和前台，通过全局上下文传递依赖
+        self.secretary = Secretary(
+            self.config_manager,
+            self.context,
+            self.angel_context
+        )
+        self.front_desk = FrontDesk(
+            self.config_manager,
+            self.angel_context
+        )
 
-        logger.info("💖 AngelHeart智能回复员初始化完成 (同步轻量级架构)")
+        # 建立必要的相互引用
+        self.front_desk.secretary = self.secretary
+
+        logger.info("💖 AngelHeart智能回复员初始化完成 (事件扣押机制 V2 已启用)")
 
     # --- 核心事件处理 ---
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE | filter.EventMessageType.PRIVATE_MESSAGE, priority=200)
@@ -288,7 +294,7 @@ class AngelHeartPlugin(Star):
 
         # 2. 如果决策有效，使用其边界时间戳来推进 Ledger 状态
         if decision and hasattr(decision, 'boundary_timestamp') and decision.boundary_timestamp > 0:
-            self.conversation_ledger.mark_as_processed(chat_id, decision.boundary_timestamp)
+            self.angel_context.conversation_ledger.mark_as_processed(chat_id, decision.boundary_timestamp)
 
             # 3. 将AI的回复加入到对话总账中
             # 获取发送的消息内容
@@ -301,7 +307,7 @@ class AngelHeartPlugin(Star):
                     "sender_name": decision.alias if decision else "AngelHeart",
                     "timestamp": time.time(),
                 }
-                self.conversation_ledger.add_message(chat_id, ai_message)
+                self.angel_context.conversation_ledger.add_message(chat_id, ai_message)
                 logger.debug(f"AngelHeart[{chat_id}]: AI回复已加入对话总账")
 
         # 5. 让秘书清理决策缓存
