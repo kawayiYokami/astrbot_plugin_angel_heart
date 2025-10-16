@@ -115,17 +115,7 @@ class LLMAnalyzer:
 
     async def _call_ai_model(self, prompt: str, chat_id: str) -> str:
         """
-        调用AI模型并返回响应文本
-
-        Args:
-            prompt (str): 发送给AI模型的提示词
-            chat_id (str): 会话ID
-
-        Returns:
-            str: AI模型的响应文本
-
-        Raises:
-            Exception: 如果调用AI模型失败
+        调用AI模型并返回响应文本，包含3秒后自动重试1次机制
         """
         # 3. 如果启用了提示词日志增强，则记录最终构建的完整提示词
         if self.config_manager and self.config_manager.prompt_logging_enabled:
@@ -141,15 +131,34 @@ class LLMAnalyzer:
             )
             raise Exception("未找到分析模型提供商")
 
-        token = await provider.text_chat(prompt=prompt)
-        response_text = token.completion_text.strip()
+        # 重试机制：最多重试1次，间隔3秒
+        max_retries = 1
+        retry_delay = 3  # 秒
 
-        # 记录AI模型的完整响应内容
-        logger.debug(f"[AngelHeart][{chat_id}]: 轻量模型的分析推理 ----------------")
-        logger.debug(response_text)
-        logger.debug("----------------------------------------")
+        for attempt in range(max_retries + 1):
+            try:
+                token = await provider.text_chat(prompt=prompt)
+                response_text = token.completion_text.strip()
 
-        return response_text
+                # 记录AI模型的完整响应内容
+                logger.debug(f"[AngelHeart][{chat_id}]: 轻量模型的分析推理 ----------------")
+                logger.debug(response_text)
+                logger.debug("----------------------------------------")
+
+                return response_text
+
+            except Exception as e:
+                if attempt < max_retries:
+                    logger.warning(
+                        f"AngelHeart分析器: 第{attempt + 1}次调用AI模型失败，{retry_delay}秒后重试: {e}"
+                    )
+                    await asyncio.sleep(retry_delay)
+                else:
+                    logger.error(
+                        f"💥 AngelHeart分析器: 调用AI模型失败，已重试{max_retries}次: {e}",
+                        exc_info=True,
+                    )
+                    raise
 
     def _build_prompt(self, historical_context: List[Dict], recent_dialogue: List[Dict], persona_name: str) -> str:
         """
