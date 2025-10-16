@@ -242,43 +242,48 @@ class AngelHeartPlugin(Star):
         在消息发送前，对消息链中的文本内容进行Markdown清洗，并检测错误信息。
         """
         chat_id = event.unified_msg_origin
-        logger.debug(f"AngelHeart[{chat_id}]: 开始清洗消息链中的Markdown格式...")
+        try:
+            logger.debug(f"AngelHeart[{chat_id}]: 开始清洗消息链中的Markdown格式...")
 
-        # 从 event 对象中获取消息链
-        message_chain = event.get_result().chain
+            # 从 event 对象中获取消息链
+            message_chain = event.get_result().chain
 
-        # 1. 检测 AstrBot 错误信息，如果是错误信息则停止发送
-        full_text_content = ""
-        for component in message_chain:
-            if isinstance(component, Plain):
-                if component.text:
-                    full_text_content += component.text
-            elif hasattr(component, 'data') and isinstance(component.data, dict):
-                text_content = component.data.get('text', '')
-                if text_content:
-                    full_text_content += text_content
+            # 1. 检测 AstrBot 错误信息，如果是错误信息则停止发送
+            full_text_content = ""
+            for component in message_chain:
+                if isinstance(component, Plain):
+                    if component.text:
+                        full_text_content += component.text
+                elif hasattr(component, 'data') and isinstance(component.data, dict):
+                    text_content = component.data.get('text', '')
+                    if text_content:
+                        full_text_content += text_content
 
-        if self._is_astrbot_error_message(full_text_content):
-            logger.info(f"AngelHeart[{chat_id}]: 检测到 AstrBot 错误信息，清空消息链。")
-            # 清空消息链，这样 RespondStage 就会跳过发送
-            result = event.get_result()
-            if result:
-                result.chain = []  # 清空消息链
-            return
+            if self._is_astrbot_error_message(full_text_content):
+                logger.info(f"AngelHeart[{chat_id}]: 检测到 AstrBot 错误信息，清空消息链。")
+                # 清空消息链，这样 RespondStage 就会跳过发送
+                result = event.get_result()
+                if result:
+                    result.chain = []  # 清空消息链
+                return
 
-        # 2. 遍历消息链中的每个元素，进行 Markdown 清洗
-        for component in message_chain:
-            # 检查是否为 Plain 类型的消息组件
-            if isinstance(component, Plain):
-                original_text = component.text
-                if original_text:
-                    # 使用 strip_markdown 函数清洗文本
-                    cleaned_text = strip_markdown(original_text)
-                    # 更新消息组件中的文本内容
-                    component.text = cleaned_text
-                    logger.debug(f"AngelHeart[{chat_id}]: 已清洗文本组件: '{original_text}' -> '{cleaned_text}'")
+            # 2. 遍历消息链中的每个元素，进行 Markdown 清洗
+            for component in message_chain:
+                # 检查是否为 Plain 类型的消息组件
+                if isinstance(component, Plain):
+                    original_text = component.text
+                    if original_text:
+                        # 使用 strip_markdown 函数清洗文本
+                        cleaned_text = strip_markdown(original_text)
+                        # 更新消息组件中的文本内容
+                        component.text = cleaned_text
+                        logger.debug(f"AngelHeart[{chat_id}]: 已清洗文本组件: '{original_text}' -> '{cleaned_text}'")
 
-        logger.debug(f"AngelHeart[{chat_id}]: 消息链中的Markdown格式清洗完成。")
+            logger.debug(f"AngelHeart[{chat_id}]: 消息链中的Markdown格式清洗完成。")
+        finally:
+            # 在消息发送前，无论成功或失败，都释放处理锁
+            await self.angel_context.release_chat_processing(chat_id)
+            logger.info(f"AngelHeart[{chat_id}]: 任务处理完成，已在消息发送前释放处理锁。")
 
     def _prepare_whitelist(self) -> set:
         """预处理白名单，将其转换为 set 以获得 O(1) 的查找性能。"""

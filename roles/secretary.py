@@ -158,13 +158,18 @@ class Secretary:
                 # 即使不回复，也要标记对话为已处理，避免重复分析（在锁保护下进行）
                 self.angel_context.conversation_ledger.mark_as_processed(chat_id, boundary_ts)
 
+                # 决策为不回复时立即释放锁，让观察期可以结束
+                await self.angel_context.release_chat_processing(chat_id)
+
         except Exception as e:
             logger.error(f"AngelHeart[{chat_id}]: 分析过程中发生异常: {e}", exc_info=True)
             # 异常时同样要清理决策，防止死锁
             await self.angel_context.clear_decision(chat_id)
-        finally:
-            # 原子性地收起门牌
+            # 异常时也要释放锁
             await self.angel_context.release_chat_processing(chat_id)
+        finally:
+            # 注意：锁释放逻辑已分别在决策分支和异常处理中实现，这里不需要额外释放
+            pass
 
     async def perform_analysis(
         self, recent_dialogue: List[Dict], db_history: List[Dict], chat_id: str
