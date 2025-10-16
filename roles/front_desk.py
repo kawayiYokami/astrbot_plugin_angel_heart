@@ -215,7 +215,9 @@ class FrontDesk:
                 # 被新消息取代，干净地终止此事件
                 logger.debug(f"AngelHeart[{chat_id}]: 此事件已被新消息取代，正在终止...")
                 # 核心：产生空回复并停止事件传播
-                event.get_result().chain = []
+                result_obj = event.get_result()
+                if result_obj:
+                    result_obj.chain = []
                 event.stop_event()
                 return
             elif result == "PROCESS":
