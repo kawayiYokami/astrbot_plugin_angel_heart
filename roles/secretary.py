@@ -115,7 +115,6 @@ class Secretary:
                 return # 直接返回，finally 会负责收门牌
 
             # 执行分析
-            logger.info(f"AngelHeart[{chat_id}]: 开始调用LLM进行分析...")
             decision = await self.perform_analysis(recent_dialogue, historical_context, chat_id)
 
             # 根据决策结果处理
@@ -124,7 +123,7 @@ class Secretary:
                 # 将快照边界时间戳和对话快照存入决策
                 decision.boundary_timestamp = boundary_ts
                 decision.recent_dialogue = recent_dialogue
-                await self.angel_context.update_analysis_cache(chat_id, decision, reason="分析完成 (决策: 回复)")
+                await self.angel_context.update_analysis_cache(chat_id, decision, reason="分析完成")
 
                 # 标记对话为已处理（在锁保护下进行）
                 self.angel_context.conversation_ledger.mark_as_processed(chat_id, boundary_ts)
@@ -194,9 +193,7 @@ class Secretary:
                 historical_context=db_history, recent_dialogue=recent_dialogue, chat_id=chat_id
             )
 
-            logger.info(
-                f"AngelHeart[{chat_id}]: 秘书LLM分析完成。决策: {'回复' if decision.should_reply else '不回复'} | 策略: {decision.reply_strategy} | 话题: {decision.topic} | 目标: {decision.reply_target}"
-            )
+            # 移除重复日志，已在 process_notification 中记录
             return decision
 
         except asyncio.TimeoutError as e:
