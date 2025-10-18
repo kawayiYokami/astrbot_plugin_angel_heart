@@ -38,7 +38,7 @@ class AngelHeartPlugin(Star):
         self._whitelist_cache = self._prepare_whitelist()
 
         # -- 创建 AngelHeartContext 全局上下文（包含 ConversationLedger）--
-        self.angel_context = AngelHeartContext(self.config_manager)
+        self.angel_context = AngelHeartContext(self.config_manager, self.context)
 
         # -- 角色实例 --
         # 创建秘书和前台，通过全局上下文传递依赖
@@ -281,7 +281,8 @@ class AngelHeartPlugin(Star):
 
             logger.debug(f"AngelHeart[{chat_id}]: 消息链中的Markdown格式清洗完成。")
         finally:
-            # 在消息发送前，无论成功或失败，都释放处理锁
+            # 在消息发送前，无论成功或失败，都取消耐心计时器并释放处理锁
+            await self.angel_context.cancel_patience_timer(chat_id)
             await self.angel_context.release_chat_processing(chat_id)
             logger.info(f"AngelHeart[{chat_id}]: 任务处理完成，已在消息发送前释放处理锁。")
 

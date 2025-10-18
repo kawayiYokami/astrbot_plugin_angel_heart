@@ -125,6 +125,9 @@ class Secretary:
                 decision.recent_dialogue = recent_dialogue
                 await self.angel_context.update_analysis_cache(chat_id, decision, reason="分析完成")
 
+                # V3 新增：启动耐心计时器
+                await self.angel_context.start_patience_timer(chat_id)
+
                 # 标记对话为已处理（在锁保护下进行）
                 self.angel_context.conversation_ledger.mark_as_processed(chat_id, boundary_ts)
 
