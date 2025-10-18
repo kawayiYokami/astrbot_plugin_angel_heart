@@ -92,3 +92,13 @@ class ConfigManager:
     def ai_self_identity(self) -> str:
         """AI的自我身份定位"""
         return self._config.get("ai_self_identity", "你拥有强大的检索能力和庞大的知识储备和记忆能力。\n你喜爱跟群友进行语言游戏沟通。\n群友对AI的善意测试你必须回应满足群友的期待，展示你的能力。")
+
+    @property
+    def patience_interval(self) -> int:
+        """久等间隔（秒）"""
+        return self._config.get("patience_interval", 10)
+
+    @property
+    def comfort_words(self) -> str:
+        """安心词，用'|'分隔"""
+        return self._config.get("comfort_words", "嗯...让我再想想... ( ´•ω•)？|这个问题有点复杂... (；´Д｀)|唔...信息量有点大... (°Д°≡°Д°)")

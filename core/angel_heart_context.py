@@ -14,6 +14,9 @@ except ImportError:
     import logging
     logger = logging.getLogger(__name__)
 
+from astrbot.core.star.context import Context
+from astrbot.api.event import MessageChain
+from astrbot.core.message.components import Plain
 from ..models.analysis_result import SecretaryDecision
 from ..core.conversation_ledger import ConversationLedger
 
@@ -21,17 +24,21 @@ from ..core.conversation_ledger import ConversationLedger
 class AngelHeartContext:
     """AngelHeart 全局上下文管理器"""
 
-    def __init__(self, config_manager):
+    def __init__(self, config_manager, astr_context: Context):
         """
         初始化全局上下文。
 
         Args:
             config_manager: 配置管理器实例，用于获取观察期时长等配置。
+            astr_context: AstrBot 的主 context，用于发送消息等操作。
         """
         self.config_manager = config_manager
+        self.astr_context = astr_context
 
         # 核心资源：对话总账
-        self.conversation_ledger = ConversationLedger(cache_expiry=config_manager.cache_expiry)
+        self.conversation_ledger = ConversationLedger(
+            cache_expiry=config_manager.cache_expiry
+        )
 
         # 门牌管理
         self.processing_chats: Dict[str, float] = {}  # chat_id -> 开始分析时间
@@ -43,6 +50,7 @@ class AngelHeartContext:
 
         # 观察期管理
         self.observation_timers: Dict[str, asyncio.Task] = {}  # chat_id -> 观察期计时任务
+        self.patience_timers: Dict[str, asyncio.Task] = {}  # chat_id -> V3新增，耐心计时器任务
 
         # 时序控制
         self.last_analysis_time: Dict[str, float] = {}  # chat_id -> 上次分析时间
@@ -113,7 +121,9 @@ class AngelHeartContext:
                 return True
             else:
                 # 门牌正挂着，且未卡死
-                logger.debug(f"AngelHeart[{chat_id}]: 门牌已被占用 (开始时间: {start_time})")
+                logger.debug(
+                    f"AngelHeart[{chat_id}]: 门牌已被占用 (开始时间: {start_time})"
+                )
                 return False
 
     async def release_chat_processing(self, chat_id: str):
@@ -146,7 +156,9 @@ class AngelHeartContext:
             # 1. 检查是否有旧的 Future，如果有则杀死它
             old_future = self.pending_futures.get(chat_id)
             if old_future and not old_future.done():
-                logger.debug(f"AngelHeart[{chat_id}]: 检测到旧事件正在等待，发送 KILL 信号")
+                logger.debug(
+                    f"AngelHeart[{chat_id}]: 检测到旧事件正在等待，发送 KILL 信号"
+                )
                 old_future.set_result("KILL")
 
             # 2. 创建新的 Future
@@ -196,8 +208,11 @@ class AngelHeartContext:
                     # 秘书已空闲，发送 PROCESS 信号并成功退出
                     future = self.pending_futures.get(chat_id)
                     if future and not future.done():
-                        logger.info(f"AngelHeart[{chat_id}]: 秘书已空闲，发送 PROCESS 信号唤醒事件")
+                        logger.info(
+                            f"AngelHeart[{chat_id}]: 秘书已空闲，发送 PROCESS 信号唤醒事件"
+                        )
                         future.set_result("PROCESS")
+
                     # 清理
                     self.pending_futures.pop(chat_id, None)
                     self.observation_timers.pop(chat_id, None)
@@ -218,6 +233,7 @@ class AngelHeartContext:
             if future and not future.done():
                 # 发送 KILL 信号，让 FrontDesk 终结这个僵尸事件
                 future.set_result("KILL")
+
             # 清理
             self.pending_futures.pop(chat_id, None)
             self.observation_timers.pop(chat_id, None)
@@ -228,6 +244,48 @@ class AngelHeartContext:
             logger.error(
                 f"AngelHeart[{chat_id}]: 观察期超时处理出错: {e}", exc_info=True
             )
+
+    # ========== V3: Patience Timer (Multi-Stage) ==========
+
+    async def _patience_timer_handler(self, chat_id: str):
+        """动态耐心计时器处理器，根据配置发送安心词。"""
+        try:
+            # 获取配置
+            interval = self.config_manager.patience_interval
+            comfort_words = self.config_manager.comfort_words.split('|')
+
+            # 发送每个安心词
+            for i, word in enumerate(comfort_words):
+                await asyncio.sleep(interval)
+                logger.debug(f"AngelHeart[{chat_id}]: 耐心计时器 - 阶段{i+1}触发 ({(i+1)*interval}s)")
+                chain = MessageChain([Plain(word.strip())])
+                await self.astr_context.send_message(chat_id, chain)
+
+        except asyncio.CancelledError:
+            logger.debug(f"AngelHeart[{chat_id}]: 耐心计时器被取消，任务终止。")
+        except Exception as e:
+            logger.error(
+                f"AngelHeart[{chat_id}]: 耐心计时器处理出错: {e}", exc_info=True
+            )
+    async def start_patience_timer(self, chat_id: str):
+        """启动或重置指定会话的耐心计时器。"""
+        # 先取消已存在的计时器
+        await self.cancel_patience_timer(chat_id)
+
+        # 创建并存储新的计时器任务
+        self.patience_timers[chat_id] = asyncio.create_task(
+            self._patience_timer_handler(chat_id)
+        )
+        comfort_words = self.config_manager.comfort_words.split('|')
+        logger.info(f"AngelHeart[{chat_id}]: 已启动耐心计时器（{len(comfort_words)}阶段，每隔{self.config_manager.patience_interval}秒发送一次）。")
+
+    async def cancel_patience_timer(self, chat_id: str):
+        """取消指定会话的耐心计时器。"""
+        if chat_id in self.patience_timers:
+            timer_task = self.patience_timers.pop(chat_id)
+            if not timer_task.done():
+                timer_task.cancel()
+                logger.debug(f"AngelHeart[{chat_id}]: 已取消正在运行的耐心计时器。")
 
     # ========== 决策缓存管理 ==========
 
@@ -244,9 +302,11 @@ class AngelHeartContext:
         """
         async with self.processing_lock:
             self.analysis_cache[chat_id] = result
+
             # 如果缓存超过最大尺寸，则移除最旧的条目
             if len(self.analysis_cache) > self.CACHE_MAX_SIZE:
                 self.analysis_cache.popitem(last=False)
+
             logger.info(
                 f"AngelHeart[{chat_id}]: {reason}，已更新缓存。决策: {'回复' if result.should_reply else '不回复'} | 策略: {result.reply_strategy} | 话题: {result.topic} | 目标: {result.reply_target}"
             )

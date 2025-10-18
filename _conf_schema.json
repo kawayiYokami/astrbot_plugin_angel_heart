@@ -90,9 +90,21 @@
     "default": false
   },
   "prompt_logging_enabled": {
-    "type": "bool",
-    "title": "提示词日志增强",
-    "description": "启用后，将记录完整提示词内容，用于调试和观察。",
-    "default": false
-  }
+   "type": "bool",
+   "title": "提示词日志增强",
+   "description": "启用后，将记录完整提示词内容，用于调试和观察。",
+   "default": false
+ },
+ "patience_interval": {
+   "type": "int",
+   "title": "久等间隔（秒）",
+   "description": "耐心计时器各阶段之间的时间间隔。",
+   "default": 10
+ },
+ "comfort_words": {
+   "type": "string",
+   "title": "安心词",
+   "description": "耐心计时器各阶段发送的安慰话语。多个词请用 '|' 分隔。",
+   "default": "嗯...让我再想想... ( ´•ω•)？|这个问题有点复杂... (；´Д｀)|唔...信息量有点大... (°Д°≡°Д°)"
+ }
 }
