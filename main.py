@@ -280,6 +280,17 @@ class AngelHeartPlugin(Star):
                                 # 替换整个 Plain 组件对象，但保持其他组件不变
                                 message_chain[i] = Plain(text=cleaned_text)
                                 logger.debug(f"AngelHeart[{chat_id}]: 已清洗文本组件: '{original_text[:50]}...' -> '{cleaned_text[:50]}...'")
+
+                                # -- 在清洗后立即记录，不再二次提取 --
+                                ai_message = {
+                                    "role": "assistant",
+                                    "content": cleaned_text,
+                                    "sender_id": str(event.get_self_id()),
+                                    "sender_name": "assistant",
+                                    "timestamp": time.time(),
+                                }
+                                self.angel_context.conversation_ledger.add_message(chat_id, ai_message)
+                                logger.debug(f"AngelHeart[{chat_id}]: AI回复已在清洗后立即加入对话总账")
                             # 如果清洗结果相同或为空，保持原组件不变
                         except Exception as e:
                             logger.warning(f"AngelHeart[{chat_id}]: 文本清洗失败: {e}，保持原文本")
@@ -306,20 +317,6 @@ class AngelHeartPlugin(Star):
         # 2. 如果决策有效，使用其边界时间戳来推进 Ledger 状态
         if decision and hasattr(decision, 'boundary_timestamp') and decision.boundary_timestamp > 0:
             self.angel_context.conversation_ledger.mark_as_processed(chat_id, decision.boundary_timestamp)
-
-            # 3. 将AI的回复加入到对话总账中
-            # 获取发送的消息内容
-            sent_message = self._extract_sent_message_content(event)
-            if sent_message:
-                ai_message = {
-                    "role": "assistant",
-                    "content": sent_message,
-                    "sender_id": str(event.get_self_id()),
-                    "sender_name": decision.alias if decision else "AngelHeart",
-                    "timestamp": time.time(),
-                }
-                self.angel_context.conversation_ledger.add_message(chat_id, ai_message)
-                logger.debug(f"AngelHeart[{chat_id}]: AI回复已加入对话总账")
 
         # 5. 让秘书清理决策缓存
         await self.secretary.clear_decision(chat_id)
