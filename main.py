@@ -268,16 +268,21 @@ class AngelHeartPlugin(Star):
                 return
 
             # 2. 遍历消息链中的每个元素，进行 Markdown 清洗
-            for component in message_chain:
-                # 检查是否为 Plain 类型的消息组件
+            # 只处理 Plain 文本组件，保持其他组件不变
+            for i, component in enumerate(message_chain):
                 if isinstance(component, Plain):
                     original_text = component.text
                     if original_text:
-                        # 使用 strip_markdown 函数清洗文本
-                        cleaned_text = strip_markdown(original_text)
-                        # 更新消息组件中的文本内容
-                        component.text = cleaned_text
-                        logger.debug(f"AngelHeart[{chat_id}]: 已清洗文本组件: '{original_text}' -> '{cleaned_text}'")
+                        try:
+                            cleaned_text = strip_markdown(original_text)
+                            # 只有在清洗结果有效且真正改变了内容时才替换
+                            if cleaned_text and cleaned_text.strip() and cleaned_text != original_text:
+                                # 替换整个 Plain 组件对象，但保持其他组件不变
+                                message_chain[i] = Plain(text=cleaned_text)
+                                logger.debug(f"AngelHeart[{chat_id}]: 已清洗文本组件: '{original_text[:50]}...' -> '{cleaned_text[:50]}...'")
+                            # 如果清洗结果相同或为空，保持原组件不变
+                        except Exception as e:
+                            logger.warning(f"AngelHeart[{chat_id}]: 文本清洗失败: {e}，保持原文本")
 
             logger.debug(f"AngelHeart[{chat_id}]: 消息链中的Markdown格式清洗完成。")
         finally:
