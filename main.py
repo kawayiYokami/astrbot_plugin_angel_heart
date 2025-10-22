@@ -275,22 +275,23 @@ class AngelHeartPlugin(Star):
                     if original_text:
                         try:
                             cleaned_text = strip_markdown(original_text)
+
+                            # -- 在清洗后立即记录，无论是否改变了内容 --
+                            ai_message = {
+                                "role": "assistant",
+                                "content": cleaned_text,
+                                "sender_id": str(event.get_self_id()),
+                                "sender_name": "assistant",
+                                "timestamp": time.time(),
+                            }
+                            self.angel_context.conversation_ledger.add_message(chat_id, ai_message)
+                            logger.debug(f"AngelHeart[{chat_id}]: AI回复已在清洗后立即加入对话总账")
+
                             # 只有在清洗结果有效且真正改变了内容时才替换
                             if cleaned_text and cleaned_text.strip() and cleaned_text != original_text:
                                 # 替换整个 Plain 组件对象，但保持其他组件不变
                                 message_chain[i] = Plain(text=cleaned_text)
                                 logger.debug(f"AngelHeart[{chat_id}]: 已清洗文本组件: '{original_text[:50]}...' -> '{cleaned_text[:50]}...'")
-
-                                # -- 在清洗后立即记录，不再二次提取 --
-                                ai_message = {
-                                    "role": "assistant",
-                                    "content": cleaned_text,
-                                    "sender_id": str(event.get_self_id()),
-                                    "sender_name": "assistant",
-                                    "timestamp": time.time(),
-                                }
-                                self.angel_context.conversation_ledger.add_message(chat_id, ai_message)
-                                logger.debug(f"AngelHeart[{chat_id}]: AI回复已在清洗后立即加入对话总账")
                             # 如果清洗结果相同或为空，保持原组件不变
                         except Exception as e:
                             logger.warning(f"AngelHeart[{chat_id}]: 文本清洗失败: {e}，保持原文本")
