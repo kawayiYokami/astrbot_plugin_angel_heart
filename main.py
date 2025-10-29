@@ -58,7 +58,7 @@ class AngelHeartPlugin(Star):
         logger.info("💖 AngelHeart智能回复员初始化完成 (事件扣押机制 V2 已启用)")
 
     # --- 核心事件处理 ---
-    @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE | filter.EventMessageType.PRIVATE_MESSAGE, priority=200)
+    @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE | filter.EventMessageType.PRIVATE_MESSAGE, priority=-10)
     async def smart_reply_handler(self, event: AstrMessageEvent, *args, **kwargs):
         """智能回复员 - 事件入口：处理缓存或在唤醒时清空缓存"""
 
