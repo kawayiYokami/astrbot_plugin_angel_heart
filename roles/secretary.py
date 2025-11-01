@@ -120,6 +120,24 @@ class Secretary:
             # 根据决策结果处理
             if decision and decision.should_reply:
                 logger.info(f"AngelHeart[{chat_id}]: 决策为'参与'。策略: {decision.reply_strategy}")
+
+                # 【新增】图片转述处理 - 仅在决定回复后进行
+                # 从AstrBot主配置正确读取图片转述Provider ID
+                try:
+                    cfg = self.context.get_config(umo=event.unified_msg_origin)["provider_settings"]
+                    caption_provider_id = cfg.get("default_image_caption_provider_id", "")
+                except Exception as e:
+                    logger.warning(f"AngelHeart[{chat_id}]: 无法读取图片转述配置: {e}")
+                    caption_provider_id = ""
+
+                caption_count = await self.angel_context.conversation_ledger.process_image_captions_if_needed(
+                    chat_id=chat_id,
+                    caption_provider_id=caption_provider_id,
+                    astr_context=self.context
+                )
+                if caption_count > 0:
+                    logger.info(f"AngelHeart[{chat_id}]: 已为 {caption_count} 张图片生成转述")
+
                 # 将快照边界时间戳和对话快照存入决策
                 decision.boundary_timestamp = boundary_ts
                 decision.recent_dialogue = recent_dialogue
@@ -216,6 +234,7 @@ class Secretary:
         """清除指定会话的决策"""
         await self.angel_context.clear_decision(chat_id)
 
+    
     def get_cached_decisions_for_display(self) -> list:
         """获取用于状态显示的缓存决策列表"""
         cached_items = list(self.angel_context.analysis_cache.items())

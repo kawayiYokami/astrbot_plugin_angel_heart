@@ -1,6 +1,6 @@
 import time
 import threading
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Optional
 from . import utils
 
 # 条件导入：当缺少astrbot依赖时使用Mock
@@ -215,3 +215,206 @@ class ConversationLedger:
                                 new_messages.append(msg)
 
                         ledger_data["messages"] = new_messages
+
+    def add_caption_to_message(self, chat_id: str, message_timestamp: float, caption: str) -> bool:
+        """
+        为指定会话中的特定消息添加图片转述
+
+        Args:
+            chat_id: 会话ID
+            message_timestamp: 消息时间戳
+            caption: 图片转述文本
+
+        Returns:
+            bool: 是否成功添加转述
+        """
+        ledger = self._get_or_create_ledger(chat_id)
+        with self._lock:
+            # 查找对应时间戳的消息
+            for message in ledger["messages"]:
+                if abs(message.get("timestamp", 0) - message_timestamp) < 0.001:  # 处理浮点数精度
+                    message["image_caption"] = caption
+
+                    # 转述成功后，清空图片URL避免重复转述
+                    if isinstance(message.get("content"), list):
+                        # 移除所有 image_url 组件
+                        message["content"] = [
+                            item for item in message["content"]
+                            if item.get("type") != "image_url"
+                        ]
+                        logger.debug(f"AngelHeart[{chat_id}]: 已清空图片URL，避免重复转述")
+
+                    logger.debug(f"AngelHeart[{chat_id}]: 已为消息添加图片转述: {caption[:50]}...")
+                    return True
+            return False
+
+    async def generate_captions_for_chat(self, chat_id: str, caption_provider_id: str, astr_context=None) -> int:
+        """
+        为指定会话中的所有未转述图片生成转述
+
+        Args:
+            chat_id: 会话ID
+            caption_provider_id: 图片转述Provider ID
+            astr_context: AstrBot上下文对象，用于获取Provider
+
+        Returns:
+            int: 成功转述的图片数量
+        """
+        if not astr_context:
+            logger.warning(f"AngelHeart[{chat_id}]: astr_context 为空，无法进行图片转述")
+            return 0
+
+        # 获取转述Provider
+        caption_provider = astr_context.get_provider_by_id(caption_provider_id)
+        if not caption_provider:
+            logger.error(f"AngelHeart[{chat_id}]: 无法找到图片转述Provider: {caption_provider_id}")
+            return 0
+
+        # 获取配置
+        try:
+            cfg = astr_context.get_config(umo=chat_id)["provider_settings"]
+            img_cap_prompt = cfg.get("image_caption_prompt", "请准确描述图片内容")
+        except Exception as e:
+            logger.error(f"AngelHeart[{chat_id}]: 获取配置失败: {e}")
+            return 0
+
+        ledger = self._get_or_create_ledger(chat_id)
+        processed_count = 0
+
+        with self._lock:
+            # 查找所有包含图片且未转述的消息
+            messages_needing_caption = []
+            for message in ledger["messages"]:
+                if (message.get("role") == "user" and
+                    isinstance(message.get("content"), list) and
+                    not message.get("image_caption")):  # 还没有转述
+
+                    # 检查是否包含图片
+                    has_image = any(item.get("type") == "image_url" for item in message["content"])
+                    if has_image:
+                        messages_needing_caption.append(message)
+
+            logger.info(f"AngelHeart[{chat_id}]: 找到 {len(messages_needing_caption)} 条需要转述图片的消息")
+
+        # 逐一处理需要转述的消息（在锁外进行异步操作）
+        for message in messages_needing_caption:
+            try:
+                # 提取图片URL - 优先使用原始URL，避免base64数据过长
+                image_urls = []
+                for item in message["content"]:
+                    if item.get("type") == "image_url":
+                        # 优先使用原始URL
+                        original_url = item.get("original_url")
+                        if original_url and original_url != "[IMAGE_PLACEHOLDER]":
+                            image_urls.append(original_url)
+                            logger.debug(f"AngelHeart[{chat_id}]: 使用原始URL进行转述: {original_url[:100]}...")
+                        else:
+                            # 回退到base64数据URL
+                            image_url = item.get("image_url", {}).get("url", "")
+                            if image_url and not image_url.startswith("data:"):
+                                image_urls.append(image_url)
+
+                if image_urls:
+                    logger.debug(f"AngelHeart[{chat_id}]: 正在为消息转述 {len(image_urls)} 张图片")
+
+                    # 调用Provider进行图片转述
+                    llm_resp = await caption_provider.text_chat(
+                        prompt=img_cap_prompt,
+                        image_urls=image_urls,
+                    )
+
+                    if llm_resp and llm_resp.completion_text:
+                        caption = llm_resp.completion_text.strip()
+                        # 添加转述结果到消息
+                        if self.add_caption_to_message(chat_id, message["timestamp"], caption):
+                            processed_count += 1
+                            logger.info(f"AngelHeart[{chat_id}]: 图片转述成功: {caption[:50]}...")
+                        else:
+                            logger.warning(f"AngelHeart[{chat_id}]: 无法为消息添加转述结果")
+                    else:
+                        logger.warning(f"AngelHeart[{chat_id}]: 图片转述返回空结果")
+
+            except Exception as e:
+                logger.error(f"AngelHeart[{chat_id}]: 图片转述失败: {e}")
+                # 继续处理下一张图片
+                continue
+
+        if processed_count > 0:
+            logger.info(f"AngelHeart[{chat_id}]: 图片转述完成，共处理 {processed_count} 张图片")
+
+        return processed_count
+
+    def should_process_images(self, chat_id: str, astr_context=None) -> bool:
+        """
+        判断是否需要为当前会话进行图片转述
+
+        Args:
+            chat_id: 会话ID
+            astr_context: AstrBot上下文对象，用于获取Provider信息
+
+        Returns:
+            bool: 是否需要处理图片
+        """
+        try:
+            # 1. 检查会话中是否有需要转述的图片
+            historical_context, recent_dialogue, _ = self.get_context_snapshot(chat_id)
+            all_messages = historical_context + recent_dialogue
+
+            has_images_needing_caption = False
+            for message in all_messages:
+                if (message.get("role") == "user" and
+                    isinstance(message.get("content"), list) and
+                    not message.get("image_caption")):  # 还没有转述
+
+                    # 检查是否包含图片
+                    has_image = any(item.get("type") == "image_url" for item in message["content"])
+                    if has_image:
+                        has_images_needing_caption = True
+                        break
+
+            if not has_images_needing_caption:
+                logger.debug(f"AngelHeart[{chat_id}]: 会话中无需转述的图片")
+                return False
+
+            # 2. 检查当前使用的Provider是否支持图片
+            if astr_context:
+                try:
+                    current_provider = astr_context.get_using_provider(chat_id)
+                    if current_provider:
+                        modalities = current_provider.provider_config.get("modalities", ["text"])
+                        if "image" in modalities:
+                            logger.debug(f"AngelHeart[{chat_id}]: 当前Provider支持图片，无需转述")
+                            return False
+                except Exception:
+                    # 如果获取当前Provider失败，保守处理，继续进行转述
+                    logger.debug(f"AngelHeart[{chat_id}]: 无法确定当前Provider能力，继续进行图片转述")
+
+            # 3. 有图片且当前Provider不支持图片，需要转述
+            logger.debug(f"AngelHeart[{chat_id}]: 发现需要转述的图片，准备进行图片转述")
+            return True
+
+        except Exception as e:
+            logger.error(f"AngelHeart[{chat_id}]: 检查图片转述条件时发生错误: {e}")
+            # 出错时保守处理，不进行转述
+            return False
+
+    async def process_image_captions_if_needed(self, chat_id: str, caption_provider_id: str, astr_context=None) -> int:
+        """
+        如果需要，为指定会话中的图片生成转述（一步完成检查+处理）
+
+        Args:
+            chat_id: 会话ID
+            caption_provider_id: 图片转述Provider ID
+            astr_context: AstrBot上下文对象
+
+        Returns:
+            int: 成功转述的图片数量（如果不需要转述则返回0）
+        """
+        if not caption_provider_id:
+            logger.debug(f"AngelHeart[{chat_id}]: 未配置图片转述Provider，跳过图片转述")
+            return 0
+
+        if self.should_process_images(chat_id, astr_context):
+            return await self.generate_captions_for_chat(chat_id, caption_provider_id, astr_context)
+
+        return 0
