@@ -14,7 +14,7 @@ except ImportError:
     logger = logging.getLogger(__name__)
 from astrbot.api.event import AstrMessageEvent
 from astrbot.core.message.components import Image  # 导入 Image 和 Plain 组件
-from typing import Any  # 导入类型提示
+from typing import Any, List, Dict  # 导入类型提示
 
 # 导入公共工具函数和 ConversationLedger
 from ..core.utils import convert_content_to_string, format_relative_time
@@ -76,7 +76,7 @@ class FrontDesk:
         # 4. 处理图片组件
         for component in message_chain:
             if isinstance(component, Image):
-                # 首先尝试使用官方方法处理本地文件或可访问的URL
+                # 尝试使用官方方法处理本地文件或可访问的URL
                 try:
                     # 检查是否是本地文件或可访问的URL
                     url = component.url or component.file
@@ -92,7 +92,8 @@ class FrontDesk:
                             data_url = f"data:image/jpeg;base64,{image_data}"
                             content_list.append({
                                 "type": "image_url",
-                                "image_url": {"url": data_url}
+                                "image_url": {"url": data_url},
+                                "original_url": url  # 保存原始URL供转述使用
                             })
                         else:
                             raise Exception("convert_to_base64 返回空值")
@@ -108,7 +109,8 @@ class FrontDesk:
                             data_url = f"data:image/jpeg;base64,{image_data}"
                             content_list.append({
                                 "type": "image_url",
-                                "image_url": {"url": data_url}
+                                "image_url": {"url": data_url},
+                                "original_url": url  # 保存原始URL供转述使用
                             })
                         else:
                             raise Exception("网络图片下载失败")
@@ -237,6 +239,73 @@ class FrontDesk:
         return self._config_manager
 
 
+    def filter_images_for_provider(self, chat_id: str, contexts: List[Dict]) -> List[Dict]:
+        """
+        根据 Provider 的 modalities 配置过滤图片内容
+
+        Args:
+            chat_id: 聊天ID，用于获取当前使用的 provider
+            contexts: 消息上下文列表
+
+        Returns:
+            过滤后的消息上下文列表
+        """
+        try:
+            # 获取当前使用的 provider
+            provider = self.context.astr_context.get_using_provider(chat_id)
+            if not provider:
+                logger.debug(f"AngelHeart[{chat_id}]: 无法获取当前 provider，跳过图片过滤")
+                return contexts
+
+            # 检查 provider 的 modalities 配置
+            provider_config = provider.provider_config
+            modalities = provider_config.get("modalities", ["text"])
+
+            # 如果支持图片，直接返回
+            if "image" in modalities:
+                logger.debug(f"AngelHeart[{chat_id}]: Provider {provider_config.get('id', 'unknown')} 支持图片，无需过滤")
+                return contexts
+
+            # 不支持图片，需要过滤
+            logger.info(f"AngelHeart[{chat_id}]: Provider {provider_config.get('id', 'unknown')} 不支持图片，开始过滤图片内容")
+
+            filtered_contexts = []
+            images_filtered_count = 0
+
+            for msg in contexts:
+                filtered_msg = copy.deepcopy(msg)  # 深拷贝避免修改原始数据
+
+                if msg.get("role") == "user" and isinstance(filtered_msg.get("content"), list):
+                    original_content = filtered_msg["content"]
+                    filtered_content = []
+                    has_image = False
+
+                    for item in original_content:
+                        if item.get("type") == "image_url":
+                            has_image = True
+                            images_filtered_count += 1
+                            # 静默移除图片，不添加任何提示
+                        else:
+                            # 保留非图片的所有组件（文本、文件等）
+                            filtered_content.append(item)
+
+                    filtered_msg["content"] = filtered_content
+
+                    if has_image:
+                        logger.debug(f"AngelHeart[{chat_id}]: 已过滤用户消息中的图片内容")
+
+                filtered_contexts.append(filtered_msg)
+
+            if images_filtered_count > 0:
+                logger.info(f"AngelHeart[{chat_id}]: 总共过滤了 {images_filtered_count} 个图片组件")
+
+            return filtered_contexts
+
+        except Exception as e:
+            logger.error(f"AngelHeart[{chat_id}]: 图片过滤时发生错误: {e}", exc_info=True)
+            # 出错时返回原始上下文，避免破坏流程
+            return contexts
+
     async def rewrite_prompt_for_llm(self, chat_id: str, req: Any):
         """
         重构请求体，实现完整的对话历史格式化和指令注入。
@@ -261,7 +330,7 @@ class FrontDesk:
         # 3. 准备完整的对话历史 (Context)
         full_history = historical_context + recent_dialogue
 
-        # 4. 遍历 full_history 并动态注入元数据
+        # 4. 遍历 full_history 并动态注入元数据和图片转述
         new_contexts = []
         for msg in full_history:
             if msg.get("role") == "user":
@@ -270,6 +339,21 @@ class FrontDesk:
 
                 # 使用深拷贝复制 content 列表以进行修改，确保不污染原始数据
                 new_content = copy.deepcopy(msg.get("content", []))
+
+                # 【新增】处理图片转述 - 直接检查转述字段
+                image_caption = msg.get("image_caption")
+                if image_caption:
+                    # 有转述就无脑合并
+                    caption_text = f"[图片描述: {image_caption}]"
+
+                    # 移除所有图片组件
+                    new_content = [item for item in new_content if item.get("type") != "image_url"]
+
+                    # 添加转述文本
+                    new_content.append({"type": "text", "text": caption_text})
+
+                    logger.debug(f"AngelHeart[{chat_id}]: 已将图片转述合成为文本: {caption_text[:50]}...")
+
                 if isinstance(new_content, list) and new_content:
                     # 找到第一个 text 组件并注入 header
                     found_text = False
@@ -290,13 +374,16 @@ class FrontDesk:
                 # assistant 消息保持不变
                 new_contexts.append(msg)
 
-        # 5. 完全覆盖原有的 contexts
+        # 5. 根据 Provider 的 modalities 配置过滤图片内容
+        new_contexts = self.filter_images_for_provider(chat_id, new_contexts)
+
+        # 6. 完全覆盖原有的 contexts
         req.contexts = new_contexts
 
-        # 6. 聚焦指令并赋值给 req.prompt
+        # 7. 聚焦指令并赋值给 req.prompt
         req.prompt = final_prompt_str
 
-        # 7. 清空 image_urls 并注入系统提示词
+        # 8. 清空 image_urls 并注入系统提示词
         req.image_urls = []  # 图片已在 contexts 中
 
         # 注入系统提示词

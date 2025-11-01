@@ -138,7 +138,7 @@ class AngelHeartPlugin(Star):
                 req.system_prompt = decision_context
             logger.debug(f"AngelHeart[{chat_id}]: 已将决策上下文注入到 system_prompt。")
 
-    @filter.on_llm_request(priority=-50) # 在决策注入之后，日志之前执行
+    @filter.on_llm_request(priority=50) # 在决策注入之后，日志之前执行
     async def delegate_prompt_rewriting(self, event: AstrMessageEvent, req: ProviderRequest):
         """将 Prompt 重写任务委托给 FrontDesk 处理"""
         chat_id = event.unified_msg_origin
