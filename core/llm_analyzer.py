@@ -369,7 +369,7 @@ class LLMAnalyzer:
                         required_facts=angel_eye_data.get("required_facts", []),
                         chat_history=angel_eye_data.get("chat_history", {})
                     )
-                    logger.debug(f"AngelHeart分析器: 成功解析 angel_eye_request")
+                    logger.debug("AngelHeart分析器: 成功解析 angel_eye_request")
             except Exception as e:
                 logger.warning(f"AngelHeart分析器: 解析 angel_eye_request 失败: {e}")
 

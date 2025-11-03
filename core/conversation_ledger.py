@@ -1,6 +1,6 @@
 import time
 import threading
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple
 from . import utils
 
 # 条件导入：当缺少astrbot依赖时使用Mock
