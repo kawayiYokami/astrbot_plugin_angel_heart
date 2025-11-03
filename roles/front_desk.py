@@ -245,8 +245,7 @@ class FrontDesk:
         """
         try:
             ledger = self.context.conversation_ledger
-            ledger_data = ledger._get_or_create_ledger(chat_id)
-            current_messages = ledger_data["messages"]
+            current_messages = ledger.get_all_messages(chat_id)
 
             # 统计有文本内容的消息
             text_messages = [msg for msg in current_messages
@@ -271,8 +270,8 @@ class FrontDesk:
                 all_messages = supplement_messages + current_messages
                 all_messages.sort(key=lambda m: m.get("timestamp", 0))
 
-                with ledger._lock:
-                    ledger_data["messages"] = all_messages
+                # 使用公共方法更新消息列表
+                ledger.set_messages(chat_id, all_messages)
 
                 # 调试：检查消息状态
                 processed_count = sum(1 for m in all_messages if m.get("is_processed", False))
