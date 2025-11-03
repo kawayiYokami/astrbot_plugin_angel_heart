@@ -1,6 +1,21 @@
 import datetime
-from typing import List, Dict
+from typing import List, Dict, Optional, Any
 from pydantic import BaseModel, Field
+
+class AngelEyeRequest(BaseModel):
+    """天使之眼查询请求"""
+    required_docs: Dict[str, Dict[str, List[str]]] = Field(
+        default_factory=dict,
+        description="需要查询的文档，键是实体名称，值是包含keywords的对象"
+    )
+    required_facts: List[str] = Field(
+        default_factory=list,
+        description="需要查询的结构化事实，格式为'实体名.属性名'"
+    )
+    chat_history: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="聊天记录查询参数，包含time_range_hours、filter_user_ids、keywords等"
+    )
 
 class SecretaryDecision(BaseModel):
     """秘书AI的决策结果"""
@@ -20,3 +35,5 @@ class SecretaryDecision(BaseModel):
     needs_search: bool = Field(default=False, description="是否需要搜索百科知识来确认事实或补充信息")
     # --- 新增字段以保存对话快照 ---
     recent_dialogue: List[Dict] = Field(default_factory=list, description="决策时的最新对话快照，用于后续生成提示词")
+    # --- 新增字段以支持天使之眼集成 ---
+    angel_eye_request: Optional[AngelEyeRequest] = Field(default=None, description="天使之眼查询请求，当needs_search为true时使用")
