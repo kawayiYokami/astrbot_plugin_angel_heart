@@ -1,4 +1,3 @@
-
 """
 AngelHeart插件 - 天使心智能群聊/私聊交互插件
 
@@ -13,8 +12,9 @@ import json
 
 from astrbot.api.star import Star
 from astrbot.api.event import AstrMessageEvent, filter
-from astrbot.api.provider import ProviderRequest
+from astrbot.api.provider import ProviderRequest, LLMResponse
 from astrbot.core.star.context import Context
+from astrbot.core.star.register import register_on_llm_response
 try:
     from astrbot.api import logger
 except ImportError:
@@ -148,6 +148,53 @@ class AngelHeartPlugin(Star):
             return
 
         await self.front_desk.rewrite_prompt_for_llm(chat_id, req)
+
+    # 捕获工具调用结果
+    @register_on_llm_response()
+    async def capture_tool_results(self, event: AstrMessageEvent, response: LLMResponse):
+        """捕获工具调用和结果，存储到天使之心对话总账"""
+        chat_id = event.unified_msg_origin
+
+        # 获取 ProviderRequest 中的 tool_calls_result
+        provider_request = event.get_extra('provider_request')
+
+        if provider_request and hasattr(provider_request, 'tool_calls_result'):
+            tool_results = provider_request.tool_calls_result
+
+            if tool_results:
+                # 确保 tool_results 是列表格式
+                if isinstance(tool_results, list):
+                    tool_results_list = tool_results
+                else:
+                    tool_results_list = [tool_results]
+
+                # 存储每轮工具调用
+                for tool_result in tool_results_list:
+                    # 1. 存储助手的工具调用消息
+                    assistant_tool_msg = {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": tool_result.tool_calls_info.tool_calls,
+                        "timestamp": time.time(),
+                        "sender_id": "assistant",
+                        "sender_name": "assistant"
+                    }
+                    self.angel_context.conversation_ledger.add_message(chat_id, assistant_tool_msg)
+
+                    # 2. 存储工具执行结果
+                    for tool_result_msg in tool_result.tool_calls_result:
+                        tool_msg = {
+                            "role": "tool",
+                            "tool_call_id": tool_result_msg.tool_call_id,
+                            "name": tool_result_msg.tool_call_id,
+                            "content": tool_result_msg.content,
+                            "timestamp": time.time(),
+                            "sender_id": "tool",
+                            "sender_name": "tool_result"
+                        }
+                        self.angel_context.conversation_ledger.add_message(chat_id, tool_msg)
+
+                logger.info(f"AngelHeart[{chat_id}]: 已记录工具调用和结果")
 
 
     # --- 内部方法 ---
