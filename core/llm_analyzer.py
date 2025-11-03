@@ -14,7 +14,7 @@ from ..core.utils import (
     format_relative_time,
     JsonParser
 )
-from ..models.analysis_result import SecretaryDecision
+from ..models.analysis_result import SecretaryDecision, AngelEyeRequest
 
 
 class SafeFormatter(string.Formatter):
@@ -358,10 +358,25 @@ class LLMAnalyzer:
         else:
             reply_target = str(reply_target_raw)
 
+        # 解析 angel_eye_request
+        angel_eye_request = None
+        if needs_search and "angel_eye_request" in raw:
+            try:
+                angel_eye_data = raw["angel_eye_request"]
+                if angel_eye_data:
+                    angel_eye_request = AngelEyeRequest(
+                        required_docs=angel_eye_data.get("required_docs", {}),
+                        required_facts=angel_eye_data.get("required_facts", []),
+                        chat_history=angel_eye_data.get("chat_history", {})
+                    )
+                    logger.debug(f"AngelHeart分析器: 成功解析 angel_eye_request")
+            except Exception as e:
+                logger.warning(f"AngelHeart分析器: 解析 angel_eye_request 失败: {e}")
+
         decision = SecretaryDecision(
             should_reply=should_reply, reply_strategy=reply_strategy, topic=topic,
             reply_target=reply_target, persona_name=persona_name, alias=alias,
-            needs_search=needs_search
+            needs_search=needs_search, angel_eye_request=angel_eye_request
         )
 
         logger.debug(
