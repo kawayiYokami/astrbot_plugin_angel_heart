@@ -247,14 +247,16 @@ class FrontDesk:
             ledger = self.context.conversation_ledger
             current_messages = ledger.get_all_messages(chat_id)
 
-            # 统计有文本内容的消息
+            # 统计总消息数（包括图片等无文本消息）
+            total_messages = len(current_messages)
             text_messages = [msg for msg in current_messages
                             if self._has_text_content(msg)]
 
-            logger.debug(f"AngelHeart[{chat_id}]: 当前消息总数: {len(current_messages)}, 有文本的消息数: {len(text_messages)}")
+            logger.debug(f"AngelHeart[{chat_id}]: 当前消息总数: {total_messages}, 有文本的消息数: {len(text_messages)}")
 
-            if len(text_messages) >= 7:
-                logger.debug(f"AngelHeart[{chat_id}]: 消息数量充足({len(text_messages)} >= 7)，无需补充")
+            # 基于总消息数判断是否需要补充（不只是文本消息）
+            if total_messages >= 7:
+                logger.debug(f"AngelHeart[{chat_id}]: 消息数量充足({total_messages} >= 7)，无需补充")
                 return
 
             # 固定获取19条历史消息（除了最新那条）
@@ -266,8 +268,18 @@ class FrontDesk:
                 for msg in supplement_messages:
                     msg["is_processed"] = True
 
-                # 合并并排序（保持原始时间戳）
-                all_messages = supplement_messages + current_messages
+                # 保留最新的消息（刚收到的），清空其他记录避免重复
+                if current_messages:
+                    # 按时间戳排序，找到最新的消息
+                    sorted_current = sorted(current_messages, key=lambda m: m.get("timestamp", 0))
+                    latest_message = sorted_current[-1]
+                    
+                    # 合并历史消息和最新消息
+                    all_messages = supplement_messages + [latest_message]
+                else:
+                    # 如果没有当前消息（不太可能），只使用历史消息
+                    all_messages = supplement_messages
+                
                 all_messages.sort(key=lambda m: m.get("timestamp", 0))
 
                 # 使用公共方法更新消息列表
