@@ -178,6 +178,10 @@ class FrontDesk:
         # 4. 缓存消息
         await self.cache_message(chat_id, event)
 
+        # 4.5. 【新增】检查并补充历史消息，确保至少有7条上下文
+        logger.debug(f"AngelHeart[{chat_id}]: 开始检查上下文是否需要补充")
+        await self._ensure_minimum_context(chat_id, event)
+
         # 5. 唤醒词检测
         # 设计意图：此处的缓存模拟了 AI 的"看群时间"或"短期记忆"。
         # 在 'analysis_on_mention_only' 模式下，只要在这段记忆中出现过一次别名，
@@ -233,6 +237,234 @@ class FrontDesk:
         else:
             # Secretary 空闲：直接通知处理
             await self.secretary.process_notification(event)
+
+    async def _ensure_minimum_context(self, chat_id: str, event: AstrMessageEvent):
+        """
+        确保会话至少有7条消息
+        历史消息标记为已处理，新消息保持未处理状态
+        """
+        try:
+            ledger = self.context.conversation_ledger
+            ledger_data = ledger._get_or_create_ledger(chat_id)
+            current_messages = ledger_data["messages"]
+
+            # 统计有文本内容的消息
+            text_messages = [msg for msg in current_messages
+                            if self._has_text_content(msg)]
+
+            logger.debug(f"AngelHeart[{chat_id}]: 当前消息总数: {len(current_messages)}, 有文本的消息数: {len(text_messages)}")
+
+            if len(text_messages) >= 7:
+                logger.debug(f"AngelHeart[{chat_id}]: 消息数量充足({len(text_messages)} >= 7)，无需补充")
+                return
+
+            # 固定获取19条历史消息（除了最新那条）
+            logger.info(f"AngelHeart[{chat_id}]: 当前有 {len(text_messages)} 条消息，开始获取历史消息")
+            supplement_messages = await self._fetch_database_history(chat_id, 19, event)
+
+            if supplement_messages:
+                # 确保历史消息标记为已处理
+                for msg in supplement_messages:
+                    msg["is_processed"] = True
+
+                # 合并并排序（保持原始时间戳）
+                all_messages = supplement_messages + current_messages
+                all_messages.sort(key=lambda m: m.get("timestamp", 0))
+
+                with ledger._lock:
+                    ledger_data["messages"] = all_messages
+
+                # 调试：检查消息状态
+                processed_count = sum(1 for m in all_messages if m.get("is_processed", False))
+                logger.info(f"AngelHeart[{chat_id}]: 补充了 {len(supplement_messages)} 条已处理的历史消息")
+                logger.debug(f"AngelHeart[{chat_id}]: 总消息数: {len(all_messages)}, 已处理: {processed_count}, 未处理: {len(all_messages) - processed_count}")
+
+
+
+                # 调试：检查时间戳范围
+                if all_messages:
+                    timestamps = [m.get("timestamp", 0) for m in all_messages]
+                    logger.debug(f"AngelHeart[{chat_id}]: 时间戳范围: {min(timestamps)} - {max(timestamps)}")
+
+        except Exception as e:
+            logger.error(f"AngelHeart[{chat_id}]: 补充历史消息失败: {e}")
+
+    def _has_text_content(self, message: Dict) -> bool:
+        """检查消息是否包含文本内容"""
+        content = message.get("content", "")
+        if isinstance(content, str):
+            return bool(content.strip())
+        elif isinstance(content, list):
+            for item in content:
+                if isinstance(item, dict) and item.get("type") == "text":
+                    text = item.get("text", "")
+                    if text.strip():
+                        return True
+        return False
+
+    async def _fetch_database_history(self, chat_id: str, needed_count: int, event: AstrMessageEvent) -> List[Dict]:
+        """
+        从QQ API获取历史消息并转换为天使之心格式
+        """
+        try:
+            # 解析群号
+            group_id = self._extract_group_id(chat_id)
+
+            logger.debug(f"AngelHeart[{chat_id}]: 准备从QQ API获取历史消息 - group_id: {group_id}")
+
+            # 获取bot实例
+            bot = self._get_bot_instance(event)
+            if not bot:
+                logger.error(f"AngelHeart[{chat_id}]: 无法获取bot实例")
+                return []
+
+            # 直接调用QQ API获取历史消息
+            raw_messages = await self._get_qq_history_direct(bot, group_id, needed_count)
+
+            logger.debug(f"AngelHeart[{chat_id}]: 从QQ API获取到 {len(raw_messages)} 条历史记录")
+
+
+
+            # 转换格式
+            converted_messages = []
+            for raw_msg in raw_messages:
+                msg = self._convert_raw_qq_message_to_angelheart_format(raw_msg)
+                if msg:
+                    converted_messages.append(msg)
+                    logger.debug(f"AngelHeart[{chat_id}]: 转换消息成功")
+                else:
+                    logger.debug(f"AngelHeart[{chat_id}]: 跳过无文本内容的消息")
+            return converted_messages
+
+        except Exception as e:
+            logger.error(f"AngelHeart[{chat_id}]: 获取QQ API历史失败: {e}", exc_info=True)
+            return []
+
+    async def _get_qq_history_direct(self, bot, group_id: str, count: int) -> List[Dict]:
+        """
+        直接调用QQ API获取历史消息
+        参考天使之眼的实现
+        """
+        try:
+            # 调用get_group_msg_history API
+            payloads = {
+                "group_id": int(group_id),
+                "message_seq": 0,  #从最新开始
+                "reverseOrder": True  # 倒序获取（但实际返回仍是正序）
+            }
+            result = await bot.api.call_action("get_group_msg_history", **payloads)
+
+            if not result or "messages" not in result:
+                logger.warning(f"AngelHeart: API返回无效结果: {result}")
+                return []
+
+            messages = result.get("messages", [])
+            logger.debug(f"AngelHeart: QQ API返回 {len(messages)} 条消息")
+
+            # 返回所有消息，但去掉最新的一条（避免与当前消息重复）
+            if len(messages) > 1:
+                return messages[:-1]  # 去掉最新的一条
+            else:
+                return []
+
+        except Exception as e:
+            logger.error(f"AngelHeart: 调用QQ API失败: {e}")
+            return []
+
+
+
+
+
+    def _extract_group_id(self, chat_id: str) -> str:
+        """从chat_id中提取群号"""
+        # chat_id格式通常是 "default:GroupMessage:群号"
+        parts = chat_id.split(':')
+        return parts[-1] if len(parts) >= 3 else chat_id
+
+    def _get_bot_instance(self, event: AstrMessageEvent):
+        """从事件对象获取bot实例"""
+        try:
+            # 参考天使之眼的方式：从event.bot获取
+            if hasattr(event, 'bot'):
+                return event.bot
+            else:
+                logger.error("AngelHeart: event对象中没有bot实例")
+                return None
+        except Exception as e:
+            logger.error(f"AngelHeart: 获取bot实例失败: {e}")
+            return None
+
+    def _convert_raw_qq_message_to_angelheart_format(self, raw_msg: Dict) -> Dict:
+        """
+        将QQ API返回的原始消息转换为天使之心格式
+        完全参考天使之眼的format_unified_message逻辑
+        """
+        try:
+            # 1. 获取发送者信息（天使之眼的方式）
+            sender = raw_msg.get("sender", {})
+            sender_id = str(sender.get("user_id", ""))
+            sender_name = sender.get("nickname", "未知用户")
+
+            # 2. 判断是否为机器人自己发送的消息
+            # 直接对比 sender.user_id 和 self_id
+            self_id = str(raw_msg.get("self_id", ""))
+            is_self = (str(sender_id) == self_id)
+            role = "assistant" if is_self else "user"
+
+            # 3. 提取消息内容（只取文本，忽略图片等）
+            content = self._extract_text_from_qq_message(raw_msg)
+
+            if not content.strip():
+                return None
+
+            # 4. 获取时间戳
+            timestamp = raw_msg.get("time", time.time())
+
+
+
+            return {
+                "role": role,
+                "content": content,
+                "sender_id": sender_id,
+                "sender_name": sender_name,
+                "timestamp": timestamp,
+                "is_processed": True,
+                "source": "qq_api"
+            }
+
+        except Exception as e:
+            logger.warning(f"转换QQ消息格式失败: {e}")
+            return None
+
+    def _extract_text_from_qq_message(self, raw_msg: Dict) -> str:
+        """
+        从QQ API返回的原始消息中提取纯文本
+        message字段是一个数组，每个元素有type和data
+        """
+        try:
+            message_chain = raw_msg.get("message", [])
+            if not isinstance(message_chain, list):
+                return str(message_chain)
+
+            text_parts = []
+            for component in message_chain:
+                if isinstance(component, dict):
+                    comp_type = component.get("type", "")
+                    data = component.get("data", {})
+
+                    # 只处理文本组件
+                    if comp_type == "text":
+                        text_content = data.get("text", "")
+                        if text_content:
+                            text_parts.append(text_content)
+
+            return "".join(text_parts).strip()
+
+        except Exception as e:
+            logger.warning(f"提取QQ消息文本失败: {e}")
+            return ""
+
+
 
     @property
     def config_manager(self):
