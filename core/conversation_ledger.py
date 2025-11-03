@@ -17,6 +17,7 @@ class ConversationLedger:
     管理所有对话的完整历史，并以线程安全的方式处理状态。
     """
     def __init__(self, cache_expiry: int):
+        import bisect
         self._lock = threading.Lock()
         # 每个 chat_id 对应一个独立的账本
         self._ledgers: Dict[str, Dict] = {}
@@ -28,6 +29,9 @@ class ConversationLedger:
         self.TOTAL_MESSAGE_LIMIT = 100000
         # 最小保留消息数量（即使过期也保留）
         self.MIN_RETAIN_COUNT = 7
+        
+        # 缓存 bisect 模块
+        self._bisect = bisect
 
     def _get_or_create_ledger(self, chat_id: str) -> Dict:
         """获取或创建指定会话的账本。"""
@@ -53,10 +57,12 @@ class ConversationLedger:
             # 添加一个字段标记消息是否已处理，默认为False
             message["is_processed"] = False
 
-            # 为了保证顺序，可以考虑在插入前排序或使用bisect.insort
-            ledger["messages"].append(message)
-            # 确保消息列表始终按时间戳排序
-            ledger["messages"].sort(key=lambda m: m.get("timestamp", 0))
+            # 使用 bisect.insort 在排序位置插入，避免全量排序
+            self._bisect.insort(
+                ledger["messages"], 
+                message, 
+                key=lambda m: m.get("timestamp", 0)
+            )
 
             # 限制每个会话的消息数量
             if len(ledger["messages"]) > self.PER_CHAT_LIMIT:
@@ -66,6 +72,33 @@ class ConversationLedger:
         # 3. 检查并限制总消息数量
         self._enforce_total_message_limit()
 
+    def get_all_messages(self, chat_id: str) -> List[Dict]:
+        """
+        获取指定会话的所有消息。
+        
+        Args:
+            chat_id: 会话ID
+            
+        Returns:
+            消息列表
+        """
+        ledger = self._get_or_create_ledger(chat_id)
+        with self._lock:
+            return ledger["messages"].copy()  # 返回副本避免外部修改
+    
+    def set_messages(self, chat_id: str, messages: List[Dict]):
+        """
+        设置指定会话的消息列表。
+        注意：这会完全替换现有的消息列表。
+        
+        Args:
+            chat_id: 会话ID
+            messages: 新的消息列表
+        """
+        ledger = self._get_or_create_ledger(chat_id)
+        with self._lock:
+            ledger["messages"] = messages.copy()  # 保存副本避免外部修改
+    
     def get_context_snapshot(self, chat_id: str) -> Tuple[List[Dict], List[Dict], float]:
         """
         获取用于分析的上下文快照。
@@ -127,33 +160,48 @@ class ConversationLedger:
             ledger["messages"] = new_messages
 
     def _prune_all_expired_messages(self):
-        """清理所有会话的过期消息，确保每个会话至少保留最新的 MIN_RETAIN_COUNT 条消息。"""
+        """清理所有会话的过期消息，最小化锁争用"""
+        current_time = time.time()
+        
+        # 收集需要处理的数据（快速持锁）
         with self._lock:
-            current_time = time.time()
-            expiry_threshold = current_time - self.cache_expiry
-
-            for chat_id, ledger_data in self._ledgers.items():
-                all_messages = ledger_data["messages"]
-
-                # 如果总消息数不超过最小保留数量，跳过清理
-                if len(all_messages) <= self.MIN_RETAIN_COUNT:
-                    continue
-
-                # 按时间戳降序排序（最新的在前）
-                sorted_messages = sorted(all_messages, key=lambda m: m["timestamp"], reverse=True)
-
-                # 强制保留最新的 MIN_RETAIN_COUNT 条消息
-                retained_latest = sorted_messages[:self.MIN_RETAIN_COUNT]
-
-                # 对剩余消息进行正常的过期清理
-                remaining_messages = sorted_messages[self.MIN_RETAIN_COUNT:]
-                retained_remaining = [m for m in remaining_messages if m["timestamp"] > expiry_threshold]
-
-                # 合并保留的消息并按时间戳重新排序
-                new_messages = retained_latest + retained_remaining
-                new_messages.sort(key=lambda m: m["timestamp"])
-
-                ledger_data["messages"] = new_messages
+            chats_to_prune = [(cid, list(ld["messages"])) 
+                              for cid, ld in self._ledgers.items()]
+        
+        # 处理数据（释放锁）
+        pruned_data = {}
+        for chat_id, messages in chats_to_prune:
+            pruned_data[chat_id] = self._prune_messages_list(messages, current_time)
+        
+        # 更新结果（再次持锁）
+        with self._lock:
+            for chat_id, pruned_messages in pruned_data.items():
+                if chat_id in self._ledgers:
+                    self._ledgers[chat_id]["messages"] = pruned_messages
+    
+    def _prune_messages_list(self, messages: List[Dict], current_time: float) -> List[Dict]:
+        """处理单个消息列表的过期清理（无锁操作）"""
+        expiry_threshold = current_time - self.cache_expiry
+        
+        # 如果总消息数不超过最小保留数量，跳过清理
+        if len(messages) <= self.MIN_RETAIN_COUNT:
+            return messages
+        
+        # 按时间戳降序排序（最新的在前）
+        sorted_messages = sorted(messages, key=lambda m: m["timestamp"], reverse=True)
+        
+        # 强制保留最新的 MIN_RETAIN_COUNT 条消息
+        retained_latest = sorted_messages[:self.MIN_RETAIN_COUNT]
+        
+        # 对剩余消息进行正常的过期清理
+        remaining_messages = sorted_messages[self.MIN_RETAIN_COUNT:]
+        retained_remaining = [m for m in remaining_messages if m["timestamp"] > expiry_threshold]
+        
+        # 合并保留的消息并按时间戳重新排序
+        new_messages = retained_latest + retained_remaining
+        new_messages.sort(key=lambda m: m["timestamp"])
+        
+        return new_messages
 
     def _enforce_total_message_limit(self):
         """强制执行总消息数量限制。

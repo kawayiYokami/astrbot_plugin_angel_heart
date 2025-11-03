@@ -93,30 +93,27 @@ def partition_dialogue(
         一个元组 (historical_context, recent_dialogue, boundary_timestamp)。
     """
     # _get_or_create_ledger 是 protected, 但在这里为了重构暂时使用
-    # 理想情况下 ledger 应该提供一个公共的获取消息的方法
-    ledger_data = ledger._get_or_create_ledger(chat_id)
-
-    with ledger._lock:
-        all_messages = ledger_data["messages"]
-
-        # 对所有消息进行工具调用压缩处理
-        processed_messages = []
-        for msg in all_messages:
-            processed_msg = _compress_tool_message(msg)
-            processed_messages.append(processed_msg)
-
-        # 根据 is_processed 标志进行分割
-        historical_context = [m for m in processed_messages if m.get("is_processed", False)]
-        recent_dialogue = [m for m in processed_messages if not m.get("is_processed", False)]
-
-        # 边界时间戳是新对话中最后一条消息的时间戳
-        boundary_ts = 0.0
-        if recent_dialogue:
-            # 为确保准确，最好在取最后一个元素前按时间戳排序
-            recent_dialogue.sort(key=lambda m: m.get("timestamp", 0))
-            boundary_ts = recent_dialogue[-1].get("timestamp", 0.0)
-
-        return historical_context, recent_dialogue, boundary_ts
+    # 使用公共方法获取消息
+    all_messages = ledger.get_all_messages(chat_id)
+    
+    # 对所有消息进行工具调用压缩处理（在锁外）
+    processed_messages = []
+    for msg in all_messages:
+        processed_msg = _compress_tool_message(msg)
+        processed_messages.append(processed_msg)
+    
+    # 根据 is_processed 标志进行分割
+    historical_context = [m for m in processed_messages if m.get("is_processed", False)]
+    recent_dialogue = [m for m in processed_messages if not m.get("is_processed", False)]
+    
+    # 边界时间戳是新对话中最后一条消息的时间戳
+    boundary_ts = 0.0
+    if recent_dialogue:
+        # 为确保准确，最好在取最后一个元素前按时间戳排序
+        recent_dialogue.sort(key=lambda m: m.get("timestamp", 0))
+        boundary_ts = recent_dialogue[-1].get("timestamp", 0.0)
+    
+    return historical_context, recent_dialogue, boundary_ts
 
 
 def _compress_tool_message(msg: Dict) -> Dict:
