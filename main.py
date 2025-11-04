@@ -59,7 +59,7 @@ class AngelHeartPlugin(Star):
 
     # --- 核心事件处理 ---
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE | filter.EventMessageType.PRIVATE_MESSAGE, priority=-10)
-    async def smart_reply_handler(self, event: AstrMessageEvent, *args, **kwargs):
+    async def smart_reply_handler(self, event: AstrMessageEvent, *args: tuple, **kwargs: dict) -> None:
         """智能回复员 - 事件入口：处理缓存或在唤醒时清空缓存"""
 
         # 使用 _should_process 方法来判断是否需要处理此消息
@@ -92,7 +92,7 @@ class AngelHeartPlugin(Star):
                 logger.debug(f"AngelHeart[{chat_id}]: 读取到上下文 - 记录数: {len(chat_records)}, 决策: {secretary_decision.get('reply_strategy', '未知')}, 需搜索: {needs_search}")
             except json.JSONDecodeError as e:
                 logger.warning(f"AngelHeart[{chat_id}]: 解析 angelheart_context JSON 失败: {e}")
-            except Exception as e:
+            except (AttributeError, KeyError, TypeError) as e:
                 logger.warning(f"AngelHeart[{chat_id}]: 处理 angelheart_context 时发生意外错误: {e}")
 
         # 如果启用群聊上下文增强，则跳过此方法（使用新的 prompt 重写方式）
@@ -242,7 +242,7 @@ class AngelHeartPlugin(Star):
                             is_at_self = True
                         elif isinstance(message, Reply) and str(message.sender_id) == self_id:
                             is_at_self = True
-                except Exception as e:
+                except (AttributeError, ValueError, KeyError) as e:
                     logger.warning(f"AngelHeart[{chat_id}]: 解析消息链异常: {e}")
                     # 异常时保守处理，视为非@自己消息
                     return False
@@ -279,7 +279,7 @@ class AngelHeartPlugin(Star):
             logger.debug(f"AngelHeart[{chat_id}]: 消息通过所有前置检查, 准备处理...")
             return True
 
-        except Exception as e:
+        except (AttributeError, ValueError, KeyError, IndexError) as e:
             logger.error(f"AngelHeart[{chat_id}]: _should_process方法执行异常: {e}", exc_info=True)
             return False  # 异常时保守处理，不处理消息
 
@@ -340,7 +340,7 @@ class AngelHeartPlugin(Star):
                                 message_chain[i] = Plain(text=cleaned_text)
                                 logger.debug(f"AngelHeart[{chat_id}]: 已清洗文本组件: '{original_text[:50]}...' -> '{cleaned_text[:50]}...'")
                             # 如果清洗结果相同或为空，保持原组件不变
-                        except Exception as e:
+                        except (AttributeError, ValueError) as e:
                             logger.warning(f"AngelHeart[{chat_id}]: 文本清洗失败: {e}，保持原文本")
 
             logger.debug(f"AngelHeart[{chat_id}]: 消息链中的Markdown格式清洗完成。")
@@ -392,7 +392,7 @@ class AngelHeartPlugin(Star):
             if hasattr(event, 'get_message_outline'):
                 return event.get_message_outline()
 
-        except Exception as e:
+        except (AttributeError, KeyError) as e:
             logger.warning(f"AngelHeart[{event.unified_msg_origin}]: 提取发送消息内容时出错: {e}")
 
         return ""
