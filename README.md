@@ -199,9 +199,9 @@ graph TD
 在 AstrBot 的插件配置界面中设置：
 
 - **`analyzer_model`**: 轻量级分析模型提供商名称（推荐使用快速、低成本的模型）。
-- **`alias`**: 为AI助手设置一个全局别名，用于“呼唤模式”和提示词。
+- **`alias`**: 为AI助手设置一个全局昵称，用于“呼唤模式”和提示词。
 - **`waiting_time`**: 两次主动分析之间的最小冷却时间（秒）。
-- **`analysis_on_mention_only`**: **[新]** 是否仅在消息中包含人格名称或别名时才进行分析。
+- **`analysis_on_mention_only`**: **[新]** 是否仅在消息中包含人格名称或昵称时才进行分析。
 - **`whitelist_enabled`**: 是否启用白名单功能。
 - **`chat_ids`**: 白名单群聊ID列表。
 - **`reply_strategy_guide`**: 自定义回复策略指导。
@@ -211,9 +211,9 @@ graph TD
 | 配置项 | 类型 | 描述 | 默认值 |
 | --- | --- | --- | --- |
 | `analyzer_model` | string | 用于分析对话的轻量级、快速的LLM模型提供商名称。 | `""` |
-| `alias` | string | 为AI助手设置一个全局别名，用于“呼唤模式”和提示词。 | `AngelHeart`|
+| `alias` | string | 为AI助手设置一个全局昵称，用于“呼唤模式”和提示词。 | `AngelHeart`|
 | `waiting_time` | float | 两次主动分析之间的最小冷却时间（秒）。 | `7.0` |
-| `analysis_on_mention_only` | bool | 是否仅在消息中包含人格名称或别名时才进行分析。 | `false` |
+| `analysis_on_mention_only` | bool | 是否仅在消息中包含人格名称或昵称时才进行分析。 | `false` |
 | `whitelist_enabled` | bool | 是否启用群聊/私聊白名单。 | `false` |
 | `chat_ids` | list | 白名单列表，填入允许插件生效的群聊或好友的QQ号。 | `[]` |
 | `cache_expiry` | int | 前台消息缓存的过期时间（秒）。 | `3600` |
