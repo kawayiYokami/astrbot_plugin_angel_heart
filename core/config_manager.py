@@ -60,7 +60,7 @@ class ConfigManager:
 
     @property
     def alias(self) -> str:
-        """AI助手的别名"""
+        """AI助手的昵称"""
         return self._config.get("alias", "AngelHeart")
 
     @property
@@ -100,5 +100,134 @@ class ConfigManager:
 
     @property
     def comfort_words(self) -> str:
-        """安心词，用'|'分隔"""
-        return self._config.get("comfort_words", "嗯...让我再想想... ( ´•ω•)？|这个问题有点复杂... (；´Д｀)|唔...信息量有点大... (°Д°≡°Д°)")
+        """安心词列表，多个词用'|'分隔"""
+        return self._config.get("comfort_words", "嗯嗯|我在|别急")
+
+    # ========== 4状态机制新增配置 ==========
+
+    @property
+    def echo_detection_threshold(self) -> int:
+        """
+        复读检测阈值：连续多少条相同消息触发混脸熟
+
+        Returns:
+            int: 阈值，默认3条
+        """
+        return self._config.get("echo_detection_threshold", 3)
+
+    @property
+    def dense_conversation_threshold(self) -> int:
+        """
+        密集发言阈值：10分钟内多少条消息触发混脸熟
+
+        Returns:
+            int: 阈值，默认30条
+        """
+        return self._config.get("dense_conversation_threshold", 30)
+
+    @property
+    def familiarity_timeout(self) -> int:
+        """
+        混脸熟超时时间：多长时间无活动自动降级（秒）
+
+        Returns:
+            int: 超时时间，默认600秒（10分钟）
+        """
+        return self._config.get("familiarity_timeout", 600)
+
+    @property
+    def observation_timeout(self) -> int:
+        """
+        观测中超时时间：多长时间无活动自动降级（秒）
+
+        Returns:
+            int: 超时时间，默认600秒（10分钟）
+        """
+        return self._config.get("observation_timeout", 600)
+
+    @property
+    def status_judgment_cache_duration(self) -> int:
+        """
+        状态判断缓存时间：相同消息的缓存时长（秒）
+
+        Returns:
+            int: 缓存时间，默认3秒
+        """
+        return self._config.get("status_judgment_cache_duration", 3)
+
+    @property
+    def echo_detection_window(self) -> int:
+        """
+        复读检测时间窗口：多长时间内的消息算作复读（秒）
+
+        Returns:
+            int: 时间窗口，默认30秒
+        """
+        return self._config.get("echo_detection_window", 30)
+
+    @property
+    def dense_conversation_window(self) -> int:
+        """
+        密集发言检测时间窗口：多长时间内的消息算作密集（秒）
+
+        Returns:
+            int: 时间窗口，默认600秒（10分钟）
+        """
+        return self._config.get("dense_conversation_window", 600)
+
+    @property
+    def min_participant_count(self) -> int:
+        """
+        密集发言最小参与人数：至少多少不同的人参与才算密集
+
+        Returns:
+            int: 最小参与人数，默认5人
+        """
+        return self._config.get("min_participant_count", 5)
+
+    @property
+    def interesting_topic_keywords(self) -> list:
+        """
+        有趣话题关键词列表：检测话题是否有趣的关键词
+
+        Returns:
+            list: 关键词列表
+        """
+        default_keywords = [
+            "技术", "编程", "学习", "分享", "讨论", "问题", "解决",
+            "项目", "代码", "算法", "设计", "架构", "优化", "性能",
+            "创新", "创意", "想法", "方案", "经验", "总结", "思考"
+        ]
+        return self._config.get("interesting_topic_keywords", default_keywords)
+
+    def get_config_summary(self) -> dict:
+        """
+        获取配置摘要，用于调试和监控
+
+        Returns:
+            dict: 配置摘要
+        """
+        return {
+            "basic": {
+                "waiting_time": self.waiting_time,
+                "cache_expiry": self.cache_expiry,
+                "alias": self.alias,
+                "analysis_on_mention_only": self.analysis_on_mention_only,
+                "comfort_words": self.comfort_words,
+                "slap_words": self.slap_words,
+                "silence_duration": self.silence_duration
+            },
+            "status_mechanism": {
+                "echo_detection_threshold": self.echo_detection_threshold,
+                "dense_conversation_threshold": self.dense_conversation_threshold,
+                "familiarity_timeout": self.familiarity_timeout,
+                "observation_timeout": self.observation_timeout,
+                "status_judgment_cache_duration": self.status_judgment_cache_duration,
+                "interesting_topic_keywords": self.interesting_topic_keywords
+            },
+            "detection_windows": {
+                "echo_detection_window": self.echo_detection_window,
+                "dense_conversation_window": self.dense_conversation_window,
+                "min_participant_count": self.min_participant_count
+            }
+        }

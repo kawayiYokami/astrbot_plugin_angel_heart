@@ -9,6 +9,7 @@ AngelHeart插件 - 天使心智能群聊/私聊交互插件
 
 import time
 import json
+from typing import Any
 
 from astrbot.api.star import Star
 from astrbot.api.event import AstrMessageEvent, filter
@@ -59,7 +60,7 @@ class AngelHeartPlugin(Star):
 
     # --- 核心事件处理 ---
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE | filter.EventMessageType.PRIVATE_MESSAGE, priority=-10)
-    async def smart_reply_handler(self, event: AstrMessageEvent, *args: tuple, **kwargs: dict) -> None:
+    async def smart_reply_handler(self, event: AstrMessageEvent, *args: Any, **kwargs: Any) -> None:
         """智能回复员 - 事件入口：处理缓存或在唤醒时清空缓存"""
 
         # 使用 _should_process 方法来判断是否需要处理此消息
@@ -95,10 +96,6 @@ class AngelHeartPlugin(Star):
             except (AttributeError, KeyError, TypeError) as e:
                 logger.warning(f"AngelHeart[{chat_id}]: 处理 angelheart_context 时发生意外错误: {e}")
 
-        # 如果启用群聊上下文增强，则跳过此方法（使用新的 prompt 重写方式）
-        if self.config_manager.group_chat_enhancement:
-            return
-
         # 1. 从秘书那里获取决策
         decision = self.secretary.get_decision(chat_id)
 
@@ -111,7 +108,6 @@ class AngelHeartPlugin(Star):
         topic = getattr(decision, 'topic', None)
         strategy = getattr(decision, 'reply_strategy', None)
         reply_target = getattr(decision, 'reply_target', '')  # 获取回复目标，默认为空字符串
-        persona_name = getattr(decision, 'persona_name', '')
         alias = getattr(decision, 'alias', 'AngelHeart')
 
         if not topic or not strategy:
@@ -119,8 +115,8 @@ class AngelHeartPlugin(Star):
             logger.debug(f"AngelHeart[{chat_id}]: 决策参数不合法 (topic: {topic}, strategy: {strategy})，跳过决策注入。")
             return
 
-        # 4. 构建补充提示词，包含人格信息和回复目标
-        decision_context = f"\n\n---\n[经过我对聊天记录的分析，我得到了如下结论] 我现在的名字是 {persona_name} (别名: {alias})。我将围绕以下要点回复：\n- 核心话题: {topic}\n- 回复策略: {strategy}\n- 回复目标: {reply_target}"
+        # 4. 构建补充提示词，包含回复目标
+        decision_context = f"\n\n---\n[经过我对聊天记录的分析，我得到了如下结论] 我的昵称是 {alias}。我将围绕以下要点回复：\n- 核心话题: {topic}\n- 回复策略: {strategy}\n- 回复目标: {reply_target}"
 
         # 5. 根据是否启用增强模式，选择不同的注入方式
         if self.config_manager.group_chat_enhancement:
@@ -316,23 +312,16 @@ class AngelHeartPlugin(Star):
 
             # 2. 遍历消息链中的每个元素，进行 Markdown 清洗
             # 只处理 Plain 文本组件，保持其他组件不变
+            # 收集所有清洗后的文本内容
+            all_cleaned_text = []
+            
             for i, component in enumerate(message_chain):
                 if isinstance(component, Plain):
                     original_text = component.text
                     if original_text:
                         try:
                             cleaned_text = strip_markdown(original_text)
-
-                            # -- 在清洗后立即记录，无论是否改变了内容 --
-                            ai_message = {
-                                "role": "assistant",
-                                "content": cleaned_text,
-                                "sender_id": str(event.get_self_id()),
-                                "sender_name": "assistant",
-                                "timestamp": time.time(),
-                            }
-                            self.angel_context.conversation_ledger.add_message(chat_id, ai_message)
-                            logger.debug(f"AngelHeart[{chat_id}]: AI回复已在清洗后立即加入对话总账")
+                            all_cleaned_text.append(cleaned_text)
 
                             # 只有在清洗结果有效且真正改变了内容时才替换
                             if cleaned_text and cleaned_text.strip() and cleaned_text != original_text:
@@ -342,11 +331,36 @@ class AngelHeartPlugin(Star):
                             # 如果清洗结果相同或为空，保持原组件不变
                         except (AttributeError, ValueError) as e:
                             logger.warning(f"AngelHeart[{chat_id}]: 文本清洗失败: {e}，保持原文本")
+            
+            # 循环结束后，统一记录一次完整的AI回复
+            if all_cleaned_text:
+                full_content = ''.join(all_cleaned_text)
+                ai_message = {
+                    "role": "assistant",
+                    "content": full_content,
+                    "sender_id": str(event.get_self_id()),
+                    "sender_name": "assistant",
+                    "timestamp": time.time(),
+                }
+                self.angel_context.conversation_ledger.add_message(chat_id, ai_message)
+                logger.debug(f"AngelHeart[{chat_id}]: AI回复已在清洗后加入对话总账")
 
             logger.debug(f"AngelHeart[{chat_id}]: 消息链中的Markdown格式清洗完成。")
         finally:
             # 在消息发送前，无论成功或失败，都取消耐心计时器并释放处理锁
             await self.angel_context.cancel_patience_timer(chat_id)
+
+            # 处理状态转换：AI发送消息后转换到观测期
+            # 仅在消息链非空时才执行状态转换
+            result = event.get_result()
+            if result and result.chain:
+                try:
+                    await self.angel_context.handle_message_sent(chat_id)
+                except (AttributeError, RuntimeError) as e:
+                    logger.warning(f"AngelHeart[{chat_id}]: 状态转换处理异常: {e}")
+            else:
+                logger.debug(f"AngelHeart[{chat_id}]: 消息链为空，跳过状态转换")
+
             await self.angel_context.release_chat_processing(chat_id)
             logger.info(f"AngelHeart[{chat_id}]: 任务处理完成，已在消息发送前释放处理锁。")
 
@@ -354,22 +368,7 @@ class AngelHeartPlugin(Star):
         """预处理白名单，将其转换为 set 以获得 O(1) 的查找性能。"""
         return {str(cid) for cid in self.config_manager.chat_ids}
 
-    @filter.after_message_sent()
-    async def clear_oneshot_decision_on_message_sent(self, event: AstrMessageEvent, *args, **kwargs):
-        """在消息成功发送后，清理一次性决策缓存并更新计时器"""
-        chat_id = event.unified_msg_origin
 
-        # 1. 从秘书缓存中获取决策
-        decision = self.secretary.get_decision(chat_id)
-
-        # 2. 如果决策有效，使用其边界时间戳来推进 Ledger 状态
-        if decision and hasattr(decision, 'boundary_timestamp') and decision.boundary_timestamp > 0:
-            self.angel_context.conversation_ledger.mark_as_processed(chat_id, decision.boundary_timestamp)
-
-        # 5. 让秘书清理决策缓存
-        await self.secretary.clear_decision(chat_id)
-        # 6. 让秘书更新最后一次事件（回复）的时间戳
-        await self.secretary.update_last_event_time(chat_id)
 
     def _extract_sent_message_content(self, event: AstrMessageEvent) -> str:
         """从事件中提取发送的消息内容"""
@@ -421,4 +420,6 @@ class AngelHeartPlugin(Star):
 
     async def on_destroy(self):
         """插件销毁时的清理工作"""
+        # 清理主动应答任务
+        await self.angel_context.proactive_manager.cleanup()
         logger.info("💖 AngelHeart 插件已销毁")

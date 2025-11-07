@@ -35,7 +35,7 @@ AngelHeart 通过分析对话历史、决策是否回复以及搜索需求等信
   "reply_strategy": "技术指导",       // 回复策略
   "topic": "Python调试问题",          // 对话核心话题
   "persona_name": "技术助手",         // AI人格名称
-  "alias": "小助手",                  // AI别名
+  "alias": "小助手",                  // AI昵称
   "reply_target": "小明",            // 回复目标用户
   "created_at": "2025-01-01T12:00:00Z", // 决策创建时间
   "boundary_timestamp": 1640995200.0, // 分析边界时间戳

@@ -290,7 +290,7 @@ graph TD
 
 ### 5.2 何时应该使用它？
 
-`@filter.on_event_message_type` 的设计初衷是用于**消息重写 (Message Rewriting)** 或**命令别名**。例如，您可以用它来将用户的特定暗号或简称（如“查天气”）转换为一个标准的、可被其他插件识别的指令。
+`@filter.on_event_message_type` 的设计初衷是用于**消息重写 (Message Rewriting)** 或**命令昵称**。例如，您可以用它来将用户的特定暗号或简称（如“查天气”）转换为一个标准的、可被其他插件识别的指令。
 
 **正确用法示例：**
 ```python
@@ -313,7 +313,7 @@ async def command_alias(self, event: AstrMessageEvent):
 | **`@llm_tool()`** | **提供一次性信息** | 触发条件不明确，需要 LLM 智能判断何时使用外部知识。 | **LLM** | **否** | `@llm_tool()` |
 | **`@filter.on_llm_request()` (多级Agent)** | **任务预处理/路由** | 流程复杂，需要一个小模型先对任务进行分析或路由，再交给大模型处理。 | **小模型** | **否** | `@filter.on_llm_request()` |
 | **`@filter.on_llm_request()` (代码逻辑)** | **强制注入上下文** | 触发条件明确（如关键字、正则表达式），希望绕过 LLM 决策，节省成本。 | **代码** | **否** | `@filter.on_llm_request()` |
-| **`@filter.on_event_message_type()`** | **重写用户输入** | 需要永久性地改变用户原始输入的意图，如实现命令别名。 | **代码** | **是** | `@filter.on_event_message_type()` |
+| **`@filter.on_event_message_type()`** | **重写用户输入** | 需要永久性地改变用户原始输入的意图，如实现命令昵称。 | **代码** | **是** | `@filter.on_event_message_type()` |
 
 **最佳实践建议：**
 

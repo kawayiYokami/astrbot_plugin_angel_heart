@@ -41,13 +41,13 @@ def prune_old_messages(
     return recent_dialogue
 
 
-def format_message_for_llm(msg: dict, persona_name: str) -> str:
+def format_message_for_llm(msg: dict, alias: str) -> str:
     """
     按照轻量模型能看到的格式格式化消息。
 
     Args:
         msg (dict): 消息字典，包含 role, content, sender_name, sender_id, timestamp 等字段。
-        persona_name (str): AI 的人格名称，用于格式化助理消息。
+        alias (str): AI 的昵称，用于格式化助理消息。
 
     Returns:
         str: 格式化后的消息字符串。
@@ -56,9 +56,9 @@ def format_message_for_llm(msg: dict, persona_name: str) -> str:
     content = msg.get("content", "")
 
     if role == "assistant":
-        # 助理消息格式: [助理: {persona_name}]\n[内容: 文本]\n{content}
+        # 助理消息格式: [助理: {alias}]\n[内容: 文本]\n{content}
         formatted_content = convert_content_to_string(content)
-        return f"[助理: {persona_name}]\n[内容: 文本]\n{formatted_content}"
+        return f"[助理: {alias}]\n[内容: 文本]\n{formatted_content}"
     elif role == "user":
         # 用户消息需要区分来源
         if "sender_name" in msg:
