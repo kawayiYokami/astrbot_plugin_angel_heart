@@ -136,6 +136,16 @@ class ConfigManager:
         return self._config.get("familiarity_timeout", 600)
 
     @property
+    def familiarity_cooldown_duration(self) -> int:
+        """
+        混脸熟冷却时间：混脸熟状态结束后多久才能再次触发（秒）
+
+        Returns:
+            int: 冷却时间，默认1800秒（30分钟）
+        """
+        return self._config.get("familiarity_cooldown_duration", 1800)
+
+    @property
     def observation_timeout(self) -> int:
         """
         观测中超时时间：多长时间无活动自动降级（秒）
@@ -145,15 +155,7 @@ class ConfigManager:
         """
         return self._config.get("observation_timeout", 600)
 
-    @property
-    def status_judgment_cache_duration(self) -> int:
-        """
-        状态判断缓存时间：相同消息的缓存时长（秒）
-
-        Returns:
-            int: 缓存时间，默认3秒
-        """
-        return self._config.get("status_judgment_cache_duration", 3)
+    
 
     @property
     def echo_detection_window(self) -> int:

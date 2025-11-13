@@ -61,6 +61,9 @@ class AngelHeartContext:
         # 时序控制
         self.last_analysis_time: Dict[str, float] = {}  # chat_id -> 上次分析时间
         self.silenced_until: Dict[str, float] = {}  # chat_id -> 闭嘴结束时间
+        
+        # 混脸熟冷却控制
+        self.familiarity_cooldown_until: Dict[str, float] = {}  # chat_id -> 混脸熟冷却结束时间
 
         # 决策缓存
         self.analysis_cache: OrderedDict[str, SecretaryDecision] = OrderedDict()
@@ -439,6 +442,11 @@ class AngelHeartContext:
 
         # 只有在被呼唤或混脸熟状态时才转换到观测中
         if current_status in [AngelHeartStatus.SUMMONED, AngelHeartStatus.GETTING_FAMILIAR]:
+            # 如果是从混脸熟状态转换，设置冷却期
+            if current_status == AngelHeartStatus.GETTING_FAMILIAR:
+                logger.debug(f"AngelHeart[{chat_id}]: 从混脸熟状态转换，设置冷却期")
+                self.set_familiarity_cooldown(chat_id)
+            
             await self.transition_to_status(chat_id, AngelHeartStatus.OBSERVATION, "AI回复完成，进入观测中")
 
     
@@ -467,3 +475,37 @@ class AngelHeartContext:
             bool: True if not present
         """
         return self.get_chat_status(chat_id) == AngelHeartStatus.NOT_PRESENT
+
+    def is_familiarity_in_cooldown(self, chat_id: str) -> bool:
+        """
+        检查混脸熟是否在冷却期
+
+        Args:
+            chat_id: 聊天会话ID
+
+        Returns:
+            bool: True if in cooldown period
+        """
+        if chat_id not in self.familiarity_cooldown_until:
+            return False
+        
+        current_time = time.time()
+        cooldown_end = self.familiarity_cooldown_until[chat_id]
+        
+        # 如果冷却期已过，清理记录
+        if current_time >= cooldown_end:
+            del self.familiarity_cooldown_until[chat_id]
+            return False
+            
+        return True
+
+    def set_familiarity_cooldown(self, chat_id: str):
+        """
+        设置混脸熟冷却期
+
+        Args:
+            chat_id: 聊天会话ID
+        """
+        cooldown_duration = self.config_manager.familiarity_cooldown_duration
+        self.familiarity_cooldown_until[chat_id] = time.time() + cooldown_duration
+        logger.info(f"AngelHeart[{chat_id}]: 混脸熟进入冷却期，冷却时间 {cooldown_duration} 秒")
