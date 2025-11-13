@@ -65,12 +65,7 @@ class StatusChecker:
             if self._is_silenced(chat_id):
                 return AngelHeartStatus.NOT_PRESENT
 
-            # 2. 检查是否检测到唤醒词
-            message_content = self._extract_message_content(latest_message)
-            if self._detect_wake_word(chat_id, message_content):
-                return AngelHeartStatus.SUMMONED
-
-            # 3. 优先检查是否被呼唤
+            # 2. 优先检查是否被呼唤
             if self._is_summoned(chat_id):
                 return AngelHeartStatus.SUMMONED
 
