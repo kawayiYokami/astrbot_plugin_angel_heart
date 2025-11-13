@@ -54,11 +54,6 @@ class ConfigManager:
         return self._config.get("debug_mode", False)
 
     @property
-    def prompt_logging_enabled(self) -> bool:
-        """提示词日志增强开关"""
-        return self._config.get("prompt_logging_enabled", False)
-
-    @property
     def alias(self) -> str:
         """AI助手的昵称"""
         return self._config.get("alias", "AngelHeart")
@@ -91,7 +86,10 @@ class ConfigManager:
     @property
     def ai_self_identity(self) -> str:
         """AI的自我身份定位"""
-        return self._config.get("ai_self_identity", "你拥有强大的检索能力和庞大的知识储备和记忆能力。\n你喜爱跟群友进行语言游戏沟通。\n群友对AI的善意测试你必须回应满足群友的期待，展示你的能力。")
+        return self._config.get(
+            "ai_self_identity",
+            "你拥有强大的检索能力和庞大的知识储备和记忆能力。\n你喜爱跟群友进行语言游戏沟通。\n群友对AI的善意测试你必须回应满足群友的期待，展示你的能力。",
+        )
 
     @property
     def patience_interval(self) -> int:
@@ -155,8 +153,6 @@ class ConfigManager:
         """
         return self._config.get("observation_timeout", 600)
 
-    
-
     @property
     def echo_detection_window(self) -> int:
         """
@@ -188,19 +184,24 @@ class ConfigManager:
         return self._config.get("min_participant_count", 5)
 
     @property
-    def interesting_topic_keywords(self) -> list:
+    def leave_echo_reply(self) -> bool:
         """
-        有趣话题关键词列表：检测话题是否有趣的关键词
+        离场应答-复读模式开关
 
         Returns:
-            list: 关键词列表
+            bool: 是否启用离场时复读应答，默认False
         """
-        default_keywords = [
-            "技术", "编程", "学习", "分享", "讨论", "问题", "解决",
-            "项目", "代码", "算法", "设计", "架构", "优化", "性能",
-            "创新", "创意", "想法", "方案", "经验", "总结", "思考"
-        ]
-        return self._config.get("interesting_topic_keywords", default_keywords)
+        return self._config.get("leave_echo_reply", False)
+
+    @property
+    def leave_dense_reply(self) -> bool:
+        """
+        离场应答-密集对话参与开关
+
+        Returns:
+            bool: 是否启用离场时参与密集对话应答，默认False
+        """
+        return self._config.get("leave_dense_reply", False)
 
     def get_config_summary(self) -> dict:
         """
@@ -217,19 +218,20 @@ class ConfigManager:
                 "analysis_on_mention_only": self.analysis_on_mention_only,
                 "comfort_words": self.comfort_words,
                 "slap_words": self.slap_words,
-                "silence_duration": self.silence_duration
+                "silence_duration": self.silence_duration,
             },
             "status_mechanism": {
                 "echo_detection_threshold": self.echo_detection_threshold,
                 "dense_conversation_threshold": self.dense_conversation_threshold,
                 "familiarity_timeout": self.familiarity_timeout,
                 "observation_timeout": self.observation_timeout,
-                "status_judgment_cache_duration": self.status_judgment_cache_duration,
-                "interesting_topic_keywords": self.interesting_topic_keywords
+                "familiarity_cooldown_duration": self.familiarity_cooldown_duration,
+                "leave_echo_reply": self.leave_echo_reply,
+                "leave_dense_reply": self.leave_dense_reply,
             },
             "detection_windows": {
                 "echo_detection_window": self.echo_detection_window,
                 "dense_conversation_window": self.dense_conversation_window,
-                "min_participant_count": self.min_participant_count
-            }
+                "min_participant_count": self.min_participant_count,
+            },
         }

@@ -3,7 +3,6 @@ AngelHeart 插件 - 秘书角色 (Secretary)
 负责定时分析缓存内容，决定是否回复。
 """
 
-import time
 import asyncio
 import json
 import datetime
@@ -15,7 +14,7 @@ from ..core.utils import json_serialize_context
 
 from ..core.llm_analyzer import LLMAnalyzer
 from ..models.analysis_result import SecretaryDecision
-from ..core.angel_heart_status import AngelHeartStatus, StatusChecker
+from ..core.angel_heart_status import StatusChecker
 
 try:
     from astrbot.api import logger
