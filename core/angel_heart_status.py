@@ -4,7 +4,6 @@ import time
 import asyncio
 from enum import Enum
 from typing import Dict, Optional, Tuple
-from collections import defaultdict
 
 try:
     from astrbot.api import logger
@@ -34,20 +33,14 @@ class StatusChecker:
 
     def __init__(self, config_manager, angel_context):
         """
-        初始化状态判断器
+        初始化状态检查器
 
         Args:
-            config_manager: 配置管理器
-            angel_context: AngelHeart全局上下文
+            config_manager: 配置管理器实例
+            angel_context: AngelHeart上下文实例
         """
         self.config_manager = config_manager
         self.angel_context = angel_context
-
-        # 状态判断缓存：避免重复判断（缩短缓存时间到3秒）
-        # 值格式：(status, timestamp, trigger_type)
-        self._last_judgment_cache: Dict[
-            str, Tuple[AngelHeartStatus, float, Optional[str]]
-        ] = {}
 
     async def determine_status(self, chat_id: str) -> AngelHeartStatus:
         """
@@ -61,89 +54,64 @@ class StatusChecker:
         Returns:
             AngelHeartStatus: 判断得出的状态
         """
-        current_time = time.time()
-
-        # 获取最新消息用于缓存键
-        latest_message = self._get_latest_message(chat_id)
-        if not latest_message:
-            # 没有消息，返回不在场
-            return AngelHeartStatus.NOT_PRESENT
-
-        # 检查缓存（使用配置管理）
-        cache_duration = self.config_manager.status_judgment_cache_duration
-        message_content = self._extract_message_content(latest_message)
-        cache_key = f"{chat_id}:{hash(message_content)}"
-        if cache_key in self._last_judgment_cache:
-            cached_status, cached_time, cached_trigger = self._last_judgment_cache[
-                cache_key
-            ]
-            if current_time - cached_time < cache_duration:
-                return cached_status
-
         try:
+            # 获取最新消息
+            latest_message = self._get_latest_message(chat_id)
+            if not latest_message:
+                # 没有消息，返回不在场
+                return AngelHeartStatus.NOT_PRESENT
+
             # 1. 检查是否处于闭嘴状态（最高优先级）
             if self._is_silenced(chat_id):
-                result = AngelHeartStatus.NOT_PRESENT
-                self._cache_judgment(cache_key, result, current_time, None)
-                return result
+                return AngelHeartStatus.NOT_PRESENT
 
-            # 3. 检查是否检测到唤醒词（最高优先级）
+            # 2. 检查是否检测到唤醒词
+            message_content = self._extract_message_content(latest_message)
             if self._detect_wake_word(chat_id, message_content):
-                result = AngelHeartStatus.SUMMONED
-                self._cache_judgment(cache_key, result, current_time, "wake_word")
-                return result
+                return AngelHeartStatus.SUMMONED
 
-            # 4. 获取当前状态（原子性读取）
+            # 3. 优先检查是否被呼唤
+            if self._is_summoned(chat_id):
+                return AngelHeartStatus.SUMMONED
+
+            # 4. 检查是否在观测期
+            if self.angel_context.is_in_observation_period(chat_id):
+                return AngelHeartStatus.OBSERVATION
+
+            # 5. 获取当前状态（原子性读取）
             current_status = self.angel_context.get_chat_status(chat_id)
 
-            # 5. 如果当前是观测中，保持观测中
-            if current_status == AngelHeartStatus.OBSERVATION:
-                result = AngelHeartStatus.OBSERVATION
-                self._cache_judgment(cache_key, result, current_time, "observation")
-                return result
-
-            # 6. 如果当前是混脸熟，检查是否刷新或继续
+            # 如果当前是混脸熟状态，说明有异常，直接转为不在场
             if current_status == AngelHeartStatus.GETTING_FAMILIAR:
-                if self._should_continue_familiarity(chat_id):
-                    result = AngelHeartStatus.GETTING_FAMILIAR
-                    self._cache_judgment(
-                        cache_key, result, current_time, "continuation"
-                    )
-                    return result
-                else:
-                    # 混脸熟状态结束，转为不在场
-                    result = AngelHeartStatus.NOT_PRESENT
-                    self._cache_judgment(cache_key, result, current_time, None)
-                    return result
+                logger.warning(f"AngelHeart[{chat_id}]: 异常状态：混脸熟状态出现在状态判断中，直接转为不在场")
+                return AngelHeartStatus.NOT_PRESENT
 
-            # 7. 检查混脸熟触发条件（只有在不在场时才能触发）
+            # 检查混脸熟触发条件（只有在不在场时才能触发）
             if current_status == AngelHeartStatus.NOT_PRESENT:
+                # 7.0 检查是否在冷却期
+                if self.angel_context.is_familiarity_in_cooldown(chat_id):
+                    cooldown_remaining = int(self.angel_context.familiarity_cooldown_until[chat_id] - time.time())
+                    logger.info(
+                        f"AngelHeart[{chat_id}]: 混脸熟在冷却期，剩余 {cooldown_remaining} 秒，跳过触发检查"
+                    )
+                    return AngelHeartStatus.NOT_PRESENT
+
                 # 7.1 检查复读行为
                 if self._detect_echo_chamber(chat_id):
                     logger.debug(
                         f"AngelHeart[{chat_id}]: 检测到复读行为，进入混脸熟状态"
                     )
-                    result = AngelHeartStatus.GETTING_FAMILIAR
-                    self._cache_judgment(
-                        cache_key, result, current_time, "echo_chamber"
-                    )
-                    return result
+                    return AngelHeartStatus.GETTING_FAMILIAR
 
                 # 7.2 检查密集发言
                 if self._detect_dense_conversation(chat_id):
                     logger.debug(
                         f"AngelHeart[{chat_id}]: 检测到密集发言，进入混脸熟状态"
                     )
-                    result = AngelHeartStatus.GETTING_FAMILIAR
-                    self._cache_judgment(
-                        cache_key, result, current_time, "dense_conversation"
-                    )
-                    return result
+                    return AngelHeartStatus.GETTING_FAMILIAR
 
-            # 8. 默认状态：不在场
-            result = AngelHeartStatus.NOT_PRESENT
-            self._cache_judgment(cache_key, result, current_time, None)
-            return result
+            # 默认不在场
+            return AngelHeartStatus.NOT_PRESENT
 
         except Exception as e:
             logger.error(f"AngelHeart[{chat_id}]: 状态判断异常: {e}", exc_info=True)
@@ -179,6 +147,24 @@ class StatusChecker:
             return "".join(text_parts)
         return str(content)
 
+    def _is_summoned(self, chat_id: str) -> bool:
+        """检查是否被呼唤"""
+        try:
+            # 检查是否处于闭嘴状态
+            if self._is_silenced(chat_id):
+                return False
+
+            # 检查是否检测到唤醒词或@消息
+            latest_message = self._get_latest_message(chat_id)
+            if not latest_message:
+                return False
+
+            message_content = self._extract_message_content(latest_message)
+            return self._detect_wake_word(chat_id, message_content)
+        except Exception as e:
+            logger.debug(f"AngelHeart[{chat_id}]: 检查被呼唤状态失败: {e}")
+            return False
+
     def _is_silenced(self, chat_id: str) -> bool:
         """检查是否处于闭嘴状态"""
         current_time = time.time()
@@ -203,15 +189,6 @@ class StatusChecker:
         # 检查消息中是否包含昵称
         return any(alias in message_content for alias in aliases)
 
-    def _has_unprocessed_messages(self, chat_id: str) -> bool:
-        """检查是否有未处理消息"""
-        try:
-            ledger = self.angel_context.conversation_ledger
-            all_messages = ledger.get_all_messages(chat_id)
-            return any(not msg.get("is_processed", False) for msg in all_messages)
-        except Exception as e:
-            logger.warning(f"AngelHeart[{chat_id}]: 检查未处理消息失败: {e}")
-            return False
 
     def _detect_echo_chamber(self, chat_id: str) -> bool:
         """
@@ -331,71 +308,9 @@ class StatusChecker:
             logger.debug(f"AngelHeart[{chat_id}]: 密集发言检测失败: {e}")
             return False
 
-    def _should_continue_familiarity(self, chat_id: str) -> bool:
-        """
-        判断是否应该继续混脸熟状态（使用配置管理）
 
-        Returns:
-            bool: True if should continue familiarity state
-        """
-        try:
-            last_time = self.angel_context.get_last_analysis_time(chat_id)
-            if last_time == 0:
-                return False
 
-            # 使用配置的混脸熟超时时间
-            familiarity_duration = self.config_manager.familiarity_timeout
-            return (time.time() - last_time) < familiarity_duration
 
-        except Exception as e:
-            logger.debug(f"AngelHeart[{chat_id}]: 混脸熟状态判断失败: {e}")
-            return False
-
-    def _cache_judgment(
-        self,
-        cache_key: str,
-        status: AngelHeartStatus,
-        current_time: float,
-        trigger_type: Optional[str],
-    ):
-        """缓存状态判断结果及触发类型"""
-        self._last_judgment_cache[cache_key] = (status, current_time, trigger_type)
-
-        # 清理过期缓存（超过30秒）
-        cutoff_time = current_time - 30
-        expired_keys = [
-            k
-            for k, (_, cached_time, _) in self._last_judgment_cache.items()
-            if cached_time < cutoff_time
-        ]
-        for key in expired_keys:
-            self._last_judgment_cache.pop(key, None)
-
-    def get_last_trigger_type(self, chat_id: str) -> Optional[str]:
-        """
-        获取最近一次状态判断的触发类型
-
-        Args:
-            chat_id: 聊天会话ID
-
-        Returns:
-            Optional[str]: 触发类型（"echo_chamber", "dense_conversation", "new_message", "wake_word", "continuation", "observation"）
-                         如果无缓存或无触发类型则返回None
-        """
-        try:
-            latest_message = self._get_latest_message(chat_id)
-            if not latest_message:
-                return None
-
-            message_content = self._extract_message_content(latest_message)
-            cache_key = f"{chat_id}:{hash(message_content)}"
-            if cache_key in self._last_judgment_cache:
-                _, _, trigger_type = self._last_judgment_cache[cache_key]
-                return trigger_type
-            return None
-        except Exception as e:
-            logger.debug(f"AngelHeart[{chat_id}]: 获取触发类型失败: {e}")
-            return None
 
 
 class StatusTransitionManager:
