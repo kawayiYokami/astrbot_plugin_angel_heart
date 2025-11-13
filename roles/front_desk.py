@@ -23,7 +23,6 @@ from typing import Any, List, Dict  # 导入类型提示
 from ..core.utils import format_relative_time
 from ..core.utils import partition_dialogue, format_final_prompt
 from ..core.image_processor import ImageProcessor
-from ..core.angel_heart_status import AngelHeartStatus
 
 from ..core.fishing_direct_reply import FishingDirectReply
 
@@ -320,9 +319,10 @@ class FrontDesk:
             await self._enter_detention_queue(event, "门锁占用", retry_count + 1)
             return
 
-        # 成功获取门锁，处理消息
+        # 成功获取门锁，通知秘书处理消息
         try:
-            await self._handle_message_by_state(event)
+            # 调用秘书并执行决策
+            await self._call_secretary_and_execute(event, chat_id)
         finally:
             # 确保释放门锁
             await self.context.release_chat_processing(chat_id)
@@ -356,144 +356,39 @@ class FrontDesk:
         asyncio.create_task(cooldown_wait_handler())
         return future
 
-    async def _handle_message_by_state(self, event: AstrMessageEvent):
+    async def _call_secretary_and_execute(self, event: AstrMessageEvent, chat_id: str):
         """
-        根据状态决定消息处理方式
-
+        调用秘书并执行决策的公共逻辑
+        
         Args:
             event: 消息事件
+            chat_id: 会话ID
         """
-        chat_id = event.unified_msg_origin
-
-        # 获取当前状态
-        from ..core.angel_heart_status import AngelHeartStatus
-
-        current_status = self.context.get_chat_status(chat_id)
-        logger.info(f"AngelHeart[{chat_id}]: 处理消息 (状态: {current_status.value})")
-
-        # 根据状态选择处理方式
-        if current_status == AngelHeartStatus.GETTING_FAMILIAR:
-            # 混脸熟：快速回复
-            await self._handle_familiarity_reply(event, chat_id)
-        elif current_status == AngelHeartStatus.SUMMONED:
-            # 被呼唤：强制回复
-            await self._handle_summoned_reply(event, chat_id)
-        elif current_status == AngelHeartStatus.OBSERVATION:
-            # 观测中：智能判断
-            await self._handle_observation_reply(event, chat_id)
-        else:
-            # 不在场：检查触发条件
-            await self._handle_not_present_check(event, chat_id)
-
-    async def _handle_familiarity_reply(self, event: AstrMessageEvent, chat_id: str):
-        """处理混脸熟状态 - 快速回复"""
         try:
-            # 获取触发类型
-            from ..core.angel_heart_status import StatusChecker
-
-            status_checker = StatusChecker(self._config_manager, self.context)
-            trigger_type = status_checker.get_last_trigger_type(chat_id)
-            if not trigger_type:
-                trigger_type = "dense_conversation"
-
-            logger.info(f"AngelHeart[{chat_id}]: 混脸熟状态，触发类型: {trigger_type}")
-
-            # 使用 fishing_reply 生成策略
-            from ..core.fishing_direct_reply import FishingDirectReply
-
-            fishing_reply = FishingDirectReply(self._config_manager, self.context)
-            decision = await fishing_reply.generate_reply_strategy(
-                chat_id, event, trigger_type
-            )
-
-            # 获取上下文并处理
-            historical_context, recent_dialogue, boundary_ts = (
-                self.context.conversation_ledger.get_context_snapshot(chat_id)
-            )
-            await self._process_decision_result(
-                decision,
-                recent_dialogue,
-                historical_context,
-                boundary_ts,
-                event,
-                chat_id,
-            )
-
-        except Exception as e:
-            logger.error(f"AngelHeart[{chat_id}]: 混脸熟处理异常: {e}", exc_info=True)
-
-    async def _handle_summoned_reply(self, event: AstrMessageEvent, chat_id: str):
-        """处理被呼唤状态 - 强制回复"""
-        try:
-            logger.info(f"AngelHeart[{chat_id}]: 被呼唤状态，强制分析并回复")
-
-            # 获取上下文
-            historical_context, recent_dialogue, boundary_ts = (
-                self.context.conversation_ledger.get_context_snapshot(chat_id)
-            )
-
-            if not recent_dialogue:
-                logger.info(f"AngelHeart[{chat_id}]: 无新消息需要分析。")
-                return
-
-            # 调用秘书处理
-            await self.secretary.process_notification(event)
-
-            # 获取决策结果
-            decision = self.context.get_decision(chat_id)
-
-            # 强制设置回复
-            if decision:
-                decision.should_reply = True
-                decision.reply_strategy = "被呼唤回复"
-
-            # 处理决策结果
-            await self._process_decision_result(
-                decision,
-                recent_dialogue,
-                historical_context,
-                boundary_ts,
-                event,
-                chat_id,
-            )
-
-        except Exception as e:
-            logger.error(f"AngelHeart[{chat_id}]: 被呼唤处理异常: {e}", exc_info=True)
-
-    async def _handle_observation_reply(self, event: AstrMessageEvent, chat_id: str):
-        """处理观测中状态 - 智能判断"""
-        try:
-            logger.info(f"AngelHeart[{chat_id}]: 观测中状态，智能判断")
-
-            # 获取上下文
-            historical_context, recent_dialogue, boundary_ts = (
-                self.context.conversation_ledger.get_context_snapshot(chat_id)
-            )
-
-            if not recent_dialogue:
-                logger.info(f"AngelHeart[{chat_id}]: 无新消息需要分析。")
-                return
-
-            # 调用秘书处理
-            await self.secretary.process_notification(event)
-
-            # 获取决策结果
-            decision = self.context.get_decision(chat_id)
-
-            # 根据LLM判断调整策略
+            # 调用秘书进行状态判断和处理
+            decision = await self.secretary.handle_message_by_state(event)
+            
+            # 如果决策需要回复，则执行回复
             if decision and decision.should_reply:
-                if decision.is_questioned:
-                    logger.info(f"AngelHeart[{chat_id}]: 检测到被追问，优先处理")
-                    decision.reply_strategy = "回应追问"
-                elif decision.is_interesting:
-                    logger.info(f"AngelHeart[{chat_id}]: 检测到有趣话题，参与讨论")
-                    decision.reply_strategy = "参与话题"
-                else:
-                    logger.warning(
-                        f"AngelHeart[{chat_id}]: should_reply=true 但没有触发原因，使用默认策略"
-                    )
-                    decision.reply_strategy = "默认回复"
+                await self._execute_secretary_decision(decision, event, chat_id)
+        except Exception as e:
+            logger.error(f"AngelHeart[{chat_id}]: 调用秘书异常: {e}", exc_info=True)
 
+    async def _execute_secretary_decision(self, decision, event: AstrMessageEvent, chat_id: str):
+        """
+        执行秘书的决策
+        
+        Args:
+            decision: 秘书的决策对象
+            event: 消息事件
+            chat_id: 会话ID
+        """
+        try:
+            # 获取上下文
+            historical_context, recent_dialogue, boundary_ts = (
+                self.context.conversation_ledger.get_context_snapshot(chat_id)
+            )
+            
             # 处理决策结果
             await self._process_decision_result(
                 decision,
@@ -503,47 +398,16 @@ class FrontDesk:
                 event,
                 chat_id,
             )
-
         except Exception as e:
-            logger.error(f"AngelHeart[{chat_id}]: 观测中处理异常: {e}", exc_info=True)
+            logger.error(f"AngelHeart[{chat_id}]: 执行秘书决策异常: {e}", exc_info=True)
 
-    async def _handle_not_present_check(self, event: AstrMessageEvent, chat_id: str):
-        """处理不在场状态 - 检查触发条件"""
-        try:
-            logger.debug(f"AngelHeart[{chat_id}]: 不在场状态，检查触发条件")
+    
 
-            # 使用 status_checker 判断状态
-            from ..core.angel_heart_status import StatusChecker
+    
 
-            status_checker = StatusChecker(self._config_manager, self.context)
-            new_status = await status_checker.determine_status(chat_id)
+    
 
-            # 如果需要转换状态
-            if new_status in [
-                AngelHeartStatus.GETTING_FAMILIAR,
-                AngelHeartStatus.SUMMONED,
-            ]:
-                logger.info(
-                    f"AngelHeart[{chat_id}]: 检测到触发条件，状态: {new_status.value}"
-                )
-
-                # 转换状态
-                await self.context.transition_to_status(
-                    chat_id, new_status, f"触发条件：{new_status.value}"
-                )
-
-                # 根据新状态处理
-                if new_status == AngelHeartStatus.GETTING_FAMILIAR:
-                    await self._handle_familiarity_reply(event, chat_id)
-                elif new_status == AngelHeartStatus.SUMMONED:
-                    await self._handle_summoned_reply(event, chat_id)
-            else:
-                logger.debug(f"AngelHeart[{chat_id}]: 无触发条件，保持不在场")
-
-        except Exception as e:
-            logger.error(
-                f"AngelHeart[{chat_id}]: 不在场状态处理异常: {e}", exc_info=True
-            )
+    
 
     async def _process_decision_result(
         self, decision, recent_dialogue, historical_context, boundary_ts, event, chat_id
@@ -668,7 +532,8 @@ class FrontDesk:
 
             # 获取门锁成功且不在冷却期，直接处理
             try:
-                await self._handle_message_by_state(event)
+                # 调用秘书并执行决策
+                await self._call_secretary_and_execute(event, chat_id)
             finally:
                 # 确保释放门锁
                 await self.context.release_chat_processing(chat_id)
