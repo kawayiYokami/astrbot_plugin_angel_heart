@@ -16,6 +16,7 @@ from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.provider import ProviderRequest, LLMResponse
 from astrbot.core.star.context import Context
 from astrbot.core.star.register import register_on_llm_response
+from astrbot.core.star.register import register
 
 try:
     from astrbot.api import logger
@@ -32,6 +33,7 @@ from .core.utils import strip_markdown
 from .core.angel_heart_context import AngelHeartContext
 
 
+@register("astrbot_plugin_angel_heart", "kawayiYokami", "天使心秘书，让astrbot拥有极其聪明，有分寸的群聊介入，和极其完备的群聊上下文管理", "0.6.0", "https://github.com/kawayiYokami/astrbot_plugin_angel_heart")
 class AngelHeartPlugin(Star):
     """AngelHeart插件 - 专注的智能回复员"""
 
@@ -468,8 +470,8 @@ class AngelHeartPlugin(Star):
             and "错误信息:" in text_lower
         )
 
-    async def on_destroy(self):
-        """插件销毁时的清理工作"""
+    async def terminate(self):
+        """插件被卸载/停用时调用"""
         # 清理主动应答任务
         await self.angel_context.proactive_manager.cleanup()
-        logger.info("💖 AngelHeart 插件已销毁")
+        logger.info("💖 AngelHeart 插件已终止")
