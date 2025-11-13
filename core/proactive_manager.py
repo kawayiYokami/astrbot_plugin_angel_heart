@@ -6,7 +6,7 @@ AngelHeart 插件 - 主动应答管理器
 
 import time
 import asyncio
-from typing import Dict, List, Optional, Callable, Any
+from typing import Dict, Optional, Callable
 from enum import Enum
 
 try:

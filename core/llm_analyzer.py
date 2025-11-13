@@ -3,16 +3,14 @@ from typing import List, Dict
 import json
 from pathlib import Path
 import string
+
 try:
     from astrbot.api import logger
 except ImportError:
     import logging
+
     logger = logging.getLogger(__name__)
-from ..core.utils import (
-    convert_content_to_string,
-    format_relative_time,
-    JsonParser
-)
+from ..core.utils import convert_content_to_string, format_relative_time, JsonParser
 from ..models.analysis_result import SecretaryDecision
 
 
@@ -62,13 +60,19 @@ class LLMAnalyzer:
     # 类级别的常量
     MAX_CONVERSATION_LENGTH = 50
 
-    def __init__(self, analyzer_model_name: str, context, strategy_guide: str = None, config_manager=None):
+    def __init__(
+        self,
+        analyzer_model_name: str,
+        context,
+        strategy_guide: str = None,
+        config_manager=None,
+    ):
         self.analyzer_model_name = analyzer_model_name
         self.context = context  # 存储 context 对象，用于动态获取 provider
         self.strategy_guide = strategy_guide or ""  # 存储策略指导文本
         self.config_manager = config_manager  # 存储 config_manager 对象，用于访问配置
         self.is_ready = False  # 默认认为分析器未就绪
-        self.base_prompt_template = "" # 初始化为空字符串
+        self.base_prompt_template = ""  # 初始化为空字符串
 
         # 初始化JSON解析器
         self.json_parser = JsonParser()
@@ -76,13 +80,19 @@ class LLMAnalyzer:
         # 加载外部 Prompt 模板
         try:
             # 根据配置选择不同的prompt文件
-            prompt_filename = "secretary_analyzer_json.md" if config_manager and config_manager.is_reasoning_model else "secretary_analyzer.md"
+            prompt_filename = (
+                "secretary_analyzer_json.md"
+                if config_manager and config_manager.is_reasoning_model
+                else "secretary_analyzer.md"
+            )
             prompt_path = Path(__file__).parent.parent / "prompts" / prompt_filename
             self.base_prompt_template = prompt_path.read_text(encoding="utf-8")
-            self.is_ready = True # 成功加载后，标记为就绪
+            self.is_ready = True  # 成功加载后，标记为就绪
             logger.info(f"AngelHeart分析器: Prompt模板 '{prompt_filename}' 加载成功。")
         except FileNotFoundError:
-            logger.critical(f"AngelHeart分析器: 核心Prompt模板文件 'prompts/{prompt_filename}' 未找到。分析器将无法工作。")
+            logger.critical(
+                f"AngelHeart分析器: 核心Prompt模板文件 'prompts/{prompt_filename}' 未找到。分析器将无法工作。"
+            )
 
         if not self.analyzer_model_name:
             logger.warning("AngelHeart的分析模型未配置，功能将受限。")
@@ -92,12 +102,20 @@ class LLMAnalyzer:
         self.config_manager = new_config_manager
         # 根据新配置重新加载prompt
         try:
-            prompt_filename = "secretary_analyzer_json.md" if self.config_manager and self.config_manager.is_reasoning_model else "secretary_analyzer.md"
+            prompt_filename = (
+                "secretary_analyzer_json.md"
+                if self.config_manager and self.config_manager.is_reasoning_model
+                else "secretary_analyzer.md"
+            )
             prompt_path = Path(__file__).parent.parent / "prompts" / prompt_filename
             self.base_prompt_template = prompt_path.read_text(encoding="utf-8")
-            logger.info(f"AngelHeart分析器: Prompt模板 '{prompt_filename}' 重新加载成功。")
+            logger.info(
+                f"AngelHeart分析器: Prompt模板 '{prompt_filename}' 重新加载成功。"
+            )
         except FileNotFoundError:
-            logger.critical(f"AngelHeart分析器: 重新加载时未找到Prompt模板文件 'prompts/{prompt_filename}'。")
+            logger.critical(
+                f"AngelHeart分析器: 重新加载时未找到Prompt模板文件 'prompts/{prompt_filename}'。"
+            )
 
     def _parse_response(self, response_text: str, alias: str) -> SecretaryDecision:
         """
@@ -117,8 +135,10 @@ class LLMAnalyzer:
         调用AI模型并返回响应文本，包含3秒后自动重试1次机制
         """
         # 3. 如果启用了提示词日志增强，则记录最终构建的完整提示词
-        if self.config_manager and self.config_manager.prompt_logging_enabled:
-            logger.info(f"[AngelHeart][{chat_id}]:最终构建的完整提示词 ----------------")
+        if False:  # prompt_logging_enabled 已废弃
+            logger.info(
+                f"[AngelHeart][{chat_id}]:最终构建的完整提示词 ----------------"
+            )
             logger.info(prompt)
             logger.info("----------------------------------------")
 
@@ -140,7 +160,9 @@ class LLMAnalyzer:
                 response_text = token.completion_text.strip()
 
                 # 记录AI模型的完整响应内容
-                logger.debug(f"[AngelHeart][{chat_id}]: 轻量模型的分析推理 ----------------")
+                logger.debug(
+                    f"[AngelHeart][{chat_id}]: 轻量模型的分析推理 ----------------"
+                )
                 logger.debug(response_text)
                 logger.debug("----------------------------------------")
 
@@ -159,7 +181,9 @@ class LLMAnalyzer:
                     )
                     raise
 
-    def _build_prompt(self, historical_context: List[Dict], recent_dialogue: List[Dict]) -> str:
+    def _build_prompt(
+        self, historical_context: List[Dict], recent_dialogue: List[Dict]
+    ) -> str:
         """
         使用给定的对话历史构建分析提示词
 
@@ -175,7 +199,9 @@ class LLMAnalyzer:
 
         # 增强检查：如果历史文本为空，则记录警告日志
         if not historical_text and not recent_text:
-            logger.warning("AngelHeart分析器: 格式化后的对话历史为空，将生成一个空的分析提示词。")
+            logger.warning(
+                "AngelHeart分析器: 格式化后的对话历史为空，将生成一个空的分析提示词。"
+            )
 
         # 获取配置中的昵称
         alias = self.config_manager.alias if self.config_manager else "AngelHeart"
@@ -186,13 +212,16 @@ class LLMAnalyzer:
         base_prompt = base_prompt.replace("{recent_dialogue}", recent_text)
         base_prompt = base_prompt.replace("{reply_strategy_guide}", self.strategy_guide)
         base_prompt = base_prompt.replace("{alias}", alias)
-        base_prompt = base_prompt.replace("{ai_self_identity}", self.config_manager.ai_self_identity if self.config_manager else "")
+        base_prompt = base_prompt.replace(
+            "{ai_self_identity}",
+            self.config_manager.ai_self_identity if self.config_manager else "",
+        )
 
         return base_prompt
 
-
-
-    async def analyze_and_decide(self, historical_context: List[Dict], recent_dialogue: List[Dict], chat_id: str) -> SecretaryDecision:
+    async def analyze_and_decide(
+        self, historical_context: List[Dict], recent_dialogue: List[Dict], chat_id: str
+    ) -> SecretaryDecision:
         """
         分析对话历史，做出结构化的决策 (JSON)
         """
@@ -209,7 +238,10 @@ class LLMAnalyzer:
         if not self.is_ready:
             logger.debug("AngelHeart分析器: 由于核心Prompt模板丢失，分析器已禁用。")
             return SecretaryDecision(
-                should_reply=False, reply_strategy="分析器未就绪", topic="未知", alias=alias
+                should_reply=False,
+                reply_strategy="分析器未就绪",
+                topic="未知",
+                alias=alias,
             )
 
         # 1. 调用轻量级AI进行分析
@@ -218,9 +250,14 @@ class LLMAnalyzer:
 
         # 2. 增强检查：如果生成的提示词为空，则记录警告日志并返回一个明确的决策
         if not prompt:
-            logger.warning("AngelHeart分析器: 生成的分析提示词为空，将返回'分析内容为空'的决策。")
+            logger.warning(
+                "AngelHeart分析器: 生成的分析提示词为空，将返回'分析内容为空'的决策。"
+            )
             return SecretaryDecision(
-                should_reply=False, reply_strategy="分析内容为空", topic="未知", alias=alias
+                should_reply=False,
+                reply_strategy="分析内容为空",
+                topic="未知",
+                alias=alias,
             )
 
         response_text = ""
@@ -246,7 +283,9 @@ class LLMAnalyzer:
             should_reply=False, reply_strategy="分析失败", topic="未知", alias=alias
         )
 
-    def _parse_and_validate_decision(self, response_text: str, alias: str) -> SecretaryDecision:
+    def _parse_and_validate_decision(
+        self, response_text: str, alias: str
+    ) -> SecretaryDecision:
         """解析并验证来自AI的响应文本，构建SecretaryDecision对象"""
 
         # 定义SecretaryDecision的字段要求
@@ -258,7 +297,7 @@ class LLMAnalyzer:
             decision_data = self.json_parser.extract_json(
                 text=response_text,
                 required_fields=required_fields,
-                optional_fields=optional_fields
+                optional_fields=optional_fields,
             )
         except Exception as e:
             logger.warning(
@@ -276,7 +315,7 @@ class LLMAnalyzer:
                 should_reply=False,
                 reply_strategy="分析内容无有效JSON",
                 topic="未知",
-                alias=alias
+                alias=alias,
             )
 
         # 对来自 AI 的 JSON 做健壮性处理，防止字段为 null 或类型不符合导致 pydantic 校验失败
@@ -299,7 +338,13 @@ class LLMAnalyzer:
         elif isinstance(is_questioned_raw, (int, float)):
             is_questioned = bool(is_questioned_raw)
         elif isinstance(is_questioned_raw, str):
-            is_questioned = is_questioned_raw.lower() in ("true", "1", "yes", "是", "对")
+            is_questioned = is_questioned_raw.lower() in (
+                "true",
+                "1",
+                "yes",
+                "是",
+                "对",
+            )
         else:
             is_questioned = False
 
@@ -310,7 +355,13 @@ class LLMAnalyzer:
         elif isinstance(is_interesting_raw, (int, float)):
             is_interesting = bool(is_interesting_raw)
         elif isinstance(is_interesting_raw, str):
-            is_interesting = is_interesting_raw.lower() in ("true", "1", "yes", "是", "对")
+            is_interesting = is_interesting_raw.lower() in (
+                "true",
+                "1",
+                "yes",
+                "是",
+                "对",
+            )
         else:
             is_interesting = False
 
@@ -341,18 +392,24 @@ class LLMAnalyzer:
             reply_target=reply_target,
             needs_search=needs_search,
             angel_eye_request=angel_eye_request,
-            alias=alias
+            alias=alias,
         )
 
         # 代码校验和修正逻辑
-        if decision.should_reply and not decision.is_questioned and not decision.is_interesting:
+        if (
+            decision.should_reply
+            and not decision.is_questioned
+            and not decision.is_interesting
+        ):
             logger.warning(
                 "AngelHeart分析器: AI判断有矛盾 - should_reply=true 但没有触发原因，强制设为不回复"
             )
             decision.should_reply = False
             decision.reply_strategy = "继续观察"
 
-        if not decision.should_reply and (decision.is_questioned or decision.is_interesting):
+        if not decision.should_reply and (
+            decision.is_questioned or decision.is_interesting
+        ):
             logger.warning(
                 "AngelHeart分析器: AI判断有矛盾 - 有触发原因但说不回复，强制设为回复"
             )
@@ -385,7 +442,7 @@ class LLMAnalyzer:
         SEPARATOR_OBJ = {"role": "system", "content": "history_separator"}
 
         # 遍历最近的 MAX_CONVERSATION_LENGTH 条对话
-        for conv in conversations[-self.MAX_CONVERSATION_LENGTH:]:
+        for conv in conversations[-self.MAX_CONVERSATION_LENGTH :]:
             # 确保 conv 是一个字典
             if not isinstance(conv, dict):
                 logger.warning(f"跳过非字典类型的对话项: {type(conv)}")
@@ -394,7 +451,9 @@ class LLMAnalyzer:
             # 检查是否遇到分隔符
             if conv == SEPARATOR_OBJ:
                 lines.append("\n--- 以上是历史消息，仅作为策略参考，不需要回应 ---\n")
-                lines.append("\n--- 后续的最新对话，你需要分辨出里面的人是不是在对你说话 ---\n")
+                lines.append(
+                    "\n--- 后续的最新对话，你需要分辨出里面的人是不是在对你说话 ---\n"
+                )
                 continue  # 跳过分隔符本身，不添加到最终输出
 
             # 使用新的辅助方法格式化单条消息
