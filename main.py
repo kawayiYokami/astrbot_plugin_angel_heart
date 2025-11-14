@@ -408,7 +408,7 @@ class AngelHeartPlugin(Star):
             else:
                 logger.debug(f"AngelHeart[{chat_id}]: 消息链为空，跳过状态转换")
 
-            await self.angel_context.release_chat_processing(chat_id)
+            await self.angel_context.release_chat_processing(chat_id, set_cooldown=True)
             logger.info(
                 f"AngelHeart[{chat_id}]: 任务处理完成，已在消息发送前释放处理锁。"
             )

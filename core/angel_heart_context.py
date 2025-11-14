@@ -164,20 +164,24 @@ class AngelHeartContext:
                 )
                 return False
 
-    async def release_chat_processing(self, chat_id: str):
+    async def release_chat_processing(self, chat_id: str, set_cooldown: bool = True):
         """
         原子性地释放会话处理权（收起门牌）。
-        自动设置冷却期，防止立即重新获取。
+        可选择是否设置冷却期，防止立即重新获取。
 
         Args:
             chat_id (str): 会话ID。
+            set_cooldown (bool): 是否设置冷却期，默认True
         """
         async with self.processing_lock:
             if self.processing_chats.pop(chat_id, None) is not None:
-                # 【新增】设置冷却期
-                cooldown_duration = self.config_manager.waiting_time
-                self.lock_cooldown_until[chat_id] = time.time() + cooldown_duration
-                logger.debug(f"AngelHeart[{chat_id}]: 已收起门牌，进入 {cooldown_duration} 秒冷却期")
+                if set_cooldown:
+                    # 设置冷却期
+                    cooldown_duration = self.config_manager.waiting_time
+                    self.lock_cooldown_until[chat_id] = time.time() + cooldown_duration
+                    logger.debug(f"AngelHeart[{chat_id}]: 已收起门牌，进入 {cooldown_duration} 秒冷却期")
+                else:
+                    logger.debug(f"AngelHeart[{chat_id}]: 已收起门牌，不设置冷却期")
 
     # ========== 事件扣押与观察期 (V2: Future 阻塞机制) ==========
 
