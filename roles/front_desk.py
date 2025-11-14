@@ -327,8 +327,8 @@ class FrontDesk:
             # 调用秘书并执行决策
             await self._call_secretary_and_execute(event, chat_id)
         finally:
-            # 确保释放门锁
-            await self.context.release_chat_processing(chat_id)
+            # 确保释放门锁（不设置冷却，因为是否设置冷却由内部逻辑决定）
+            await self.context.release_chat_processing(chat_id, set_cooldown=False)
 
 
     async def _call_secretary_and_execute(self, event: AstrMessageEvent, chat_id: str):
@@ -350,14 +350,14 @@ class FrontDesk:
                 # 决策需要回复，执行回复
                 await self._execute_secretary_decision(decision, event, chat_id)
             else:
-                # 决策不需要回复，立即释放门锁
-                await self.context.release_chat_processing(chat_id)
+                # 决策不需要回复，立即释放门锁（不设置冷却）
+                await self.context.release_chat_processing(chat_id, set_cooldown=False)
             # 注意：需要回复的情况，门锁释放由 main.py 的 strip_markdown_on_decorating_result 方法统一处理
         except Exception as e:
             logger.error(f"AngelHeart[{chat_id}]: 调用秘书异常: {e}", exc_info=True)
             # 发生异常时也要释放门锁，避免死锁
             try:
-                await self.context.release_chat_processing(chat_id)
+                await self.context.release_chat_processing(chat_id, set_cooldown=False)
             except Exception:
                 pass  # 忽略释放门锁时的异常
 
