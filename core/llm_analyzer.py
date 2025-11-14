@@ -407,18 +407,6 @@ class LLMAnalyzer:
             decision.should_reply = False
             decision.reply_strategy = "继续观察"
 
-        if not decision.should_reply and (
-            decision.is_questioned or decision.is_interesting
-        ):
-            logger.warning(
-                "AngelHeart分析器: AI判断有矛盾 - 有触发原因但说不回复，强制设为回复"
-            )
-            decision.should_reply = True
-            if decision.is_questioned:
-                decision.reply_strategy = "回应追问"
-            else:
-                decision.reply_strategy = "参与话题"
-
         return decision
 
     def _format_conversation_history(self, conversations: List[Dict]) -> str:
