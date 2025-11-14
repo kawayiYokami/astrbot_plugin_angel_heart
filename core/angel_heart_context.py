@@ -45,6 +45,8 @@ class AngelHeartContext:
         # 门牌管理
         self.processing_chats: Dict[str, float] = {}  # chat_id -> 开始分析时间
         self.processing_lock: asyncio.Lock = asyncio.Lock()  # 门牌操作锁
+        # 门锁冷却时间：归还门锁后需要等待的时间
+        self.lock_cooldown_until: Dict[str, float] = {}  # chat_id -> 冷却结束时间
 
         # 事件扣押管理：来访者等候牌记录
         # pending_futures[chat_id] = 等候牌（Future对象）
@@ -52,8 +54,8 @@ class AngelHeartContext:
         # dispatch_lock: 取号排队锁，防止来访者插队
         self.dispatch_lock: asyncio.Lock = asyncio.Lock()
 
-        # 等候计时器：每个来访者的最长等待时间
-        self.observation_timers: Dict[str, asyncio.Task] = {}
+        # 扣押超时计时器：每个来访者的最长等待时间限制
+        self.detention_timeout_timers: Dict[str, asyncio.Task] = {}
         # 耐心计时器：老板思考时，让来访者安心等待的安抚机制
         # 每隔一段时间告诉来访者"老板在思考，请稍等"
         self.patience_timers: Dict[str, asyncio.Task] = {}
@@ -61,7 +63,7 @@ class AngelHeartContext:
         # 时序控制
         self.last_analysis_time: Dict[str, float] = {}  # chat_id -> 上次分析时间
         self.silenced_until: Dict[str, float] = {}  # chat_id -> 闭嘴结束时间
-        
+
         # 混脸熟冷却控制
         self.familiarity_cooldown_until: Dict[str, float] = {}  # chat_id -> 混脸熟冷却结束时间
 
@@ -75,13 +77,13 @@ class AngelHeartContext:
 
         # 状态转换管理器
         self.status_transition_manager = StatusTransitionManager(self)
-        
+
         # 主动应答管理器
         self.proactive_manager = ProactiveManager(self)
 
     @property
-    def observation_duration(self) -> float:
-        """最长等候时间（秒），来访者愿意等待老板的最长时间"""
+    def detention_max_wait_time(self) -> float:
+        """扣押最长等待时间（秒），来访者愿意等待老板的最长时间"""
         return self.config_manager.waiting_time
 
     # ========== 门牌管理 ==========
@@ -110,15 +112,26 @@ class AngelHeartContext:
     async def acquire_chat_processing(self, chat_id: str) -> bool:
         """
         原子性地尝试获取会话处理权（挂上门牌）。
+        包含冷却机制：归还门锁后需要等待一段时间才能再次获取。
 
         Args:
             chat_id (str): 会话ID。
 
         Returns:
-            bool: 成功挂上门牌返回 True，如果门牌已被占用则返回 False。
+            bool: 成功挂上门牌返回 True，如果门牌已被占用或在冷却期则返回 False。
         """
         async with self.processing_lock:
             current_time = time.time()
+
+            # 【新增】检查是否在冷却期
+            cooldown_end = self.lock_cooldown_until.get(chat_id, 0)
+            if current_time < cooldown_end:
+                remaining = cooldown_end - current_time
+                logger.debug(
+                    f"AngelHeart[{chat_id}]: 门锁在冷却期，剩余 {remaining:.1f} 秒"
+                )
+                return False
+
             start_time = self.processing_chats.get(chat_id)
 
             # 检查门牌是否卡死（例如，超过5分钟）
@@ -149,13 +162,17 @@ class AngelHeartContext:
     async def release_chat_processing(self, chat_id: str):
         """
         原子性地释放会话处理权（收起门牌）。
+        自动设置冷却期，防止立即重新获取。
 
         Args:
             chat_id (str): 会话ID。
         """
         async with self.processing_lock:
             if self.processing_chats.pop(chat_id, None) is not None:
-                logger.debug(f"AngelHeart[{chat_id}]: 已收起门牌")
+                # 【新增】设置冷却期
+                cooldown_duration = self.config_manager.waiting_time
+                self.lock_cooldown_until[chat_id] = time.time() + cooldown_duration
+                logger.debug(f"AngelHeart[{chat_id}]: 已收起门牌，进入 {cooldown_duration} 秒冷却期")
 
     # ========== 事件扣押与观察期 (V2: Future 阻塞机制) ==========
 
@@ -193,32 +210,32 @@ class AngelHeartContext:
             new_ticket = asyncio.Future()
             self.pending_futures[chat_id] = new_ticket
 
-            # 3. 取消之前的等候计时器（如果有）
-            if chat_id in self.observation_timers:
-                self.observation_timers[chat_id].cancel()
-                logger.debug(f"AngelHeart[{chat_id}]: 已取消之前的等候计时")
+            # 3. 取消之前的扣押超时计时器（如果有）
+            if chat_id in self.detention_timeout_timers:
+                self.detention_timeout_timers[chat_id].cancel()
+                logger.debug(f"AngelHeart[{chat_id}]: 已取消之前的扣押超时计时")
 
-            # 4. 启动新的等候计时器（最长等待时间）
-            self.observation_timers[chat_id] = asyncio.create_task(
-                self._observation_timeout_handler(chat_id)
+            # 4. 启动新的扣押超时计时器（最长等待时间）
+            self.detention_timeout_timers[chat_id] = asyncio.create_task(
+                self._detention_timeout_handler(chat_id)
             )
 
             logger.info(
-                f"AngelHeart[{chat_id}]: 已发放等候牌，最长等待 {self.observation_duration} 秒"
+                f"AngelHeart[{chat_id}]: 已发放等候牌，最长等待180秒"
             )
 
             # 5. 返回等候牌给来访者
             return new_ticket
 
-    async def _observation_timeout_handler(self, chat_id: str):
+    async def _detention_timeout_handler(self, chat_id: str):
         """
-        等候超时处理
+        扣押超时处理
 
-        来访者在等候室等待，系统会定期检查老板是否已经空闲。
+        来访者在扣押室等待，系统会定期检查老板是否已经空闲。
         如果老板空闲了，就请来访者进来；如果等太久，就请来访者离开。
 
         等待策略：
-        1. 先等待一个基础等候时间（让老板处理完当前事务）
+        1. 先等待一个基础等待时间（让老板处理完当前事务）
         2. 然后进入轮询模式，每3秒检查一次老板是否空闲
         3. 最多等待3分钟，超时自动离开
 
@@ -226,19 +243,16 @@ class AngelHeartContext:
             chat_id (str): 来访者ID
         """
         try:
-            # 1. 基础等候：给老板一些时间处理当前事务
-            await asyncio.sleep(self.observation_duration)
-
-            # 2. 设置轮询参数
-            max_wait_seconds = 180  # 最多愿意等3分钟
-            recheck_interval_seconds = 3  # 每3秒看一下老板忙不忙
+            # 1. 设置轮询参数
+            detention_timeout_seconds = 180  # 扣押超时时间：最多等待3分钟
+            recheck_interval_seconds = 3  # 每3秒检查一次
             total_waited = 0
 
-            # 3. 进入轮询等待模式
-            while total_waited < max_wait_seconds:
-                # 检查老板是否已经空闲
+            # 2. 进入轮询等待模式
+            while total_waited < detention_timeout_seconds:
+                # 【简化】检查老板是否已经空闲（门锁已包含冷却机制）
                 if not await self.is_chat_processing(chat_id):
-                    # 老板空闲了！请来访者进来
+                    # 老板空闲！请来访者进来
                     ticket = self.pending_futures.get(chat_id)
                     if ticket and not ticket.done():
                         logger.info(
@@ -246,29 +260,29 @@ class AngelHeartContext:
                         )
                         ticket.set_result("PROCESS")  # 叫号：请进
 
-                    # 清理等候记录
+                    # 清理扣押记录
                     self.pending_futures.pop(chat_id, None)
-                    self.observation_timers.pop(chat_id, None)
+                    self.detention_timeout_timers.pop(chat_id, None)
                     return  # 等候成功结束
 
                 # 老板还在忙，继续等
                 logger.debug(
-                    f"AngelHeart[{chat_id}]: 老板还在忙，继续等待... (已等 {total_waited}秒/{max_wait_seconds}秒)"
+                    f"AngelHeart[{chat_id}]: 等待中... (已等 {total_waited}秒/{detention_timeout_seconds}秒)"
                 )
                 await asyncio.sleep(recheck_interval_seconds)
                 total_waited += recheck_interval_seconds
 
             # 4. 超时处理：等太久了，请来访者离开
             logger.warning(
-                f"AngelHeart[{chat_id}]: 等候超过{max_wait_seconds}秒，请来访者离开"
+                f"AngelHeart[{chat_id}]: 等候超过{detention_timeout_seconds}秒，请来访者离开"
             )
             ticket = self.pending_futures.get(chat_id)
             if ticket and not ticket.done():
                 ticket.set_result("KILL")  # 叫号：不好意思，今天不接待了
 
-            # 清理等候记录
+            # 清理扣押记录
             self.pending_futures.pop(chat_id, None)
-            self.observation_timers.pop(chat_id, None)
+            self.detention_timeout_timers.pop(chat_id, None)
 
         except asyncio.CancelledError:
             logger.debug(f"AngelHeart[{chat_id}]: 等候被取消（老板直接叫号了）")
@@ -372,6 +386,7 @@ class AngelHeartContext:
         """获取最后一次分析的时间戳"""
         return self.last_analysis_time.get(chat_id, 0)
 
+
     # ========== 4状态机制状态管理方法 ==========
 
     def get_chat_status(self, chat_id: str) -> AngelHeartStatus:
@@ -433,23 +448,22 @@ class AngelHeartContext:
         """
         消息发送后的状态处理
 
-        当AI发送消息后，应该从被呼唤或混脸熟状态转换到观测中
+        当AI发送消息后，强制转换到观测中状态
 
         Args:
             chat_id: 聊天会话ID
         """
         current_status = self.get_chat_status(chat_id)
 
-        # 只有在被呼唤或混脸熟状态时才转换到观测中
-        if current_status in [AngelHeartStatus.SUMMONED, AngelHeartStatus.GETTING_FAMILIAR]:
-            # 如果是从混脸熟状态转换，设置冷却期
-            if current_status == AngelHeartStatus.GETTING_FAMILIAR:
-                logger.debug(f"AngelHeart[{chat_id}]: 从混脸熟状态转换，设置冷却期")
-                self.set_familiarity_cooldown(chat_id)
-            
-            await self.transition_to_status(chat_id, AngelHeartStatus.OBSERVATION, "AI回复完成，进入观测中")
+        # 如果是从混脸熟状态转换，设置冷却期
+        if current_status == AngelHeartStatus.GETTING_FAMILIAR:
+            logger.debug(f"AngelHeart[{chat_id}]: 从混脸熟状态转换，设置冷却期")
+            self.set_familiarity_cooldown(chat_id)
 
-    
+        # 强制转换到观测中状态
+        await self.transition_to_status(chat_id, AngelHeartStatus.OBSERVATION, "AI回复完成，进入观测中")
+
+
 
     def is_in_observation_period(self, chat_id: str) -> bool:
         """
@@ -462,7 +476,7 @@ class AngelHeartContext:
             bool: True if in observation period
         """
         return (self.get_chat_status(chat_id) == AngelHeartStatus.OBSERVATION or
-                chat_id in self.observation_timers)
+                chat_id in self.detention_timeout_timers)
 
     def is_not_present(self, chat_id: str) -> bool:
         """
@@ -488,15 +502,15 @@ class AngelHeartContext:
         """
         if chat_id not in self.familiarity_cooldown_until:
             return False
-        
+
         current_time = time.time()
         cooldown_end = self.familiarity_cooldown_until[chat_id]
-        
+
         # 如果冷却期已过，清理记录
         if current_time >= cooldown_end:
             del self.familiarity_cooldown_until[chat_id]
             return False
-            
+
         return True
 
     def set_familiarity_cooldown(self, chat_id: str):

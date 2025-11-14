@@ -78,14 +78,19 @@ class StatusChecker:
 
             # 如果当前是混脸熟状态，说明有异常，直接转为不在场
             if current_status == AngelHeartStatus.GETTING_FAMILIAR:
-                logger.warning(f"AngelHeart[{chat_id}]: 异常状态：混脸熟状态出现在状态判断中，直接转为不在场")
+                logger.warning(
+                    f"AngelHeart[{chat_id}]: 异常状态：混脸熟状态出现在状态判断中，直接转为不在场"
+                )
                 return AngelHeartStatus.NOT_PRESENT
 
             # 检查混脸熟触发条件（只有在不在场时才能触发）
             if current_status == AngelHeartStatus.NOT_PRESENT:
                 # 7.0 检查是否在冷却期
                 if self.angel_context.is_familiarity_in_cooldown(chat_id):
-                    cooldown_remaining = int(self.angel_context.familiarity_cooldown_until[chat_id] - time.time())
+                    cooldown_remaining = int(
+                        self.angel_context.familiarity_cooldown_until[chat_id]
+                        - time.time()
+                    )
                     logger.info(
                         f"AngelHeart[{chat_id}]: 混脸熟在冷却期，剩余 {cooldown_remaining} 秒，跳过触发检查"
                     )
@@ -184,7 +189,6 @@ class StatusChecker:
         # 检查消息中是否包含昵称
         return any(alias in message_content for alias in aliases)
 
-
     def _detect_echo_chamber(self, chat_id: str) -> bool:
         """
         检测复读行为 - 统计窗口内相同内容的纯文字消息数量
@@ -218,7 +222,11 @@ class StatusChecker:
                 content = msg.get("content", "")
                 if isinstance(content, list):
                     # 检查是否包含图片
-                    has_image = any(item.get("type") == "image_url" for item in content if isinstance(item, dict))
+                    has_image = any(
+                        item.get("type") == "image_url"
+                        for item in content
+                        if isinstance(item, dict)
+                    )
                     if has_image:
                         continue  # 跳过包含图片的消息
 
@@ -252,8 +260,6 @@ class StatusChecker:
         except Exception as e:
             logger.debug(f"AngelHeart[{chat_id}]: 复读检测失败: {e}")
             return False
-
-
 
     def _detect_dense_conversation(self, chat_id: str) -> bool:
         """
@@ -304,10 +310,6 @@ class StatusChecker:
             return False
 
 
-
-
-
-
 class StatusTransitionManager:
     """状态转换管理器
 
@@ -327,6 +329,7 @@ class StatusTransitionManager:
         self.status_start_times: Dict[str, Tuple[AngelHeartStatus, float]] = {}
 
         # 自动降级计时器：chat_id -> asyncio.Task
+        # 注意：已改为同步检查，保留此字典仅为兼容性
         self.degradation_timers: Dict[str, asyncio.Task] = {}
 
     async def cancel_degradation_timer(self, chat_id: str):
@@ -349,16 +352,8 @@ class StatusTransitionManager:
             reason: 转换原因
         """
         try:
-            old_status = self.angel_context.get_chat_status(chat_id)
-
-            # 取消旧的计时器
-            if old_status == AngelHeartStatus.OBSERVATION:
-                # 取消观察期计时器
-                if chat_id in self.angel_context.observation_timers:
-                    timer = self.angel_context.observation_timers.pop(chat_id)
-                    if not timer.done():
-                        timer.cancel()
-                    logger.debug(f"AngelHeart[{chat_id}]: 已取消观察期计时器")
+            # 状态转换时不清理扣押计时器，两者是独立机制
+            await self.angel_context._update_chat_status(chat_id, new_status, reason)
 
             # 记录状态开始时间
             self.status_start_times[chat_id] = (new_status, time.time())
@@ -366,29 +361,17 @@ class StatusTransitionManager:
             # 启动新计时器
             await self._start_new_timer(chat_id, new_status)
 
-            # 记录转换
-            logger.info(
-                f"AngelHeart[{chat_id}]: 状态转换: {old_status.value if old_status else 'None'} -> {new_status.value} ({reason})"
-            )
-
         except Exception as e:
             logger.error(f"AngelHeart[{chat_id}]: 状态转换失败: {e}")
-
-
 
     async def _start_new_timer(self, chat_id: str, new_status: AngelHeartStatus):
         """启动新状态的计时器"""
         try:
-            # 从配置获取观测中超时时间
-            observation_timeout = self.angel_context.config_manager.observation_timeout
-
             if new_status == AngelHeartStatus.OBSERVATION:
-                # 观测中启动自动降级计时器（超时时间由配置决定）
-                self.degradation_timers[chat_id] = asyncio.create_task(
-                    self._degradation_timer_handler(chat_id)
-                )
+                # 观测中状态的超时现在由 FrontDesk.handle_event 中的同步检查处理
+                # 这里不再启动异步计时器
                 logger.debug(
-                    f"AngelHeart[{chat_id}]: 已启动{observation_timeout}秒自动降级计时器"
+                    f"AngelHeart[{chat_id}]: 观测中状态，超时将由前台同步检查处理"
                 )
 
             elif new_status == AngelHeartStatus.GETTING_FAMILIAR:
@@ -398,45 +381,7 @@ class StatusTransitionManager:
         except Exception as e:
             logger.warning(f"AngelHeart[{chat_id}]: 启动新计时器失败: {e}")
 
-    async def _degradation_timer_handler(self, chat_id: str):
-        """自动降级计时器处理器"""
-        try:
-            # 从配置获取观测中超时时间
-            observation_timeout = self.angel_context.config_manager.observation_timeout
-
-            # 等待配置的超时时间
-            await asyncio.sleep(observation_timeout)
-
-            # 检查是否仍然在观测中
-            current_status = self.angel_context.get_chat_status(chat_id)
-            if current_status != AngelHeartStatus.OBSERVATION:
-                logger.debug(f"AngelHeart[{chat_id}]: 状态已变化，取消降级")
-                return
-
-            # 检查最后分析时间
-            last_time = self.angel_context.get_last_analysis_time(chat_id)
-            if last_time == 0 or (time.time() - last_time) > observation_timeout:
-                logger.info(
-                    f"AngelHeart[{chat_id}]: {observation_timeout}秒无活动，自动降级为'不在场'"
-                )
-                await self.transition_to_status(
-                    chat_id,
-                    AngelHeartStatus.NOT_PRESENT,
-                    f"{observation_timeout}秒无活动自动降级",
-                )
-
-                # 清理所有未处理消息
-                try:
-                    self.angel_context.conversation_ledger.mark_as_processed(
-                        chat_id, time.time()
-                    )
-                except Exception as e:
-                    logger.warning(f"AngelHeart[{chat_id}]: 清理未处理消息失败: {e}")
-
-        except asyncio.CancelledError:
-            logger.debug(f"AngelHeart[{chat_id}]: 自动降级计时器被取消")
-        except Exception as e:
-            logger.error(f"AngelHeart[{chat_id}]: 自动降级计时器异常: {e}")
+    # 移除原有的 _degradation_timer_handler 方法，因为超时检查已改为同步方式
 
     def get_status_duration(self, chat_id: str) -> float:
         """
@@ -454,6 +399,25 @@ class StatusTransitionManager:
 
             status, start_time = self.status_start_times[chat_id]
             return time.time() - start_time
+        except Exception:
+            return 0.0
+
+    def get_status_start_time(self, chat_id: str) -> float:
+        """
+        获取状态开始时间
+
+        Args:
+            chat_id: 聊天会话ID
+
+        Returns:
+            float: 状态开始时间戳，0表示未找到
+        """
+        try:
+            if chat_id not in self.status_start_times:
+                return 0.0
+
+            status, start_time = self.status_start_times[chat_id]
+            return start_time
         except Exception:
             return 0.0
 
@@ -475,7 +439,7 @@ class StatusTransitionManager:
                 "current_status": status.value if status else "Unknown",
                 "duration_seconds": round(duration, 2),
                 "duration_minutes": round(duration / 60, 2),
-                "has_timer": chat_id in self.degradation_timers,
+                "has_timer": chat_id in self.angel_context.detention_timeout_timers,
             }
         except Exception as e:
             logger.warning(f"AngelHeart[{chat_id}]: 获取状态摘要失败: {e}")

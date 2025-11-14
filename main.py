@@ -54,49 +54,7 @@ class AngelHeartPlugin(Star):
         # 建立必要的相互引用
         self.front_desk.secretary = self.secretary
 
-        # 创建10秒后运行的状态管理自检测试任务
-        import asyncio
-        try:
-            asyncio.create_task(self._delayed_state_test(10))
-        except Exception:
-            # 如果创建任务失败，跳过测试
-            logger.warning("⚠️ 无法创建状态自检测试任务，跳过测试")
-
         logger.info("💖 AngelHeart智能回复员初始化完成 (事件扣押机制 V2 已启用)")
-
-    async def _delayed_state_test(self, delay_seconds: int = 10):
-        """延迟运行状态管理自检测试"""
-        import asyncio
-        # 等待指定秒数，确保插件完全初始化
-        await asyncio.sleep(delay_seconds)
-        await self._run_state_self_test()
-
-    async def _run_state_self_test(self):
-        """运行状态管理自检测试"""
-        try:
-            # 只有在调试模式下才运行测试
-            if not self.config_manager.debug_mode:
-                logger.info("🧪 跳过状态管理自检测试（非调试模式）")
-                return
-
-            from .core.state_test import run_state_self_test
-            logger.info("🧪 开始AngelHeart状态管理自检测试...")
-
-            # 在测试模式下运行，确保不影响正常启动
-            success = await run_state_self_test(
-                self.config_manager,
-                self.context,
-                self.angel_context
-            )
-
-            if success:
-                logger.info("✅ 状态管理自检测试通过")
-            else:
-                logger.warning("⚠️ 状态管理自检测试发现问题，但不影响插件运行")
-
-        except Exception as e:
-            logger.error(f"💥 状态自检测试异常，但不影响插件启动: {e}")
-            # 确保测试异常不影响插件正常启动
 
     # --- 核心事件处理 ---
     @filter.event_message_type(

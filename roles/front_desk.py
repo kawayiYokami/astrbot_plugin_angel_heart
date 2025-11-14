@@ -6,7 +6,6 @@ AngelHeart 插件 - 前台角色 (FrontDesk)
 import time
 import os
 import copy
-import asyncio
 import json
 
 try:
@@ -25,6 +24,9 @@ from ..core.utils import partition_dialogue, format_final_prompt
 from ..core.image_processor import ImageProcessor
 
 from ..core.fishing_direct_reply import FishingDirectReply
+
+# 导入状态枚举
+from ..core.angel_heart_status import AngelHeartStatus
 
 
 class FrontDesk:
@@ -169,6 +171,9 @@ class FrontDesk:
         message_content = event.get_message_outline()
 
         try:
+            # 优先进行超时检查
+            await self._check_and_handle_timeout(chat_id, current_time)
+
             # 1. 基本合法性检查 (最高优先级)
             if not message_content.strip():
                 logger.debug(f"AngelHeart[{chat_id}]: 空消息，跳过处理")
@@ -218,6 +223,45 @@ class FrontDesk:
             # 发生异常时，终止事件传播
             event.stop_event()
 
+    async def _check_and_handle_timeout(self, chat_id: str, current_time: float):
+        """检查并处理观测中状态超时"""
+        try:
+            # 检查当前状态
+            current_status = self.context.get_chat_status(chat_id)
+            if current_status != AngelHeartStatus.OBSERVATION:
+                return
+
+            # 获取观测开始时间和超时配置
+            status_start_time = (
+                self.context.status_transition_manager.get_status_start_time(chat_id)
+            )
+            if status_start_time == 0:
+                logger.warning(
+                    f"AngelHeart[{chat_id}]: 观测状态缺少开始时间，跳过超时检查"
+                )
+                return
+
+            observation_timeout = self.config_manager.observation_timeout
+
+            # 检查是否超时
+            if current_time - status_start_time >= observation_timeout:
+                logger.info(
+                    f"AngelHeart[{chat_id}]: 观测中状态超时({observation_timeout}秒)，降级到不在场"
+                )
+
+                # 执行状态降级
+                await self.context.transition_to_status(
+                    chat_id,
+                    AngelHeartStatus.NOT_PRESENT,
+                    f"观测超时({observation_timeout}秒)自动降级",
+                )
+
+                # 清理相关资源
+                await self.context.clear_decision(chat_id)
+
+        except Exception as e:
+            logger.error(f"AngelHeart[{chat_id}]: 超时检查异常: {e}", exc_info=True)
+
     async def _try_acquire_lock(self, chat_id: str) -> tuple[bool, str]:
         """
         尝试获取门锁，统一管理扣押和上锁
@@ -238,29 +282,9 @@ class FrontDesk:
         # 成功获取门锁
         return False, ""
 
-    def _is_in_cooldown_period(self, chat_id: str) -> bool:
-        """检查是否在冷却期内"""
-        current_time = time.time()
-        last_time = self.context.get_last_analysis_time(chat_id)
-        if last_time == 0:
-            return False
-
-        cooldown_period = self._config_manager.waiting_time
-        return (current_time - last_time) < cooldown_period
-
-    def _get_remaining_cooldown(self, chat_id: str) -> float:
-        """获取剩余冷却时间"""
-        current_time = time.time()
-        last_time = self.context.get_last_analysis_time(chat_id)
-        if last_time == 0:
-            return 0.0
-
-        cooldown_period = self._config_manager.waiting_time
-        elapsed = current_time - last_time
-        return max(0, cooldown_period - elapsed)
 
     async def _enter_detention_queue(
-        self, event: AstrMessageEvent, reason: str, retry_count: int = 0
+        self, event: AstrMessageEvent, reason: str
     ):
         """
         进入扣押队列
@@ -268,33 +292,13 @@ class FrontDesk:
         Args:
             event: 消息事件
             reason: 扣押原因
-            retry_count: 重试次数，用于防止无限递归
         """
-        MAX_RETRIES = 5
-        if retry_count >= MAX_RETRIES:
-            logger.error(
-                f"AngelHeart[{event.unified_msg_origin}]: 扣押队列重试次数超限({retry_count})，放弃处理"
-            )
-            event.stop_event()
-            return
-
         chat_id = event.unified_msg_origin
-        logger.info(
-            f"AngelHeart[{chat_id}]: 消息进入扣押队列，原因: {reason} (重试: {retry_count}/{MAX_RETRIES})"
-        )
+        logger.info(f"AngelHeart[{chat_id}]: 消息进入扣押队列，原因: {reason}")
 
-        # 根据扣押原因选择等待策略
-        if reason == "门锁占用":
-            # 使用原有的观察期等待机制
-            ticket = await self.context.hold_and_start_observation(chat_id)
-            result = await ticket
-        elif "冷却中" in reason:
-            # 使用冷却等待机制
-            ticket = await self._start_cooldown_wait(chat_id)
-            result = await ticket
-        else:
-            # 默认处理
-            result = "PROCESS"
+        # 使用观察期等待机制
+        ticket = await self.context.hold_and_start_observation(chat_id)
+        result = await ticket
 
         if result == "KILL":
             logger.debug(f"AngelHeart[{chat_id}]: 扣押消息被取消，离开")
@@ -306,7 +310,6 @@ class FrontDesk:
             return
         elif result == "PROCESS":
             logger.info(f"AngelHeart[{chat_id}]: 扣押解除，继续处理消息")
-            # 继续执行通知
         else:
             logger.warning(f"AngelHeart[{chat_id}]: 收到未知信号 '{result}'")
             return
@@ -316,7 +319,7 @@ class FrontDesk:
         if not acquired:
             # 还是获取不到，重新进入扣押
             logger.debug(f"AngelHeart[{chat_id}]: 门锁仍被占用，重新扣押")
-            await self._enter_detention_queue(event, "门锁占用", retry_count + 1)
+            await self._enter_detention_queue(event, "门锁占用")
             return
 
         # 成功获取门锁，通知秘书处理消息
@@ -327,39 +330,13 @@ class FrontDesk:
             # 确保释放门锁
             await self.context.release_chat_processing(chat_id)
 
-    async def _start_cooldown_wait(self, chat_id: str) -> asyncio.Future:
-        """
-        启动冷却等待机制
-
-        Args:
-            chat_id: 会话ID
-
-        Returns:
-            asyncio.Future: 等待凭证
-        """
-        # 创建等待凭证
-        future = asyncio.Future()
-
-        # 计算剩余冷却时间
-        remaining = self._get_remaining_cooldown(chat_id)
-
-        # 启动冷却等待任务
-        async def cooldown_wait_handler():
-            try:
-                await asyncio.sleep(remaining)
-                if not future.done():
-                    future.set_result("PROCESS")
-            except asyncio.CancelledError:
-                if not future.done():
-                    future.set_result("KILL")
-
-        asyncio.create_task(cooldown_wait_handler())
-        return future
 
     async def _call_secretary_and_execute(self, event: AstrMessageEvent, chat_id: str):
         """
         调用秘书并执行决策的公共逻辑
-        
+
+        注意：调用此方法时必须已经持有门锁，门锁将在 main.py 的 strip_markdown_on_decorating_result 方法中统一释放
+
         Args:
             event: 消息事件
             chat_id: 会话ID
@@ -367,17 +344,29 @@ class FrontDesk:
         try:
             # 调用秘书进行状态判断和处理
             decision = await self.secretary.handle_message_by_state(event)
-            
-            # 如果决策需要回复，则执行回复
+
+            # 根据决策结果处理回复逻辑
             if decision and decision.should_reply:
+                # 决策需要回复，执行回复
                 await self._execute_secretary_decision(decision, event, chat_id)
+            else:
+                # 决策不需要回复，立即释放门锁
+                await self.context.release_chat_processing(chat_id)
+            # 注意：需要回复的情况，门锁释放由 main.py 的 strip_markdown_on_decorating_result 方法统一处理
         except Exception as e:
             logger.error(f"AngelHeart[{chat_id}]: 调用秘书异常: {e}", exc_info=True)
+            # 发生异常时也要释放门锁，避免死锁
+            try:
+                await self.context.release_chat_processing(chat_id)
+            except Exception:
+                pass  # 忽略释放门锁时的异常
 
-    async def _execute_secretary_decision(self, decision, event: AstrMessageEvent, chat_id: str):
+    async def _execute_secretary_decision(
+        self, decision, event: AstrMessageEvent, chat_id: str
+    ):
         """
         执行秘书的决策
-        
+
         Args:
             decision: 秘书的决策对象
             event: 消息事件
@@ -388,7 +377,7 @@ class FrontDesk:
             historical_context, recent_dialogue, boundary_ts = (
                 self.context.conversation_ledger.get_context_snapshot(chat_id)
             )
-            
+
             # 处理决策结果
             await self._process_decision_result(
                 decision,
@@ -400,14 +389,6 @@ class FrontDesk:
             )
         except Exception as e:
             logger.error(f"AngelHeart[{chat_id}]: 执行秘书决策异常: {e}", exc_info=True)
-
-    
-
-    
-
-    
-
-    
 
     async def _process_decision_result(
         self, decision, recent_dialogue, historical_context, boundary_ts, event, chat_id
@@ -482,8 +463,10 @@ class FrontDesk:
             # 唤醒主脑
             if not self._config_manager.debug_mode:
                 event.is_at_or_wake_command = True
+                logger.debug(f"AngelHeart[{chat_id}]: 已设置唤醒主脑标志")
             else:
                 logger.info(f"AngelHeart[{chat_id}]: 调试模式已启用，阻止了实际唤醒。")
+            # 注意：门锁释放由 main.py 的 strip_markdown_on_decorating_result 方法统一处理
 
         elif decision:
             logger.info(
@@ -511,32 +494,17 @@ class FrontDesk:
 
             chat_id = event.unified_msg_origin
 
-            # 尝试获取门锁（原子性检查和上锁）
-            needs_detention, reason = await self._try_acquire_lock(chat_id)
+            # 【简化】尝试获取门锁（原子性检查和上锁，包含冷却机制）
+            acquired = await self.context.acquire_chat_processing(chat_id)
 
-            if needs_detention:
-                # 门锁被占用，进入扣押队列
-                await self._enter_detention_queue(event, reason)
+            if not acquired:
+                # 门锁被占用或在冷却期，进入扣押队列
+                await self._enter_detention_queue(event, "门锁占用")
                 return
 
-            # 成功获取门锁，现在需要检查是否需要因为冷却而扣押
-            if self._is_in_cooldown_period(chat_id):
-                remaining = self._get_remaining_cooldown(chat_id)
-                # 释放门锁（因为要进入冷却等待）
-                await self.context.release_chat_processing(chat_id)
-                # 进入冷却等待
-                await self._enter_detention_queue(
-                    event, f"冷却中 (剩余 {remaining:.1f}s)"
-                )
-                return
-
-            # 获取门锁成功且不在冷却期，直接处理
-            try:
-                # 调用秘书并执行决策
-                await self._call_secretary_and_execute(event, chat_id)
-            finally:
-                # 确保释放门锁
-                await self.context.release_chat_processing(chat_id)
+            # 获取门锁成功，直接处理
+            # 注意：门锁释放由 _call_secretary_and_execute 内部管理
+            await self._call_secretary_and_execute(event, chat_id)
 
         except Exception as e:
             logger.error(
