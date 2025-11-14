@@ -20,7 +20,7 @@ from typing import Any, List, Dict  # 导入类型提示
 
 # 导入公共工具函数和 ConversationLedger
 from ..core.utils import format_relative_time
-from ..core.utils import partition_dialogue, format_final_prompt
+from ..core.utils import partition_dialogue, partition_dialogue_raw, format_final_prompt
 from ..core.image_processor import ImageProcessor
 
 from ..core.fishing_direct_reply import FishingDirectReply
@@ -872,8 +872,8 @@ class FrontDesk:
         # 2. 使用决策中保存的对话快照（而不是重新获取，避免被标记为已处理的消息丢失）
         recent_dialogue = decision.recent_dialogue
 
-        # 获取历史对话用于构建完整上下文
-        historical_context, _, _ = partition_dialogue(
+        # 获取历史对话用于构建完整上下文（保留原始工具调用结构）
+        historical_context, _, _ = partition_dialogue_raw(
             self.context.conversation_ledger, chat_id
         )
 
