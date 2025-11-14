@@ -189,6 +189,40 @@ def _generate_tool_description(tool_name: str, tool_args: Dict) -> str:
     return tool_name
 
 
+def partition_dialogue_raw(
+    ledger: 'ConversationLedger',
+    chat_id: str
+) -> Tuple[List[Dict], List[Dict], float]:
+    """
+    根据指定会话的最后处理时间戳，将对话记录分割为历史和新对话。
+    与 partition_dialogue 的区别是：此函数保留原始的工具调用结构，不进行压缩。
+    专门用于给老板（前台LLM）构建完整的上下文。
+
+    Args:
+        ledger: ConversationLedger 的实例。
+        chat_id: 会话 ID。
+
+    Returns:
+        一个元组 (historical_context, recent_dialogue, boundary_timestamp)。
+    """
+    # 使用公共方法获取消息
+    all_messages = ledger.get_all_messages(chat_id)
+    
+    # 不进行任何压缩处理，保留原始消息结构
+    # 直接根据 is_processed 标志进行分割
+    historical_context = [m for m in all_messages if m.get("is_processed", False)]
+    recent_dialogue = [m for m in all_messages if not m.get("is_processed", False)]
+    
+    # 边界时间戳是新对话中最后一条消息的时间戳
+    boundary_ts = 0.0
+    if recent_dialogue:
+        # 为确保准确，最好在取最后一个元素前按时间戳排序
+        recent_dialogue.sort(key=lambda m: m.get("timestamp", 0))
+        boundary_ts = recent_dialogue[-1].get("timestamp", 0.0)
+    
+    return historical_context, recent_dialogue, boundary_ts
+
+
 def format_final_prompt(recent_dialogue: List[Dict], decision: 'SecretaryDecision') -> str:
     """
     为大模型生成最终的、自包含的用户指令字符串 (Prompt)。
