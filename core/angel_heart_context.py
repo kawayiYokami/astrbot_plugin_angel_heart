@@ -123,7 +123,7 @@ class AngelHeartContext:
         async with self.processing_lock:
             current_time = time.time()
 
-            # 【新增】检查是否在冷却期
+            # 【新增】检查是否在冷却期，并自动清理过期记录
             cooldown_end = self.lock_cooldown_until.get(chat_id, 0)
             if current_time < cooldown_end:
                 remaining = cooldown_end - current_time
@@ -131,6 +131,11 @@ class AngelHeartContext:
                     f"AngelHeart[{chat_id}]: 门锁在冷却期，剩余 {remaining:.1f} 秒"
                 )
                 return False
+
+            # 自动清理过期的冷却记录
+            if chat_id in self.lock_cooldown_until and current_time >= cooldown_end:
+                del self.lock_cooldown_until[chat_id]
+                logger.debug(f"AngelHeart[{chat_id}]: 已清理过期的冷却记录")
 
             start_time = self.processing_chats.get(chat_id)
 
