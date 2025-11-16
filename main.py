@@ -187,29 +187,35 @@ class AngelHeartPlugin(Star):
 
                 # 存储每轮工具调用
                 for tool_result in tool_results_list:
-                    # 1. 存储助手的工具调用消息
+                    # 1. 存储助手的工具调用消息（转换为纯文本格式）
+                    tool_calls = tool_result.tool_calls_info.tool_calls
+                    tool_descriptions = []
+                    for tc in tool_calls:
+                        func_name = tc.get('function', {}).get('name', 'unknown')
+                        func_args = tc.get('function', {}).get('arguments', '{}')
+                        tool_descriptions.append(f"调用 {func_name}({func_args})")
+
                     assistant_tool_msg = {
                         "role": "assistant",
-                        "content": None,
-                        "tool_calls": tool_result.tool_calls_info.tool_calls,
+                        "content": "; ".join(tool_descriptions),
                         "timestamp": time.time(),
                         "sender_id": "assistant",
                         "sender_name": "assistant",
+                        "is_processed": True,  # 工具调用消息应标记为已处理
                     }
                     self.angel_context.conversation_ledger.add_message(
                         chat_id, assistant_tool_msg
                     )
 
-                    # 2. 存储工具执行结果
+                    # 2. 存储工具执行结果（转换为用户消息格式）
                     for tool_result_msg in tool_result.tool_calls_result:
                         tool_msg = {
-                            "role": "tool",
-                            "tool_call_id": tool_result_msg.tool_call_id,
-                            "name": tool_result_msg.tool_call_id,
-                            "content": tool_result_msg.content,
+                            "role": "user",
+                            "content": f"工具调用结果：{tool_result_msg.content}",
                             "timestamp": time.time(),
                             "sender_id": "tool",
                             "sender_name": "tool_result",
+                            "is_processed": True,  # 工具结果消息应标记为已处理
                         }
                         self.angel_context.conversation_ledger.add_message(
                             chat_id, tool_msg
@@ -386,6 +392,7 @@ class AngelHeartPlugin(Star):
                         "sender_id": str(event.get_self_id()),
                         "sender_name": "assistant",
                         "timestamp": time.time(),
+                        "is_processed": True,  # 助理回复应标记为已处理
                     }
                     self.angel_context.conversation_ledger.add_message(chat_id, ai_message)
                     logger.debug(f"AngelHeart[{chat_id}]: AI多模态回复已加入对话总账")
@@ -408,6 +415,7 @@ class AngelHeartPlugin(Star):
                             "sender_id": str(event.get_self_id()),
                             "sender_name": "assistant",
                             "timestamp": time.time(),
+                            "is_processed": True,  # 助理回复应标记为已处理
                         }
                         self.angel_context.conversation_ledger.add_message(chat_id, ai_message)
                         logger.info(f"AngelHeart[{chat_id}]: AI回复（仅文本）已在降级处理后加入对话总账")

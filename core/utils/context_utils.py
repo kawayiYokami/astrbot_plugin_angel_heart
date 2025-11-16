@@ -129,46 +129,60 @@ def _compress_tool_message(msg: Dict) -> Dict:
     # 创建消息副本，避免修改原始数据
     compressed_msg = msg.copy()
 
-    # 处理工具结果消息 (role: "tool")
-    if msg.get("role") == "tool":
+    # 处理工具结果消息 (role: "user" 且 sender_name: "tool_result")
+    if msg.get("role") == "user" and msg.get("sender_name") == "tool_result":
         content = msg.get("content", "")
-        if len(content) > 20:
-            compressed_msg["content"] = content[:20] + "..."
 
-    # 处理工具调用消息 (role: "assistant" 且有 tool_calls)
-    elif msg.get("role") == "assistant" and msg.get("tool_calls"):
-        tool_calls = msg.get("tool_calls", [])
-        descriptions = []
+        # 处理 content 可能是列表的情况（多模态内容）
+        if isinstance(content, list):
+            # 提取所有文本内容
+            text_parts = []
+            for item in content:
+                if isinstance(item, dict) and item.get("type") == "text":
+                    text_parts.append(item.get("text", ""))
+            content = "".join(text_parts)
 
-        for tool_call in tool_calls:
-            tool_name = tool_call.get('function', {}).get('name', 'unknown')
-            tool_args = {}
+        # 移除"工具调用结果："前缀后压缩
+        if isinstance(content, str):
+            if content.startswith("工具调用结果："):
+                result_content = content[len("工具调用结果："):]
+                if len(result_content) > 20:
+                    compressed_msg["content"] = "工具调用结果：" + result_content[:20] + "..."
+                # 如果结果内容<=20字符，保持原样（不需要压缩）
+            elif len(content) > 20:
+                # 不以"工具调用结果："开头的普通内容，直接截断
+                compressed_msg["content"] = content[:20] + "..."
 
-            # 更健壮的参数解析
-            arguments_str = tool_call.get('function', {}).get('arguments', '{}')
-            if not arguments_str:
-                arguments_str = '{}'
+    # 处理工具调用消息 (role: "assistant" 且 sender_name: "assistant" 且内容包含"调用")
+    # 新格式下，工具调用已经是纯文本，格式如："调用 function_name({args})"
+    elif msg.get("role") == "assistant" and msg.get("sender_name") == "assistant":
+        content = msg.get("content", "")
 
+        # 处理 content 可能是列表的情况（多模态内容）
+        if isinstance(content, list):
+            # 提取所有文本内容
+            text_parts = []
+            for item in content:
+                if isinstance(item, dict) and item.get("type") == "text":
+                    text_parts.append(item.get("text", ""))
+            content = "".join(text_parts)
+
+        # 如果内容以"调用"开头，说明这是工具调用消息
+        if content and isinstance(content, str) and content.startswith("调用 "):
+            # 提取函数名（不包含参数）来压缩
             try:
-                tool_args = json.loads(arguments_str)
-                if not isinstance(tool_args, dict):
-                    logger.warning(f"工具 {tool_name} 的参数不是字典类型: {type(tool_args)}")
-                    tool_args = {}
-            except json.JSONDecodeError as e:
-                logger.warning(f"解析工具 {tool_name} 的参数失败: {e}, 参数内容: {arguments_str[:100]}")
-                tool_args = {}
+                # 格式: "调用 function_name({args})" 或 "调用 func1({args}); 调用 func2({args})"
+                tool_names = []
+                for call in content.split("; "):
+                    if call.startswith("调用 "):
+                        func_part = call[3:]  # 移除"调用 "
+                        func_name = func_part.split("(")[0] if "(" in func_part else func_part
+                        tool_names.append(func_name)
+
+                if tool_names:
+                    compressed_msg["content"] = f"[使用工具: {', '.join(tool_names)}]"
             except Exception as e:
-                logger.error(f"解析工具 {tool_name} 参数时发生意外错误: {e}")
-                tool_args = {}
-
-            # 使用工具描述生成器
-            description = _generate_tool_description(tool_name, tool_args)
-            descriptions.append(description)
-
-        # 创建压缩版消息
-        compressed_msg["content"] = f"[使用工具: {'; '.join(descriptions)}]"
-        # 移除 tool_calls 字段，避免干扰
-        compressed_msg.pop("tool_calls", None)
+                logger.warning(f"压缩工具调用消息失败: {e}, 保持原内容")
 
     return compressed_msg
 

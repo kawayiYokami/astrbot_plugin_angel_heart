@@ -883,8 +883,15 @@ class FrontDesk:
         # 3. 准备完整的对话历史 (Context)
         full_history = historical_context + recent_dialogue
 
-        # 4. 遍历 full_history 并动态注入元数据和图片转述
-        new_contexts = []
+        # 4. 在最顶部添加群聊说明消息（避免某些模型不允许第一条消息是助理）
+        new_contexts = [
+            {
+                "role": "user",
+                "content": [{"type": "text", "text": "这是一个群聊场景。"}]
+            }
+        ]
+
+        # 5. 遍历 full_history 并动态注入元数据和图片转述
         for msg in full_history:
             if msg.get("role") == "user":
                 # 对于 user 消息，生成 header 并注入到 content 中
@@ -957,16 +964,16 @@ class FrontDesk:
                 # 其他消息保持不变
                 new_contexts.append(msg)
 
-        # 5. 根据 Provider 的 modalities 配置过滤图片内容
+        # 6. 根据 Provider 的 modalities 配置过滤图片内容
         new_contexts = self.filter_images_for_provider(chat_id, new_contexts)
 
-        # 6. 完全覆盖原有的 contexts
+        # 7. 完全覆盖原有的 contexts
         req.contexts = new_contexts
 
-        # 7. 聚焦指令并赋值给 req.prompt
+        # 8. 聚焦指令并赋值给 req.prompt
         req.prompt = final_prompt_str
 
-        # 8. 清空 image_urls 并注入系统提示词
+        # 9. 清空 image_urls 并注入系统提示词
         req.image_urls = []  # 图片已在 contexts 中
 
         # 注入系统提示词
