@@ -924,8 +924,37 @@ class FrontDesk:
                         new_content.insert(0, {"type": "text", "text": header.strip()})
 
                 new_contexts.append({"role": "user", "content": new_content})
+            elif msg.get("role") == "assistant":
+                # 对 assistant 消息进行无条件图片移除和有条件转述合并
+                content = msg.get("content", "")
+
+                # 标准化 content 为列表格式
+                if isinstance(content, str):
+                    new_content = [{"type": "text", "text": content}]
+                elif isinstance(content, list):
+                    new_content = copy.deepcopy(content)
+                else:
+                    new_content = [{"type": "text", "text": str(content)}]
+
+                # 无条件移除所有图片组件
+                new_content = [item for item in new_content if item.get("type") != "image_url"]
+
+                # 有条件合并转述
+                image_caption = msg.get("image_caption")
+                if image_caption:
+                    caption_text = f"[图片描述: {image_caption}]"
+                    new_content.append({"type": "text", "text": caption_text})
+
+                # 【修复】将 new_content 列表转换为纯文本字符串
+                assistant_text = ""
+                for item in new_content:
+                    if item.get("type") == "text":
+                        assistant_text += item.get("text", "")
+
+                # 使用字符串作为 content，而不是列表
+                new_contexts.append({"role": "assistant", "content": assistant_text})
             else:
-                # assistant 消息保持不变
+                # 其他消息保持不变
                 new_contexts.append(msg)
 
         # 5. 根据 Provider 的 modalities 配置过滤图片内容

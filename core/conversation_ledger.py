@@ -29,7 +29,7 @@ class ConversationLedger:
         self.TOTAL_MESSAGE_LIMIT = 100000
         # 最小保留消息数量（即使过期也保留）
         self.MIN_RETAIN_COUNT = 7
-        
+
         # 缓存 bisect 模块
         self._bisect = bisect
 
@@ -59,8 +59,8 @@ class ConversationLedger:
 
             # 使用 bisect.insort 在排序位置插入，避免全量排序
             self._bisect.insort(
-                ledger["messages"], 
-                message, 
+                ledger["messages"],
+                message,
                 key=lambda m: m.get("timestamp", 0)
             )
 
@@ -75,22 +75,22 @@ class ConversationLedger:
     def get_all_messages(self, chat_id: str) -> List[Dict]:
         """
         获取指定会话的所有消息。
-        
+
         Args:
             chat_id: 会话ID
-            
+
         Returns:
             消息列表
         """
         ledger = self._get_or_create_ledger(chat_id)
         with self._lock:
             return ledger["messages"].copy()  # 返回副本避免外部修改
-    
+
     def set_messages(self, chat_id: str, messages: List[Dict]):
         """
         设置指定会话的消息列表。
         注意：这会完全替换现有的消息列表。
-        
+
         Args:
             chat_id: 会话ID
             messages: 新的消息列表
@@ -98,7 +98,7 @@ class ConversationLedger:
         ledger = self._get_or_create_ledger(chat_id)
         with self._lock:
             ledger["messages"] = messages.copy()  # 保存副本避免外部修改
-    
+
     def get_context_snapshot(self, chat_id: str) -> Tuple[List[Dict], List[Dict], float]:
         """
         获取用于分析的上下文快照。
@@ -162,45 +162,45 @@ class ConversationLedger:
     def _prune_all_expired_messages(self):
         """清理所有会话的过期消息，最小化锁争用"""
         current_time = time.time()
-        
+
         # 收集需要处理的数据（快速持锁）
         with self._lock:
-            chats_to_prune = [(cid, list(ld["messages"])) 
+            chats_to_prune = [(cid, list(ld["messages"]))
                               for cid, ld in self._ledgers.items()]
-        
+
         # 处理数据（释放锁）
         pruned_data = {}
         for chat_id, messages in chats_to_prune:
             pruned_data[chat_id] = self._prune_messages_list(messages, current_time)
-        
+
         # 更新结果（再次持锁）
         with self._lock:
             for chat_id, pruned_messages in pruned_data.items():
                 if chat_id in self._ledgers:
                     self._ledgers[chat_id]["messages"] = pruned_messages
-    
+
     def _prune_messages_list(self, messages: List[Dict], current_time: float) -> List[Dict]:
         """处理单个消息列表的过期清理（无锁操作）"""
         expiry_threshold = current_time - self.cache_expiry
-        
+
         # 如果总消息数不超过最小保留数量，跳过清理
         if len(messages) <= self.MIN_RETAIN_COUNT:
             return messages
-        
+
         # 按时间戳降序排序（最新的在前）
         sorted_messages = sorted(messages, key=lambda m: m["timestamp"], reverse=True)
-        
+
         # 强制保留最新的 MIN_RETAIN_COUNT 条消息
         retained_latest = sorted_messages[:self.MIN_RETAIN_COUNT]
-        
+
         # 对剩余消息进行正常的过期清理
         remaining_messages = sorted_messages[self.MIN_RETAIN_COUNT:]
         retained_remaining = [m for m in remaining_messages if m["timestamp"] > expiry_threshold]
-        
+
         # 合并保留的消息并按时间戳重新排序
         new_messages = retained_latest + retained_remaining
         new_messages.sort(key=lambda m: m["timestamp"])
-        
+
         return new_messages
 
     def _enforce_total_message_limit(self):
@@ -333,7 +333,7 @@ class ConversationLedger:
             # 查找所有包含图片且未转述的消息
             messages_needing_caption = []
             for message in ledger["messages"]:
-                if (message.get("role") == "user" and
+                if (message.get("role") in ["user", "assistant"] and
                     isinstance(message.get("content"), list) and
                     not message.get("image_caption")):  # 还没有转述
 
@@ -410,7 +410,7 @@ class ConversationLedger:
 
             has_images_needing_caption = False
             for message in all_messages:
-                if (message.get("role") == "user" and
+                if (message.get("role") in ["user", "assistant"] and
                     isinstance(message.get("content"), list) and
                     not message.get("image_caption")):  # 还没有转述
 

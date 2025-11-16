@@ -28,6 +28,7 @@ from .core.config_manager import ConfigManager
 from .roles.front_desk import FrontDesk
 from .roles.secretary import Secretary
 from .core.utils import strip_markdown
+from .core.utils.message_utils import serialize_message_chain
 from .core.angel_heart_context import AngelHeartContext
 
 
@@ -351,16 +352,12 @@ class AngelHeartPlugin(Star):
 
             # 2. 遍历消息链中的每个元素，进行 Markdown 清洗
             # 只处理 Plain 文本组件，保持其他组件不变
-            # 收集所有清洗后的文本内容
-            all_cleaned_text = []
-
             for i, component in enumerate(message_chain):
                 if isinstance(component, Plain):
                     original_text = component.text
                     if original_text:
                         try:
                             cleaned_text = strip_markdown(original_text)
-                            all_cleaned_text.append(cleaned_text)
 
                             # 只有在清洗结果有效且真正改变了内容时才替换
                             if (
@@ -379,18 +376,43 @@ class AngelHeartPlugin(Star):
                                 f"AngelHeart[{chat_id}]: 文本清洗失败: {e}，保持原文本"
                             )
 
-            # 循环结束后，统一记录一次完整的AI回复
-            if all_cleaned_text:
-                full_content = "".join(all_cleaned_text)
-                ai_message = {
-                    "role": "assistant",
-                    "content": full_content,
-                    "sender_id": str(event.get_self_id()),
-                    "sender_name": "assistant",
-                    "timestamp": time.time(),
-                }
-                self.angel_context.conversation_ledger.add_message(chat_id, ai_message)
-                logger.debug(f"AngelHeart[{chat_id}]: AI回复已在清洗后加入对话总账")
+            # 3. 将完整的消息链（包含文本和图片）序列化并缓存
+            if message_chain:
+                try:
+                    serialized_content = serialize_message_chain(message_chain)
+                    ai_message = {
+                        "role": "assistant",
+                        "content": serialized_content,
+                        "sender_id": str(event.get_self_id()),
+                        "sender_name": "assistant",
+                        "timestamp": time.time(),
+                    }
+                    self.angel_context.conversation_ledger.add_message(chat_id, ai_message)
+                    logger.debug(f"AngelHeart[{chat_id}]: AI多模态回复已加入对话总账")
+                except Exception as e:
+                    # 序列化失败时的降级处理：至少缓存文本内容
+                    logger.error(f"AngelHeart[{chat_id}]: 消息链序列化失败，回退到文本缓存。错误: {e}", exc_info=True)
+                    logger.debug(f"AngelHeart[{chat_id}]: 失败的消息链: {repr(message_chain)}")
+
+                    # 提取纯文本内容作为降级方案
+                    fallback_text = ""
+                    for component in message_chain:
+                        if isinstance(component, Plain):
+                            if component.text:
+                                fallback_text += component.text
+
+                    if fallback_text:
+                        ai_message = {
+                            "role": "assistant",
+                            "content": fallback_text,
+                            "sender_id": str(event.get_self_id()),
+                            "sender_name": "assistant",
+                            "timestamp": time.time(),
+                        }
+                        self.angel_context.conversation_ledger.add_message(chat_id, ai_message)
+                        logger.info(f"AngelHeart[{chat_id}]: AI回复（仅文本）已在降级处理后加入对话总账")
+                    else:
+                        logger.warning(f"AngelHeart[{chat_id}]: 无法提取任何文本内容，AI回复未被缓存")
 
             logger.debug(f"AngelHeart[{chat_id}]: 消息链中的Markdown格式清洗完成。")
         finally:
