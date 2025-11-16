@@ -84,20 +84,30 @@ class Secretary:
     async def handle_message_by_state(self, event: AstrMessageEvent) -> SecretaryDecision:
         """
         秘书职责：根据状态决定消息处理方式
-        
+
         Args:
             event: 消息事件
-            
+
         Returns:
             SecretaryDecision: 分析后得出的决策对象
         """
         chat_id = event.unified_msg_origin
-        
+
         # 获取当前状态
         current_status = self.angel_context.get_chat_status(chat_id)
         logger.info(f"AngelHeart[{chat_id}]: 秘书处理消息 (状态: {current_status.value})")
-        
-        # 根据状态选择处理方式
+
+        # 优先检查是否被呼唤（无论当前状态如何）
+        if self.status_checker._is_summoned(chat_id):
+            # 如果当前不是 SUMMONED 状态，需要转换
+            if current_status != AngelHeartStatus.SUMMONED:
+                logger.info(f"AngelHeart[{chat_id}]: 检测到被呼唤，从 {current_status.value} 转换到被呼唤状态")
+                await self.angel_context.status_transition_manager.transition_to_status(
+                    chat_id, AngelHeartStatus.SUMMONED, "检测到呼唤"
+                )
+            return await self._handle_summoned_reply(event, chat_id)
+
+        # 根据当前状态选择处理方式
         if current_status == AngelHeartStatus.GETTING_FAMILIAR:
             return await self._handle_familiarity_reply(event, chat_id)
         elif current_status == AngelHeartStatus.SUMMONED:
@@ -107,7 +117,7 @@ class Secretary:
         else:
             # 不在场：检查触发条件
             return await self._handle_not_present_check(event, chat_id)
-    
+
     async def _handle_familiarity_reply(self, event: AstrMessageEvent, chat_id: str) -> SecretaryDecision:
         """处理混脸熟状态 - 快速回复"""
         try:
@@ -123,7 +133,7 @@ class Secretary:
             decision = await fishing_reply.generate_reply_strategy(
                 chat_id, event, trigger_type
             )
-            
+
             return decision
 
         except Exception as e:
@@ -131,7 +141,7 @@ class Secretary:
             return SecretaryDecision(
                 should_reply=False, reply_strategy="处理异常", topic="未知", alias="AngelHeart"
             )
-    
+
     async def _handle_summoned_reply(self, event: AstrMessageEvent, chat_id: str) -> SecretaryDecision:
         """处理被呼唤状态 - 强制回复"""
         try:
@@ -150,11 +160,11 @@ class Secretary:
 
             # 执行分析
             decision = await self.perform_analysis(recent_dialogue, historical_context, chat_id)
-            
+
             # 强制设置回复
             decision.should_reply = True
             decision.reply_strategy = "被呼唤回复"
-            
+
             return decision
 
         except Exception as e:
@@ -162,7 +172,7 @@ class Secretary:
             return SecretaryDecision(
                 should_reply=False, reply_strategy="处理异常", topic="未知", alias="AngelHeart"
             )
-    
+
     async def _handle_observation_reply(self, event: AstrMessageEvent, chat_id: str) -> SecretaryDecision:
         """处理观测中状态 - 智能判断"""
         try:
@@ -181,7 +191,7 @@ class Secretary:
 
             # 执行分析
             decision = await self.perform_analysis(recent_dialogue, historical_context, chat_id)
-            
+
             return decision
 
         except Exception as e:
@@ -189,7 +199,7 @@ class Secretary:
             return SecretaryDecision(
                 should_reply=False, reply_strategy="处理异常", topic="未知", alias="AngelHeart"
             )
-    
+
     async def _handle_not_present_check(self, event: AstrMessageEvent, chat_id: str) -> SecretaryDecision:
         """处理不在场状态 - 检查触发条件"""
         try:
@@ -416,5 +426,3 @@ class Secretary:
             logger.warning(f"AngelHeart[{chat_id}]: 分析失败，无决策结果")
             await self.angel_context.clear_decision(chat_id)
             self.angel_context.conversation_ledger.mark_as_processed(chat_id, boundary_ts)
-
-    
