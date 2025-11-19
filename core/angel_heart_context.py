@@ -26,20 +26,22 @@ from ..core.proactive_manager import ProactiveManager
 class AngelHeartContext:
     """AngelHeart 全局上下文管理器"""
 
-    def __init__(self, config_manager, astr_context: Context):
+    def __init__(self, config_manager, astr_context: Context, data_dir):
         """
         初始化全局上下文。
 
         Args:
             config_manager: 配置管理器实例，用于获取观察期时长等配置。
             astr_context: AstrBot 的主 context，用于发送消息等操作。
+            data_dir: 插件的数据目录路径，用于持久化存储。
         """
         self.config_manager = config_manager
         self.astr_context = astr_context
 
         # 核心资源：对话总账
         self.conversation_ledger = ConversationLedger(
-            cache_expiry=config_manager.cache_expiry
+            cache_expiry=config_manager.cache_expiry,
+            data_dir=data_dir
         )
 
         # 门牌管理
