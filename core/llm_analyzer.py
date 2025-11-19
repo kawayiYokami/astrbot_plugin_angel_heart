@@ -365,22 +365,10 @@ class LLMAnalyzer:
         else:
             is_interesting = False
 
-        # 解析 needs_search
-        needs_search_raw = raw.get("needs_search", False)
-        if isinstance(needs_search_raw, bool):
-            needs_search = needs_search_raw
-        elif isinstance(needs_search_raw, (int, float)):
-            needs_search = bool(needs_search_raw)
-        elif isinstance(needs_search_raw, str):
-            needs_search = needs_search_raw.lower() in ("true", "1", "yes", "是", "对")
-        else:
-            needs_search = False
-
         # 提取其他字段
         reply_strategy = str(raw.get("reply_strategy") or "未知策略")
         topic = str(raw.get("topic") or "未知话题")
         reply_target = str(raw.get("reply_target") or "")
-        angel_eye_request = raw.get("angel_eye_request")
 
         # 创建决策对象
         decision = SecretaryDecision(
@@ -390,8 +378,6 @@ class LLMAnalyzer:
             reply_strategy=reply_strategy,
             topic=topic,
             reply_target=reply_target,
-            needs_search=needs_search,
-            angel_eye_request=angel_eye_request,
             alias=alias,
         )
 
