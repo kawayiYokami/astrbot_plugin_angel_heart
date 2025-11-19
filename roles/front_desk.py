@@ -3,10 +3,11 @@ AngelHeart 插件 - 前台角色 (FrontDesk)
 负责接收并缓存所有合规消息。
 """
 
-import time
-import os
+import asyncio
 import copy
 import json
+import os
+import time
 
 try:
     from astrbot.api import logger
@@ -20,7 +21,7 @@ from typing import Any, List, Dict  # 导入类型提示
 
 # 导入公共工具函数和 ConversationLedger
 from ..core.utils import format_relative_time
-from ..core.utils import partition_dialogue, partition_dialogue_raw, format_final_prompt
+from ..core.utils import partition_dialogue_raw, format_final_prompt
 from ..core.image_processor import ImageProcessor
 
 from ..core.fishing_direct_reply import FishingDirectReply
@@ -494,17 +495,29 @@ class FrontDesk:
 
             chat_id = event.unified_msg_origin
 
-            # 【简化】尝试获取门锁（原子性检查和上锁，包含冷却机制）
-            acquired = await self.context.acquire_chat_processing(chat_id)
+            # 第一次尝试获取门锁
+            acquired, reason, remaining_time = await self.context.acquire_chat_processing(chat_id)
 
-            if not acquired:
-                # 门锁被占用或在冷却期，进入扣押队列
-                await self._enter_detention_queue(event, "门锁占用")
+            if acquired:
+                # 首次尝试成功，直接处理
+                await self._call_secretary_and_execute(event, chat_id)
                 return
 
-            # 获取门锁成功，直接处理
-            # 注意：门锁释放由 _call_secretary_and_execute 内部管理
-            await self._call_secretary_and_execute(event, chat_id)
+            if reason == "COOLDOWN":
+                # 是因为冷却，等待精确时间
+                logger.debug(f"AngelHeart[{chat_id}]: 门锁冷却中，等待 {remaining_time:.2f} 秒...")
+                await asyncio.sleep(remaining_time)
+
+                # 再次尝试获取门锁
+                acquired, reason, _ = await self.context.acquire_chat_processing(chat_id)
+                if acquired:
+                    # 等待后成功，直接处理
+                    await self._call_secretary_and_execute(event, chat_id)
+                    return
+
+            # 如果是因为LOCKED，或者等待冷却后仍然LOCKED，才进入扣押队列
+            logger.debug(f"AngelHeart[{chat_id}]: 门锁被占用，进入扣押队列")
+            await self._enter_detention_queue(event, "门锁占用")
 
         except Exception as e:
             logger.error(

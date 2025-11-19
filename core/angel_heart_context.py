@@ -109,7 +109,7 @@ class AngelHeartContext:
                 return True
             return False
 
-    async def acquire_chat_processing(self, chat_id: str) -> bool:
+    async def acquire_chat_processing(self, chat_id: str) -> tuple[bool, str, float]:
         """
         原子性地尝试获取会话处理权（挂上门牌）。
         包含冷却机制：归还门锁后需要等待一段时间才能再次获取。
@@ -118,7 +118,10 @@ class AngelHeartContext:
             chat_id (str): 会话ID。
 
         Returns:
-            bool: 成功挂上门牌返回 True，如果门牌已被占用或在冷却期则返回 False。
+            tuple[bool, str, float]: (是否成功, 失败原因, 剩余时间)
+                - 成功时返回 (True, "SUCCESS", 0.0)
+                - 冷却期失败时返回 (False, "COOLDOWN", 剩余秒数)
+                - 被占用失败时返回 (False, "LOCKED", 0.0)
         """
         async with self.processing_lock:
             current_time = time.time()
@@ -130,7 +133,7 @@ class AngelHeartContext:
                 logger.debug(
                     f"AngelHeart[{chat_id}]: 门锁在冷却期，剩余 {remaining:.1f} 秒"
                 )
-                return False
+                return False, "COOLDOWN", remaining
 
             # 自动清理过期的冷却记录
             if chat_id in self.lock_cooldown_until and current_time >= cooldown_end:
@@ -156,13 +159,13 @@ class AngelHeartContext:
                 logger.debug(
                     f"AngelHeart[{chat_id}]: 已挂上门牌 (开始处理时间: {self.processing_chats[chat_id]})"
                 )
-                return True
+                return True, "SUCCESS", 0.0
             else:
                 # 门牌正挂着，且未卡死
                 logger.debug(
                     f"AngelHeart[{chat_id}]: 门牌已被占用 (开始时间: {start_time})"
                 )
-                return False
+                return False, "LOCKED", 0.0
 
     async def release_chat_processing(self, chat_id: str, set_cooldown: bool = True):
         """
