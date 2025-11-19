@@ -54,8 +54,10 @@ class ConversationLedger:
         # 2. 添加新消息
         ledger = self._get_or_create_ledger(chat_id)
         with self._lock:
-            # 添加一个字段标记消息是否已处理，默认为False
-            message["is_processed"] = False
+            # 添加一个字段标记消息是否已处理，如果未设置则默认为False
+            # 这样可以避免覆盖外部预设的 is_processed 值（如 tool_call 消息）
+            if "is_processed" not in message:
+                message["is_processed"] = False
 
             # 使用 bisect.insort 在排序位置插入，避免全量排序
             self._bisect.insort(
@@ -183,7 +185,12 @@ class ConversationLedger:
         """处理单个消息列表的过期清理（无锁操作）"""
         expiry_threshold = current_time - self.cache_expiry
 
-        # 如果总消息数不超过最小保留数量，跳过清理
+        # 将过期未处理的旧消息标记为已处理，避免干扰新消息分析
+        for msg in messages:
+            if not msg.get("is_processed", False) and msg["timestamp"] <= expiry_threshold:
+                msg["is_processed"] = True
+
+        # 如果总消息数不超过最小保留数量，跳过删除（但状态扭转已完成）
         if len(messages) <= self.MIN_RETAIN_COUNT:
             return messages
 
