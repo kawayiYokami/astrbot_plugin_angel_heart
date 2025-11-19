@@ -15,6 +15,7 @@ from astrbot.api.star import Star, Context, register
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.provider import ProviderRequest, LLMResponse
 from astrbot.core.star.register import register_on_llm_response
+from astrbot.core.star.star_tools import StarTools
 
 try:
     from astrbot.api import logger
@@ -42,8 +43,11 @@ class AngelHeartPlugin(Star):
         self.context = context
         self._whitelist_cache = self._prepare_whitelist()
 
+        # -- 获取插件数据目录 --
+        plugin_data_dir = StarTools.get_data_dir()
+
         # -- 创建 AngelHeartContext 全局上下文（包含 ConversationLedger）--
-        self.angel_context = AngelHeartContext(self.config_manager, self.context)
+        self.angel_context = AngelHeartContext(self.config_manager, self.context, plugin_data_dir)
 
         # -- 角色实例 --
         # 创建秘书和前台，通过全局上下文传递依赖
