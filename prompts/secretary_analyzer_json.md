@@ -98,16 +98,6 @@
 - `reply_strategy`：(string) 概述你计划采用的策略。如果 `should_reply` 为 `false`，此项应为 "继续观察"。
 - `topic`：(string) 对当前唯一核心话题的简要概括。
 - `reply_target`：(string) 回复目标用户的昵称或ID。如果不需要回复，此项应为空字符串。
-- `needs_search`：(boolean) 是否需要通过百科来确认事实或补充背景知识。如果回答需要百科知识支持，请设置为 true。
-- `angel_eye_request`：(object, 可选) 当 `needs_search` 为 `true` 时必须提供。包含天使之眼查询所需的参数：
-  - `required_docs`：(object) 需要查询的实体。**重要**：实体名必须是百科词条的准确名称，不要包含多个词。格式为 `{"精准词条名": {"keywords": ["辅助关键词1", "辅助关键词2"]}}`
-    - **正确示例**：查询"玛拉妮"，应该写成 `{"玛拉妮": {"keywords": ["原神"]}}`
-    - **错误示例**：`{"原神 玛拉妮": {...}}`（实体名包含多个词，无法匹配）
-  - `required_facts`：(array) 需要查询的结构化事实。格式为 `["实体名.属性名"]`
-  - `chat_history`：(object) 聊天记录查询参数。包含：
-    - `time_range_hours`：(number) 时间范围（小时）
-    - `filter_user_ids`：(array, 可选) 只看这些Q号的聊天
-    - `keywords`：(array, 可选) 只看包含这些关键词的聊天
 
 ---
 
@@ -142,8 +132,7 @@
   "is_interesting": true,
   "reply_strategy": "提供技术解决方案",
   "topic": "Python代码调试",
-  "reply_target": "小明",
-  "needs_search": false
+  "reply_target": "小明"
 }
 ```
 
@@ -164,8 +153,7 @@
   "is_interesting": false,
   "reply_strategy": "继续观察",
   "topic": "Python代码调试",
-  "reply_target": "",
-  "needs_search": false
+  "reply_target": ""
 }
 ```
 
@@ -185,8 +173,7 @@
   "is_interesting": false,
   "reply_strategy": "继续观察",
   "topic": "闲聊",
-  "reply_target": "",
-  "needs_search": false
+  "reply_target": ""
 }
 ```
 
@@ -205,8 +192,7 @@
   "should_reply": true,
   "reply_strategy": "提供信息分析",
   "topic": "市场趋势分析",
-  "reply_target": "小红",
-  "needs_search": false
+  "reply_target": "小红"
 }
 ```
 
@@ -229,8 +215,7 @@
   "should_reply": false,
   "reply_strategy": "继续观察",
   "topic": "情感支持",
-  "reply_target": "",
-  "needs_search": false
+  "reply_target": ""
 }
 ```
 
@@ -249,129 +234,11 @@
   "should_reply": false,
   "reply_strategy": "继续观察",
   "topic": "技术幽默",
-  "reply_target": "",
-  "needs_search": false
+  "reply_target": ""
 }
 ```
 
-### 示例七：需要百科知识确认事实（应该介入并搜索）
 
-**对话记录：**
-```
-[User ID: 123, Nickname: 小明]：@小助手 你知道《红楼梦》的作者曹雪芹的生卒年份吗？
-[User ID: 456, Nickname: 小红]：我记得好像是清朝的
-[User ID: 123, Nickname: 小明]：具体是哪一年呢？我想确认一下
-```
-
-**AI输出结果：**
-```json
-{
-  "should_reply": true,
-  "is_questioned": true,
-  "is_interesting": true,
-  "reply_strategy": "提供准确信息",
-  "topic": "历史人物生卒年份",
-  "reply_target": "小明",
-  "needs_search": true,
-  "angel_eye_request": {
-    "required_docs": {
-      "曹雪芹": {
-        "keywords": ["红楼梦", "清朝", "作家"]
-      }
-    },
-    "required_facts": [
-      "曹雪芹.生卒年份"
-    ],
-    "chat_history": {}
-  }
-}
-```
-
-### 示例八：ACG角色查询（应该介入并搜索）
-
-**对话记录：**
-```
-[User ID: 123, Nickname: 小明]：@小助手 芙宁娜这个角色怎么样？
-[User ID: 456, Nickname: 小红]：是原神里的角色吧
-```
-
-**AI输出结果：**
-```json
-{
-  "should_reply": true,
-  "is_questioned": true,
-  "is_interesting": true,
-  "reply_strategy": "介绍角色信息",
-  "topic": "芙宁娜角色介绍",
-  "reply_target": "小明",
-  "needs_search": true,
-  "angel_eye_request": {
-    "required_docs": {
-      "芙宁娜": {
-        "keywords": ["原神", "水神", "枫丹"]
-      }
-    },
-    "required_facts": [],
-    "chat_history": {}
-  }
-}
-```
-
-### 示例九：回顾聊天记录（应该介入并搜索）
-
-**对话记录：**
-```
-[User ID: 123, Nickname: 小明]：@小助手 总结下最近3小时大家聊了什么技术话题？
-```
-
-**AI输出结果：**
-```json
-{
-  "should_reply": true,
-  "is_questioned": true,
-  "is_interesting": false,
-  "reply_strategy": "总结聊天内容",
-  "topic": "最近的技术讨论",
-  "reply_target": "小明",
-  "needs_search": true,
-  "angel_eye_request": {
-    "required_docs": {},
-    "required_facts": [],
-    "chat_history": {
-      "time_range_hours": 3,
-      "keywords": ["技术", "代码", "bug"]
-    }
-  }
-}
-```
-
-### 示例十：查看特定用户的聊天（应该介入并搜索）
-
-**对话记录：**
-```
-[User ID: 123, Nickname: 小明]：@小助手 看看小红和小李最近在聊什么？
-```
-
-**AI输出结果：**
-```json
-{
-  "should_reply": true,
-  "is_questioned": true,
-  "is_interesting": false,
-  "reply_strategy": "总结聊天内容",
-  "topic": "特定用户的聊天",
-  "reply_target": "小明",
-  "needs_search": true,
-  "angel_eye_request": {
-    "required_docs": {},
-    "required_facts": [],
-    "chat_history": {
-      "time_range_hours": 6,
-      "filter_user_ids": [456, 789]
-    }
-  }
-}
-```
 
 ---
 

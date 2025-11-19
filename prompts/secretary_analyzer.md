@@ -109,30 +109,10 @@
 - `reply_strategy`：(string) 概述你计划采用的策略。如果 `should_reply` 为 `false`，此项应为 "继续观察"。
 - `topic`：(string) 对当前唯一核心话题的简要概括，禁止向话题里写入你的名字。
 - `reply_target`：(string) 回复目标用户的昵称或ID。如果不需要回复，此项应为空字符串。
-- `needs_search`：(boolean) 是否需要通过百科来确认事实或补充背景知识。如果回答需要百科知识支持，请设置为 true。
-- `angel_eye_request`：(object, 可选) 当 `needs_search` 为 `true` 时必须提供。包含天使之眼查询所需的参数：
-  - `required_docs`：(object) 需要查询的实体。**重要**：实体名必须是百科词条的准确名称，不要包含多个词。格式为 `{"精准词条名": {"keywords": ["辅助关键词1", "辅助关键词2"]}}`
-    - **正确示例**：查询"玛拉妮"，应该写成 `{"玛拉妮": {"keywords": ["原神"]}}`
-    - **错误示例**：`{"原神 玛拉妮": {...}}`（实体名包含多个词，无法匹配）
-  - `required_facts`：(array) 需要查询的结构化事实。格式为 `["实体名.属性名"]`
-  - `chat_history`：(object) 聊天记录查询参数。包含：
-    - `time_range_hours`：(number) 时间范围（小时）
-    - `filter_user_ids`：(array, 可选) 只看这些Q号的聊天
-    - `keywords`：(array, 可选) 只看包含这些关键词的聊天
 
 ---
 
-## 6. 常见错误说明
-
-### 错误一：混淆"百科搜索"与"网络搜索"
-
-- **错误行为**: 当用户要求你"搜索新闻"、"查一下最近的事件"或"上网看看"时，将 `needs_search` 设置为 `true`。
-- **正确行为**: `needs_search` **只能**用于通过**百度百科**查询静态的、事实性的知识（如人物生卒、历史事件、科学定义等）。它不是一个通用的网络搜索引擎，无法获取实时新闻、网页信息或动态内容。
-- **判断依据**: 如果用户的请求超出了百科知识的范畴，涉及到实时性、观点性或需要广泛网络搜索的内容，你应该判断为无法满足，并将 `needs_search` 设置为 `false`。
-
----
-
-## 7. 对话示例
+## 6. 对话示例
 
 以下是一些实际对话场景的示例，展示根据新规则的详细分析过程：
 
@@ -199,8 +179,7 @@
   "is_interesting": false,
   "reply_strategy": "继续观察",
   "topic": "Python代码调试",
-  "reply_target": "",
-  "needs_search": false
+  "reply_target": ""
 }
 ```
 
@@ -233,8 +212,7 @@
   "is_interesting": false,
   "reply_strategy": "继续观察",
   "topic": "闲聊",
-  "reply_target": "",
-  "needs_search": false
+  "reply_target": ""
 }
 ```
 
@@ -265,12 +243,9 @@
 
 {
   "should_reply": true,
-  "is_questioned": true,
-  "is_interesting": true,
   "reply_strategy": "提供信息分析",
   "topic": "市场趋势分析",
-  "reply_target": "小红",
-  "needs_search": false
+  "reply_target": "小红"
 }
 ```
 
@@ -302,12 +277,9 @@
 
 {
   "should_reply": false,
-  "is_questioned": true,
-  "is_interesting": false,
   "reply_strategy": "继续观察",
   "topic": "情感支持",
-  "reply_target": "",
-  "needs_search": false
+  "reply_target": ""
 }
 ```
 
@@ -335,184 +307,13 @@
 
 {
   "should_reply": false,
-  "is_questioned": true,
-  "is_interesting": false,
   "reply_strategy": "继续观察",
   "topic": "技术幽默",
-  "reply_target": "",
-  "needs_search": false
+  "reply_target": ""
 }
 ```
 
-### 示例七：需要百科知识确认事实（应该介入并搜索）
 
-**对话记录：**
-```
-[User ID: 123, Nickname: 小明]：@小助手 你知道《红楼梦》的作者曹雪芹的生卒年份吗？
-[User ID: 456, Nickname: 小红]：我记得好像是清朝的
-[User ID: 123, Nickname: 小明]：具体是哪一年呢？我想确认一下
-```
-
-**AI分析结果：**
-```
-【分析和推理报告】
-**1. 对话相关性判断**：发言人小明曾经提到过我的名字"小助手"，并且提出了关于历史人物生卒年份的具体问题，但我尚未回应这个需求。
-
-**2. 社交资格审查**：
-*   **欲望分析**：用户期望一个能提供准确历史事实的"知识库"来确认具体的历史信息。
-*   **资格自审**：我可以作为AI助手提供准确的历史信息，符合"知识库"的角色。
-
-**3. 最新对话逐句分析**：
-*   **第一句**：发言人是"小明"，内容"@小助手 你知道《红楼梦》的作者曹雪芹的生卒年份吗？"，明确提及我并有具体的历史事实需求。
-*   **第二句**：发言人是"小红"，内容是"我记得好像是清朝的"，提供了模糊信息但未提及我。
-*   **第三句**：发言人是"小明"，内容是"具体是哪一年呢？我想确认一下"，明确表示需要准确的事实确认。
-
-**4. 最终判断理由**：用户明确向我提出了需要准确历史事实的问题，这类信息通常需要百科知识来确认，符合"需要搜索百科知识来确认事实"的条件。
-
-{
-  "should_reply": true,
-  "is_questioned": true,
-  "is_interesting": true,
-  "reply_strategy": "提供准确信息",
-  "topic": "历史人物生卒年份",
-  "reply_target": "小明",
-  "needs_search": true,
-  "angel_eye_request": {
-    "required_docs": {
-      "曹雪芹": {
-        "keywords": ["红楼梦", "清朝", "作家"]
-      }
-    },
-    "required_facts": [
-      "曹雪芹.生卒年份"
-    ],
-    "chat_history": {}
-  }
-}
-```
-
-### 示例八：ACG角色查询（应该介入并搜索）
-
-**对话记录：**
-```
-[User ID: 123, Nickname: 小明]：@小助手 芙宁娜这个角色怎么样？
-[User ID: 456, Nickname: 小红]：是原神里的角色吧
-```
-
-**AI分析结果：**
-```
-【分析和推理报告】
-**1. 对话相关性判断**：发言人小明曾经提到过我的名字"小助手"，并且提出了关于ACG角色的问题，但我尚未回应这个需求。
-
-**2. 社交资格审查**：
-*   **欲望分析**：用户期望一个了解ACG文化的"同好"来介绍角色信息。
-*   **资格自审**：我可以作为AI助手提供ACG角色的相关信息，符合"同好"的角色。
-
-**3. 最新对话逐句分析**：
-*   **第一句**：发言人是"小明"，内容"@小助手 芙宁娜这个角色怎么样？"，明确提及我并有具体需求。
-*   **第二句**：发言人是"小红"，内容是"是原神里的角色吧"，提供了部分信息但未提及我。
-
-**4. 最终判断理由**：用户明确向我提出了ACG角色的问题，这类信息需要百科知识来提供准确的介绍。
-
-{
-  "should_reply": true,
-  "is_questioned": true,
-  "is_interesting": true,
-  "reply_strategy": "介绍角色信息",
-  "topic": "芙宁娜角色介绍",
-  "reply_target": "小明",
-  "needs_search": true,
-  "angel_eye_request": {
-    "required_docs": {
-      "芙宁娜": {
-        "keywords": ["原神", "水神", "枫丹"]
-      }
-    },
-    "required_facts": [],
-    "chat_history": {}
-  }
-}
-```
-
-### 示例九：回顾聊天记录（应该介入并搜索）
-
-**对话记录：**
-```
-[User ID: 123, Nickname: 小明]：@小助手 总结下最近3小时大家聊了什么技术话题？
-```
-
-**AI分析结果：**
-```
-【分析和推理报告】
-**1. 对话相关性判断**：发言人小明曾经提到过我的名字"小助手"，并且提出了回顾聊天记录的需求，但我尚未回应这个需求。
-
-**2. 社交资格审查**：
-*   **欲望分析**：用户期望一个能总结讨论内容的"记录员"来提供聊天概要。
-*   **资格自审**：我可以作为AI助手访问聊天记录并进行总结，符合"记录员"的角色。
-
-**3. 最新对话逐句分析**：
-*   **第一句**：发言人是"小明"，内容"@小助手 总结下最近3小时大家聊了什么技术话题？"，明确提及我并有具体需求。
-
-**4. 最终判断理由**：用户明确向我提出了回顾聊天记录的需求，这需要查询历史聊天内容。
-
-{
-  "should_reply": true,
-  "is_questioned": true,
-  "is_interesting": true,
-  "reply_strategy": "总结聊天内容",
-  "topic": "最近的技术讨论",
-  "reply_target": "小明",
-  "needs_search": true,
-  "angel_eye_request": {
-    "required_docs": {},
-    "required_facts": [],
-    "chat_history": {
-      "time_range_hours": 3,
-      "keywords": ["技术", "代码", "bug"]
-    }
-  }
-}
-```
-
-### 示例十：查看特定用户的聊天（应该介入并搜索）
-
-**对话记录：**
-```
-[User ID: 123, Nickname: 小明]：@小助手 看看小红和小李最近在聊什么？
-```
-
-**AI分析结果：**
-```
-【分析和推理报告】
-**1. 对话相关性判断**：发言人小明曾经提到过我的名字"小助手"，并且提出了查看特定用户聊天的需求，但我尚未回应这个需求。
-
-**2. 社交资格审查**：
-*   **欲望分析**：用户期望一个能查询和总结聊天记录的"记录员"来提供特定用户的历史对话。
-*   **资格自审**：我可以作为AI助手访问聊天记录并进行分析总结，符合"记录员"的角色。
-
-**3. 最新对话逐句分析**：
-*   **第一句**：发言人是"小明"，内容"@小助手 看看小红和小李最近在聊什么？"，明确提及我并有具体需求。
-
-**4. 最终判断理由**：用户明确向我提出了查看特定用户聊天记录的需求，这需要查询历史聊天内容。
-
-{
-  "should_reply": true,
-  "is_questioned": true,
-  "is_interesting": true,
-  "reply_strategy": "总结聊天内容",
-  "topic": "特定用户的聊天",
-  "reply_target": "小明",
-  "needs_search": true,
-  "angel_eye_request": {
-    "required_docs": {},
-    "required_facts": [],
-    "chat_history": {
-      "time_range_hours": 6,
-      "filter_user_ids": [456, 789]
-    }
-  }
-}
-```
 
 ---
 
