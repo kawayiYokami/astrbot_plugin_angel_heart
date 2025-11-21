@@ -224,6 +224,12 @@ class AngelHeartContext:
                 )
                 old_ticket.set_result("KILL")  # 请旧来访者离开
 
+            # 1.1. 清理旧的事件记录（如果有）
+            if chat_id in self.pending_events:
+                old_event = self.pending_events.pop(chat_id, None)
+                if old_event:
+                    logger.debug(f"AngelHeart[{chat_id}]: 已清理旧的事件记录")
+
             # 2. 给新来访者发放等候牌
             new_ticket = asyncio.Future()
             self.pending_futures[chat_id] = new_ticket
