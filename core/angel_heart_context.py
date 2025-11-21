@@ -53,6 +53,8 @@ class AngelHeartContext:
         # 事件扣押管理：来访者等候牌记录
         # pending_futures[chat_id] = 等候牌（Future对象）
         self.pending_futures: Dict[str, asyncio.Future] = {}
+        # pending_events[chat_id] = 正在等待的事件对象（用于检测事件是否被停止）
+        self.pending_events: Dict[str, any] = {}
         # dispatch_lock: 取号排队锁，防止来访者插队
         self.dispatch_lock: asyncio.Lock = asyncio.Lock()
 
@@ -169,7 +171,7 @@ class AngelHeartContext:
                 )
                 return False, "LOCKED", 0.0
 
-    async def release_chat_processing(self, chat_id: str, set_cooldown: bool = True):
+    async def release_chat_processing(self, chat_id: str, set_cooldown: bool = True, duration: Optional[float] = None):
         """
         原子性地释放会话处理权（收起门牌）。
         可选择是否设置冷却期，防止立即重新获取。
@@ -177,20 +179,21 @@ class AngelHeartContext:
         Args:
             chat_id (str): 会话ID。
             set_cooldown (bool): 是否设置冷却期，默认True
+            duration (Optional[float]): 自定义冷却时长（秒）。如果未提供，则使用默认的 waiting_time。
         """
         async with self.processing_lock:
             if self.processing_chats.pop(chat_id, None) is not None:
                 if set_cooldown:
-                    # 设置冷却期
-                    cooldown_duration = self.config_manager.waiting_time
+                    # 如果未指定时长，则使用默认的回复后冷却时长
+                    cooldown_duration = duration if duration is not None else self.config_manager.waiting_time
                     self.lock_cooldown_until[chat_id] = time.time() + cooldown_duration
-                    logger.debug(f"AngelHeart[{chat_id}]: 已收起门牌，进入 {cooldown_duration} 秒冷却期")
+                    logger.debug(f"AngelHeart[{chat_id}]: 已收起门牌，进入 {cooldown_duration:.2f} 秒冷却期")
                 else:
                     logger.debug(f"AngelHeart[{chat_id}]: 已收起门牌，不设置冷却期")
 
     # ========== 事件扣押与观察期 (V2: Future 阻塞机制) ==========
 
-    async def hold_and_start_observation(self, chat_id: str) -> asyncio.Future:
+    async def hold_and_start_observation(self, chat_id: str, event=None) -> asyncio.Future:
         """
         来访者取号等候机制
 
@@ -206,6 +209,7 @@ class AngelHeartContext:
 
         Args:
             chat_id (str): 来访者ID（会话ID）
+            event: 消息事件对象，用于检测事件是否被撤回插件停止
 
         Returns:
             asyncio.Future: 等候牌，来访者需要 await 等待被叫号
@@ -223,6 +227,11 @@ class AngelHeartContext:
             # 2. 给新来访者发放等候牌
             new_ticket = asyncio.Future()
             self.pending_futures[chat_id] = new_ticket
+
+            # 2.1. 存储事件对象（如果有），用于检测撤回
+            if event:
+                self.pending_events[chat_id] = event
+                logger.debug(f"AngelHeart[{chat_id}]: 已存储事件对象用于撤回检测")
 
             # 3. 取消之前的扣押超时计时器（如果有）
             if chat_id in self.detention_timeout_timers:
@@ -264,6 +273,23 @@ class AngelHeartContext:
 
             # 2. 进入轮询等待模式
             while total_waited < detention_timeout_seconds:
+                # 【新增】检查事件是否被撤回插件停止
+                event = self.pending_events.get(chat_id)
+                if event and hasattr(event, 'is_stopped') and event.is_stopped():
+                    # 事件被撤回插件停止了！立即结束等待
+                    ticket = self.pending_futures.get(chat_id)
+                    if ticket and not ticket.done():
+                        logger.info(
+                            f"AngelHeart[{chat_id}]: 检测到事件被撤回，立即结束等待"
+                        )
+                        ticket.set_result("KILL")  # 叫号：离开
+
+                    # 清理扣押记录
+                    self.pending_futures.pop(chat_id, None)
+                    self.detention_timeout_timers.pop(chat_id, None)
+                    self.pending_events.pop(chat_id, None)
+                    return  # 等候被撤回结束
+
                 # 【简化】检查老板是否已经空闲（门锁已包含冷却机制）
                 if not await self.is_chat_processing(chat_id):
                     # 老板空闲！请来访者进来
@@ -277,11 +303,12 @@ class AngelHeartContext:
                     # 清理扣押记录
                     self.pending_futures.pop(chat_id, None)
                     self.detention_timeout_timers.pop(chat_id, None)
+                    self.pending_events.pop(chat_id, None)
                     return  # 等候成功结束
 
                 # 老板还在忙，继续等
                 logger.debug(
-                    f"AngelHeart[{chat_id}]: 等待中... (已等 {total_waited}秒/{detention_timeout_seconds}秒)"
+                    f"AngelHeart[{chat_id}]: 等待中... (已等 {total_waited}秒/{detention_timeout_seconds}秒, 事件状态: {'已停止' if event and hasattr(event, 'is_stopped') and event.is_stopped() else '正常'})"
                 )
                 await asyncio.sleep(recheck_interval_seconds)
                 total_waited += recheck_interval_seconds
@@ -297,9 +324,12 @@ class AngelHeartContext:
             # 清理扣押记录
             self.pending_futures.pop(chat_id, None)
             self.detention_timeout_timers.pop(chat_id, None)
+            self.pending_events.pop(chat_id, None)
 
         except asyncio.CancelledError:
             logger.debug(f"AngelHeart[{chat_id}]: 等候被取消（老板直接叫号了）")
+            # 清理事件记录
+            self.pending_events.pop(chat_id, None)
         except Exception as e:
             logger.error(
                 f"AngelHeart[{chat_id}]: 等候处理出错: {e}", exc_info=True

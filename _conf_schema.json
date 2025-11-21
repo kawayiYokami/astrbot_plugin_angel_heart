@@ -14,8 +14,14 @@
   "waiting_time": {
     "type": "float",
     "description": "[基础配置] 等待时间（秒）",
-    "hint": "最多每X秒主动回复一次。",
+    "hint": "成功回复后，该对话需要等待多久才能再次分析。这是主要的冷却时间。",
     "default": 7.0
+  },
+  "no_reply_cooldown": {
+    "type": "float",
+    "description": "[基础配置] 不回复冷却时间（秒）",
+    "hint": "当秘书决定不回复时，该对话需要等待多久才能再次分析。建议设置一个较短的值，以防止短期内重复分析。",
+    "default": 3.0
   },
   "cache_expiry": {
     "type": "int",
