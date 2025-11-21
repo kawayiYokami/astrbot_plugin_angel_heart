@@ -297,8 +297,8 @@ class FrontDesk:
         chat_id = event.unified_msg_origin
         logger.info(f"AngelHeart[{chat_id}]: 消息进入扣押队列，原因: {reason}")
 
-        # 使用观察期等待机制
-        ticket = await self.context.hold_and_start_observation(chat_id)
+        # 使用观察期等待机制，传入事件对象用于撤回检测
+        ticket = await self.context.hold_and_start_observation(chat_id, event)
         result = await ticket
 
         if result == "KILL":
@@ -351,8 +351,9 @@ class FrontDesk:
                 # 决策需要回复，执行回复
                 await self._execute_secretary_decision(decision, event, chat_id)
             else:
-                # 决策不需要回复，立即释放门锁（不设置冷却）
-                await self.context.release_chat_processing(chat_id, set_cooldown=False)
+                # 决策不需要回复，立即释放门锁（设置较短的“不回复”冷却）
+                no_reply_cd = self.context.config_manager.no_reply_cooldown
+                await self.context.release_chat_processing(chat_id, set_cooldown=True, duration=no_reply_cd)
             # 注意：需要回复的情况，门锁释放由 main.py 的 strip_markdown_on_decorating_result 方法统一处理
         except Exception as e:
             logger.error(f"AngelHeart[{chat_id}]: 调用秘书异常: {e}", exc_info=True)

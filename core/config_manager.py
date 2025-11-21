@@ -24,6 +24,11 @@ class ConfigManager:
         return self._config.get("waiting_time", 7.0)
 
     @property
+    def no_reply_cooldown(self) -> float:
+        """不回复时的冷却时间（秒）"""
+        return self._config.get("no_reply_cooldown", 3.0)
+
+    @property
     def cache_expiry(self) -> int:
         """缓存过期时间（秒）"""
         return self._config.get("cache_expiry", 3600)
