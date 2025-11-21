@@ -33,7 +33,7 @@ from .core.utils.message_utils import serialize_message_chain
 from .core.angel_heart_context import AngelHeartContext
 
 
-@register("astrbot_plugin_angel_heart", "kawayiYokami", "天使心秘书，让astrbot拥有极其聪明，有分寸的群聊介入，和极其完备的群聊上下文管理", "0.6.0", "https://github.com/kawayiYokami/astrbot_plugin_angel_heart")
+@register("astrbot_plugin_angel_heart", "kawayiYokami", "天使心秘书，让astrbot拥有极其聪明，有分寸的群聊介入，和极其完备的群聊上下文管理", "0.6.8", "https://github.com/kawayiYokami/astrbot_plugin_angel_heart")
 class AngelHeartPlugin(Star):
     """AngelHeart插件 - 专注的智能回复员"""
 
@@ -191,41 +191,41 @@ class AngelHeartPlugin(Star):
 
                 # 存储每轮工具调用
                 for tool_result in tool_results_list:
-                    # 1. 存储助手的工具调用消息（转换为纯文本格式）
-                    tool_calls = tool_result.tool_calls_info.tool_calls
-                    tool_descriptions = []
-                    for tc in tool_calls:
-                        func_name = tc.get('function', {}).get('name', 'unknown')
-                        func_args = tc.get('function', {}).get('arguments', '{}')
-                        tool_descriptions.append(f"调用 {func_name}({func_args})")
-
+                    # 1. 存储助手的工具调用消息（保持完整的toolcall结构）
+                    tool_calls_info = tool_result.tool_calls_info
                     assistant_tool_msg = {
-                        "role": "assistant",
-                        "content": "; ".join(tool_descriptions),
+                        "role": tool_calls_info.role,  # "assistant"
+                        "content": tool_calls_info.content,  # 可能为None
+                        "tool_calls": tool_calls_info.tool_calls,  # 保持原始tool_calls结构
                         "timestamp": time.time(),
                         "sender_id": "assistant",
                         "sender_name": "assistant",
                         "is_processed": True,  # 工具调用消息应标记为已处理
+                        # 新增：标记这是结构化的toolcall记录，便于后续处理
+                        "is_structured_toolcall": True,
                     }
                     self.angel_context.conversation_ledger.add_message(
                         chat_id, assistant_tool_msg
                     )
 
-                    # 2. 存储工具执行结果（转换为用户消息格式）
+                    # 2. 存储工具执行结果（使用标准的tool角色格式）
                     for tool_result_msg in tool_result.tool_calls_result:
                         tool_msg = {
-                            "role": "user",
-                            "content": f"工具调用结果：{tool_result_msg.content}",
+                            "role": tool_result_msg.role,  # "tool"
+                            "tool_call_id": tool_result_msg.tool_call_id,  # 关键：保持ID关联
+                            "content": tool_result_msg.content,  # 工具执行的实际结果
                             "timestamp": time.time(),
                             "sender_id": "tool",
                             "sender_name": "tool_result",
                             "is_processed": True,  # 工具结果消息应标记为已处理
+                            # 新增：标记这是结构化的toolcall记录
+                            "is_structured_toolcall": True,
                         }
                         self.angel_context.conversation_ledger.add_message(
                             chat_id, tool_msg
                         )
 
-                logger.info(f"AngelHeart[{chat_id}]: 已记录工具调用和结果")
+                logger.info(f"AngelHeart[{chat_id}]: 已记录结构化工具调用和结果")
 
     # --- 内部方法 ---
     def reload_config(self, new_config: dict):
