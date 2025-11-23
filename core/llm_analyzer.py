@@ -8,10 +8,10 @@ try:
     from astrbot.api import logger
 except ImportError:
     import logging
-
     logger = logging.getLogger(__name__)
 from ..core.utils import convert_content_to_string, format_relative_time, JsonParser
 from ..models.analysis_result import SecretaryDecision
+from .prompt_module_loader import PromptModuleLoader
 
 
 class SafeFormatter(string.Formatter):
@@ -72,27 +72,29 @@ class LLMAnalyzer:
         self.strategy_guide = strategy_guide or ""  # 存储策略指导文本
         self.config_manager = config_manager  # 存储 config_manager 对象，用于访问配置
         self.is_ready = False  # 默认认为分析器未就绪
-        self.base_prompt_template = ""  # 初始化为空字符串
+
+        # 初始化提示词模块加载器
+        self.prompt_loader = PromptModuleLoader()
 
         # 初始化JSON解析器
         self.json_parser = JsonParser()
 
         # 加载外部 Prompt 模板
         try:
-            # 根据配置选择不同的prompt文件
-            prompt_filename = (
-                "secretary_analyzer_json.md"
-                if config_manager and config_manager.is_reasoning_model
-                else "secretary_analyzer.md"
-            )
-            prompt_path = Path(__file__).parent.parent / "prompts" / prompt_filename
-            self.base_prompt_template = prompt_path.read_text(encoding="utf-8")
-            self.is_ready = True  # 成功加载后，标记为就绪
-            logger.info(f"AngelHeart分析器: Prompt模板 '{prompt_filename}' 加载成功。")
-        except FileNotFoundError:
-            logger.critical(
-                f"AngelHeart分析器: 核心Prompt模板文件 'prompts/{prompt_filename}' 未找到。分析器将无法工作。"
-            )
+            # 使用 PromptModuleLoader 构建提示词模板
+            is_reasoning_model = config_manager.is_reasoning_model if config_manager else False
+            self.base_prompt_template = self.prompt_loader.build_prompt_template(is_reasoning_model)
+
+            if self.base_prompt_template:
+                self.is_ready = True
+                output_type = "指令" if is_reasoning_model else "推理"
+                logger.info(f"AngelHeart分析器: Prompt模块组装成功，使用 {output_type} 版本。")
+            else:
+                self.is_ready = False
+                logger.critical("AngelHeart分析器: Prompt模块组装失败，未生成有效模板。分析器将无法工作。")
+        except Exception as e:
+            self.is_ready = False
+            logger.critical(f"AngelHeart分析器: Prompt模块组装时发生错误: {e}。分析器将无法工作。")
 
         if not self.analyzer_model_name:
             logger.warning("AngelHeart的分析模型未配置，功能将受限。")
@@ -100,22 +102,23 @@ class LLMAnalyzer:
     def reload_config(self, new_config_manager):
         """重新加载配置"""
         self.config_manager = new_config_manager
-        # 根据新配置重新加载prompt
+
+        # 重新加载提示词模块
         try:
-            prompt_filename = (
-                "secretary_analyzer_json.md"
-                if self.config_manager and self.config_manager.is_reasoning_model
-                else "secretary_analyzer.md"
-            )
-            prompt_path = Path(__file__).parent.parent / "prompts" / prompt_filename
-            self.base_prompt_template = prompt_path.read_text(encoding="utf-8")
-            logger.info(
-                f"AngelHeart分析器: Prompt模板 '{prompt_filename}' 重新加载成功。"
-            )
-        except FileNotFoundError:
-            logger.critical(
-                f"AngelHeart分析器: 重新加载时未找到Prompt模板文件 'prompts/{prompt_filename}'。"
-            )
+            self.prompt_loader.reload_modules()
+            is_reasoning_model = new_config_manager.is_reasoning_model if new_config_manager else False
+            self.base_prompt_template = self.prompt_loader.build_prompt_template(is_reasoning_model)
+
+            if self.base_prompt_template:
+                self.is_ready = True
+                output_type = "指令" if is_reasoning_model else "推理"
+                logger.info(f"AngelHeart分析器: Prompt模板重新加载成功，使用 {output_type} 版本。")
+            else:
+                self.is_ready = False
+                logger.warning("AngelHeart分析器: Prompt模板重新加载失败，分析器未就绪。")
+        except Exception as e:
+            self.is_ready = False
+            logger.error(f"AngelHeart分析器: Prompt模板重新加载时发生错误: {e}")
 
     def _parse_response(self, response_text: str, alias: str) -> SecretaryDecision:
         """
