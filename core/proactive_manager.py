@@ -27,7 +27,7 @@ class ProactiveTriggerType(Enum):
 
 class ProactiveRequest:
     """主动应答请求"""
-    
+
     def __init__(
         self,
         chat_id: str,
@@ -41,7 +41,7 @@ class ProactiveRequest:
     ):
         """
         初始化主动应答请求
-        
+
         Args:
             chat_id: 聊天会话ID
             trigger_type: 触发类型
@@ -66,25 +66,25 @@ class ProactiveRequest:
 
 class ProactiveManager:
     """主动应答管理器"""
-    
+
     def __init__(self, angel_context):
         """
         初始化主动应答管理器
-        
+
         Args:
             angel_context: AngelHeart全局上下文
         """
         self.angel_context = angel_context
-        
+
         # 活跃的主动应答任务
         self.active_tasks: Dict[str, ProactiveRequest] = {}
-        
+
         # 自定义触发器注册表
         self.custom_triggers: Dict[str, Callable] = {}
-        
+
         # 锁保护
         self._lock = asyncio.Lock()
-    
+
     async def trigger_immediate(
         self,
         chat_id: str,
@@ -95,14 +95,14 @@ class ProactiveManager:
     ) -> bool:
         """
         立即触发主动应答
-        
+
         Args:
             chat_id: 聊天会话ID
             strategy: 回复策略
             topic: 话题
             context_data: 上下文数据
             callback: 完成回调函数
-            
+
         Returns:
             bool: 是否成功触发
         """
@@ -112,7 +112,7 @@ class ProactiveManager:
             if current_status != AngelHeartStatus.NOT_PRESENT:
                 logger.debug(f"AngelHeart[{chat_id}]: 当前状态为 {current_status.value}，跳过主动应答")
                 return False
-            
+
             # 创建请求
             request = ProactiveRequest(
                 chat_id=chat_id,
@@ -122,15 +122,15 @@ class ProactiveManager:
                 context_data=context_data,
                 callback=callback
             )
-            
+
             # 立即执行
             await self._execute_proactive_request(request)
             return True
-            
+
         except Exception as e:
             logger.error(f"AngelHeart[{chat_id}]: 立即主动应答失败: {e}", exc_info=True)
             return False
-    
+
     async def trigger_delayed(
         self,
         chat_id: str,
@@ -142,7 +142,7 @@ class ProactiveManager:
     ) -> bool:
         """
         延迟触发主动应答
-        
+
         Args:
             chat_id: 聊天会话ID
             strategy: 回复策略
@@ -150,7 +150,7 @@ class ProactiveManager:
             delay_seconds: 延迟秒数
             context_data: 上下文数据
             callback: 完成回调函数
-            
+
         Returns:
             bool: 是否成功安排
         """
@@ -158,7 +158,7 @@ class ProactiveManager:
             async with self._lock:
                 # 取消该会话的现有任务
                 await self._cancel_chat_task(chat_id)
-                
+
                 # 创建延迟请求
                 request = ProactiveRequest(
                     chat_id=chat_id,
@@ -169,24 +169,24 @@ class ProactiveManager:
                     context_data=context_data,
                     callback=callback
                 )
-                
+
                 # 创建异步任务
                 request.task = asyncio.create_task(
                     self._delayed_handler(request)
                 )
-                
+
                 # 注册任务
                 self.active_tasks[chat_id] = request
-                
+
                 logger.info(
                     f"AngelHeart[{chat_id}]: 已安排延迟主动应答，{delay_seconds}秒后执行"
                 )
                 return True
-                
+
         except Exception as e:
             logger.error(f"AngelHeart[{chat_id}]: 安排延迟主动应答失败: {e}", exc_info=True)
             return False
-    
+
     async def trigger_scheduled(
         self,
         chat_id: str,
@@ -198,7 +198,7 @@ class ProactiveManager:
     ) -> bool:
         """
         定时触发主动应答
-        
+
         Args:
             chat_id: 聊天会话ID
             strategy: 回复策略
@@ -206,7 +206,7 @@ class ProactiveManager:
             scheduled_time: 定时时间戳
             context_data: 上下文数据
             callback: 完成回调函数
-            
+
         Returns:
             bool: 是否成功安排
         """
@@ -214,10 +214,10 @@ class ProactiveManager:
             async with self._lock:
                 # 取消该会话的现有任务
                 await self._cancel_chat_task(chat_id)
-                
+
                 # 计算延迟时间
                 delay = max(0, scheduled_time - time.time())
-                
+
                 # 创建定时请求
                 request = ProactiveRequest(
                     chat_id=chat_id,
@@ -228,62 +228,62 @@ class ProactiveManager:
                     context_data=context_data,
                     callback=callback
                 )
-                
+
                 # 创建异步任务
                 request.task = asyncio.create_task(
                     self._scheduled_handler(request, delay)
                 )
-                
+
                 # 注册任务
                 self.active_tasks[chat_id] = request
-                
+
                 logger.info(
                     f"AngelHeart[{chat_id}]: 已安排定时主动应答，将在 {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(scheduled_time))} 执行"
                 )
                 return True
-                
+
         except Exception as e:
             logger.error(f"AngelHeart[{chat_id}]: 安排定时主动应答失败: {e}", exc_info=True)
             return False
-    
+
     def register_custom_trigger(self, name: str, trigger_func: Callable):
         """
         注册自定义触发器
-        
+
         Args:
             name: 触发器名称
             trigger_func: 触发函数，签名为 async func(chat_id: str, context_data: Dict) -> bool
         """
         self.custom_triggers[name] = trigger_func
         logger.info(f"AngelHeart: 已注册自定义触发器 '{name}'")
-    
+
     def unregister_custom_trigger(self, name: str):
         """
         注销自定义触发器
-        
+
         Args:
             name: 触发器名称
         """
         if name in self.custom_triggers:
             del self.custom_triggers[name]
             logger.info(f"AngelHeart: 已注销自定义触发器 '{name}'")
-    
+
     async def call_custom_trigger(self, name: str, chat_id: str, context_data: Optional[Dict] = None) -> bool:
         """
         调用自定义触发器
-        
+
         Args:
             name: 触发器名称
             chat_id: 聊天会话ID
             context_data: 上下文数据
-            
+
         Returns:
             bool: 触发是否成功
         """
         if name not in self.custom_triggers:
             logger.warning(f"AngelHeart: 自定义触发器 '{name}' 不存在")
             return False
-        
+
         try:
             trigger_func = self.custom_triggers[name]
             result = await trigger_func(chat_id, context_data or {})
@@ -291,20 +291,20 @@ class ProactiveManager:
         except Exception as e:
             logger.error(f"AngelHeart: 调用自定义触发器 '{name}' 失败: {e}", exc_info=True)
             return False
-    
+
     async def cancel_chat_task(self, chat_id: str) -> bool:
         """
         取消指定会话的主动应答任务
-        
+
         Args:
             chat_id: 聊天会话ID
-            
+
         Returns:
             bool: 是否成功取消
         """
         async with self._lock:
             return await self._cancel_chat_task(chat_id)
-    
+
     async def _cancel_chat_task(self, chat_id: str) -> bool:
         """内部方法：取消任务（需要在锁内调用）"""
         if chat_id in self.active_tasks:
@@ -314,31 +314,31 @@ class ProactiveManager:
                 logger.debug(f"AngelHeart[{chat_id}]: 已取消主动应答任务")
                 return True
         return False
-    
+
     async def _execute_proactive_request(self, request: ProactiveRequest):
         """
         执行主动应答请求
-        
+
         Args:
             request: 主动应答请求
         """
         try:
             chat_id = request.chat_id
-            
+
             # 检查状态
             current_status = self.angel_context.get_chat_status(chat_id)
             if current_status != AngelHeartStatus.NOT_PRESENT:
                 logger.debug(f"AngelHeart[{chat_id}]: 状态已变更为 {current_status.value}，取消主动应答")
                 return
-            
+
             # 转换到被呼唤状态
             await self.angel_context.transition_to_status(
                 chat_id,
                 AngelHeartStatus.SUMMONED,
                 f"主动应答: {request.topic}"
             )
-            
-            # 创建决策对象
+
+            # 创建决策对象 - 按照RAG规范添加字段
             from ..models.analysis_result import SecretaryDecision
             decision = SecretaryDecision(
                 should_reply=True,
@@ -346,33 +346,36 @@ class ProactiveManager:
                 topic=request.topic,
                 reply_target="",
                 is_questioned=False,
-                is_interesting=True
+                is_interesting=True,
+                entities=[],  # 实体应由LLM从实际内容中提取，主动应答场景暂不提供
+                facts=[f"系统主动发起{request.topic}"],  # 极简日志模式，不超过15字
+                keywords=[request.topic]  # 核心搜索词
             )
-            
+
             # 存储决策
             await self.angel_context.update_analysis_cache(
                 chat_id,
                 decision,
                 reason="主动应答"
             )
-            
+
             # 更新分析时间
             await self.angel_context.update_last_analysis_time(chat_id)
-            
+
             logger.info(
                 f"AngelHeart[{chat_id}]: 主动应答已触发 - 话题: {request.topic}, 策略: {request.strategy}"
             )
-            
+
             # 调用回调
             if request.callback:
                 try:
                     await request.callback(chat_id, decision, request.context_data)
                 except Exception as e:
                     logger.error(f"AngelHeart[{chat_id}]: 主动应答回调失败: {e}", exc_info=True)
-            
+
         except Exception as e:
             logger.error(f"AngelHeart[{request.chat_id}]: 执行主动应答失败: {e}", exc_info=True)
-    
+
     async def _delayed_handler(self, request: ProactiveRequest):
         """延迟处理器"""
         try:
@@ -386,7 +389,7 @@ class ProactiveManager:
             # 清理任务
             async with self._lock:
                 self.active_tasks.pop(request.chat_id, None)
-    
+
     async def _scheduled_handler(self, request: ProactiveRequest, delay: float):
         """定时处理器"""
         try:
@@ -400,11 +403,11 @@ class ProactiveManager:
             # 清理任务
             async with self._lock:
                 self.active_tasks.pop(request.chat_id, None)
-    
+
     def get_active_tasks(self) -> Dict[str, Dict]:
         """
         获取活跃任务列表
-        
+
         Returns:
             Dict: 活跃任务信息
         """
@@ -419,7 +422,7 @@ class ProactiveManager:
                 "scheduled_time": request.scheduled_time
             }
         return result
-    
+
     async def cleanup(self):
         """清理所有任务"""
         async with self._lock:
