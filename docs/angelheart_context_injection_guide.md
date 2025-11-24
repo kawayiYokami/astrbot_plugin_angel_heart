@@ -31,15 +31,15 @@ AngelHeart 通过分析对话历史、决策是否回复以及搜索需求等信
 
 ```json
 {
-  "should_reply": true,              // 是否需要回复
-  "reply_strategy": "技术指导",       // 回复策略
-  "topic": "Python调试问题",          // 对话核心话题
-  "persona_name": "技术助手",         // AI人格名称
-  "alias": "小助手",                  // AI昵称
-  "reply_target": "小明",            // 回复目标用户
-  "created_at": "2025-01-01T12:00:00Z", // 决策创建时间
-  "boundary_timestamp": 1640995200.0, // 分析边界时间戳
-  "needs_search": false              // 是否需要搜索
+  "should_reply": true,              // 是否需要介入
+  "is_questioned": false,             // 是否被追问（用户在继续之前的话题或要求回应之前的回答）
+  "is_interesting": false,            // 话题是否有趣（符合AI身份、能提供价值、介入合适）
+  "reply_strategy": "技术指导",       // 概述你计划采用的策略。如果 should_reply 为 false，此项应为 '继续观察'
+  "topic": "Python调试问题",          // 对当前唯一核心话题的简要概括
+  "reply_target": "小明",            // 回复目标用户的昵称或ID。如果不需要回复，此项应为空字符串
+  "entities": ["小明", "Python调试"], // 实体列表，优先级最高的发言人ID，其次是其他对话中的实体（包含但不限于人物、话题、物品、时间、地点、活动等）
+  "facts": ["小明询问Python调试"],    // 极简日志模式。只保留'谁 做了 什么'或'谁 提议 什么'。单句禁止超过15个字，禁止形容词
+  "keywords": ["Python", "调试"]      // 1-3个核心搜索词
 }
 ```
 
@@ -54,7 +54,9 @@ AngelHeart 通过分析对话历史、决策是否回复以及搜索需求等信
   "chat_records": [
     {
       "role": "user",
-      "content": "@小助手 这个Python代码怎么调试？",
+      "content": [
+        {"type": "text", "text": "@小助手 这个Python代码怎么调试？"}
+      ],
       "sender_id": "123456",
       "sender_name": "小明",
       "timestamp": 1640995200.123,
@@ -62,7 +64,9 @@ AngelHeart 通过分析对话历史、决策是否回复以及搜索需求等信
     },
     {
       "role": "assistant",
-      "content": "你可以使用print语句或断点来调试代码",
+      "content": [
+        {"type": "text", "text": "你可以使用print语句或断点来调试代码"}
+      ],
       "sender_id": "bot123",
       "sender_name": "小助手",
       "timestamp": 1640995260.456,
@@ -71,14 +75,14 @@ AngelHeart 通过分析对话历史、决策是否回复以及搜索需求等信
   ],
   "secretary_decision": {
     "should_reply": true,
+    "is_questioned": false,
+    "is_interesting": true,
     "reply_strategy": "提供技术解决方案",
     "topic": "Python代码调试",
-    "persona_name": "技术助手",
-    "alias": "小助手",
     "reply_target": "小明",
-    "created_at": "2025-01-01T12:00:00Z",
-    "boundary_timestamp": 1640995200.0,
-    "needs_search": false
+    "entities": ["小明", "Python调试"],
+    "facts": ["小明询问调试方法"],
+    "keywords": ["Python", "调试"]
   },
   "needs_search": false
 }
@@ -113,6 +117,16 @@ class MyPlugin(Star):
             chat_records = context.get('chat_records', [])
             secretary_decision = context.get('secretary_decision', {})
             needs_search = context.get('needs_search', False)
+
+            # 处理多模态内容
+            for record in chat_records:
+                content = record.get('content', [])
+                if isinstance(content, list):  # 多模态格式
+                    text_parts = [item.get('text', '') for item in content if item.get('type') == 'text']
+                    full_text = ''.join(text_parts)
+                    logger.info(f"{record.get('sender_name', '未知')}: {full_text[:50]}...")
+                else:  # 兼容旧的字符串格式
+                    logger.info(f"{record.get('sender_name', '未知')}: {content[:50]}...")
 
             logger.info(f"收到 {len(chat_records)} 条聊天记录")
             logger.info(f"秘书决策: {secretary_decision.get('reply_strategy', '未知')}")
@@ -264,9 +278,10 @@ async def collect_statistics(self, event: AstrMessageEvent):
 
 1. **空值检查**: 始终检查 `angelheart_context` 是否存在且有效
 2. **异常处理**: 使用 try-catch 块处理 JSON 解析异常
-3. **兼容性**: 不要假设上下文总是存在，编写容错代码
+3. **内容格式兼容**: 支持多模态内容格式（列表）和旧字符串格式，确保向后兼容
 4. **性能考虑**: 避免在高频事件中进行复杂处理
 5. **日志记录**: 记录上下文的使用情况，便于调试
+6. **实体信息利用**: 合理使用 `entities`、`facts` 和 `keywords` 字段来增强下游逻辑
 
 ## 注意事项
 

@@ -424,8 +424,6 @@ class FrontDesk:
                 )
 
             # 存储决策
-            decision.boundary_timestamp = boundary_ts
-            decision.recent_dialogue = recent_dialogue
             await self.context.update_analysis_cache(
                 chat_id, decision, reason="分析完成"
             )
@@ -883,8 +881,9 @@ class FrontDesk:
             logger.debug(f"AngelHeart[{chat_id}]: 私聊不参与重构。")
             return
 
-        # 2. 使用决策中保存的对话快照（而不是重新获取，避免被标记为已处理的消息丢失）
-        recent_dialogue = decision.recent_dialogue
+        # 2. 获取最近的对话数据（因为新模型没有recent_dialogue字段，需要从缓存获取）
+        # 这里需要重新获取对话数据，因为新的SecretaryDecision模型不再包含recent_dialogue字段
+        _, recent_dialogue, boundary_ts = self.context.conversation_ledger.get_context_snapshot(chat_id)
 
         # 获取历史对话用于构建完整上下文（保留原始工具调用结构）
         historical_context, _, _ = partition_dialogue_raw(

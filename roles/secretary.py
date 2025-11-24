@@ -5,7 +5,6 @@ AngelHeart 插件 - 秘书角色 (Secretary)
 
 import asyncio
 import json
-import datetime
 from typing import Dict, List
 from enum import Enum
 
@@ -52,7 +51,6 @@ class Secretary:
 
         # -- 常量定义 --
         self.DB_HISTORY_MERGE_LIMIT = 5  # 数据库历史记录合并限制
-        self.DECISION_EXPIRATION_MINUTES = 3  # 决策超时时间（分钟）
 
         # -- 核心组件 --
         # 初始化 LLMAnalyzer
@@ -62,24 +60,6 @@ class Secretary:
         self.llm_analyzer = LLMAnalyzer(
             analyzer_model_name, context, reply_strategy_guide, self.config_manager
         )
-
-    def _is_decision_expired(self, decision: SecretaryDecision) -> bool:
-        """
-        检查决策是否已过期（超过3分钟）。
-
-        此方法用于防止因外部依赖（如LLM响应慢）导致的系统死锁。
-        任何超过3分钟的决策都将被视为过期，允许启动新的分析。
-
-        Args:
-            decision (SecretaryDecision): 要检查的决策对象。
-
-        Returns:
-            bool: 如果决策已过期则返回 True，否则返回 False。
-        """
-        # 计算决策创建时间与当前时间的差值
-        time_diff = datetime.datetime.now(datetime.timezone.utc) - decision.created_at
-        # 如果差值超过设定的超时时间，则认为决策已过期
-        return time_diff > datetime.timedelta(minutes=self.DECISION_EXPIRATION_MINUTES)
 
     async def handle_message_by_state(self, event: AstrMessageEvent) -> SecretaryDecision:
         """
@@ -139,7 +119,8 @@ class Secretary:
         except Exception as e:
             logger.error(f"AngelHeart[{chat_id}]: 秘书混脸熟处理异常: {e}", exc_info=True)
             return SecretaryDecision(
-                should_reply=False, reply_strategy="处理异常", topic="未知", alias="AngelHeart"
+                should_reply=False, reply_strategy="处理异常", topic="未知",
+                entities=[], facts=[], keywords=[]
             )
 
     async def _handle_summoned_reply(self, event: AstrMessageEvent, chat_id: str) -> SecretaryDecision:
@@ -155,7 +136,8 @@ class Secretary:
             if not recent_dialogue:
                 logger.info(f"AngelHeart[{chat_id}]: 无新消息需要分析。")
                 return SecretaryDecision(
-                    should_reply=False, reply_strategy="无新消息", topic="未知", alias="AngelHeart"
+                    should_reply=False, reply_strategy="无新消息", topic="未知",
+                    entities=[], facts=[], keywords=[]
                 )
 
             # 执行分析
@@ -170,7 +152,8 @@ class Secretary:
         except Exception as e:
             logger.error(f"AngelHeart[{chat_id}]: 秘书被呼唤处理异常: {e}", exc_info=True)
             return SecretaryDecision(
-                should_reply=False, reply_strategy="处理异常", topic="未知", alias="AngelHeart"
+                should_reply=False, reply_strategy="处理异常", topic="未知",
+                entities=[], facts=[], keywords=[]
             )
 
     async def _handle_observation_reply(self, event: AstrMessageEvent, chat_id: str) -> SecretaryDecision:
@@ -186,7 +169,8 @@ class Secretary:
             if not recent_dialogue:
                 logger.info(f"AngelHeart[{chat_id}]: 无新消息需要分析。")
                 return SecretaryDecision(
-                    should_reply=False, reply_strategy="无新消息", topic="未知", alias="AngelHeart"
+                    should_reply=False, reply_strategy="无新消息", topic="未知",
+                    entities=[], facts=[], keywords=[]
                 )
 
             # 执行分析
@@ -197,7 +181,8 @@ class Secretary:
         except Exception as e:
             logger.error(f"AngelHeart[{chat_id}]: 秘书观测中处理异常: {e}", exc_info=True)
             return SecretaryDecision(
-                should_reply=False, reply_strategy="处理异常", topic="未知", alias="AngelHeart"
+                should_reply=False, reply_strategy="处理异常", topic="未知",
+                entities=[], facts=[], keywords=[]
             )
 
     async def _handle_not_present_check(self, event: AstrMessageEvent, chat_id: str) -> SecretaryDecision:
@@ -225,13 +210,15 @@ class Secretary:
             else:
                 logger.debug(f"AngelHeart[{chat_id}]: 秘书判断无触发条件，保持不在场")
                 return SecretaryDecision(
-                    should_reply=False, reply_strategy="不在场", topic="未知", alias="AngelHeart"
+                    should_reply=False, reply_strategy="不在场", topic="未知",
+                    entities=[], facts=[], keywords=[]
                 )
 
         except Exception as e:
             logger.error(f"AngelHeart[{chat_id}]: 秘书不在场状态处理异常: {e}", exc_info=True)
             return SecretaryDecision(
-                should_reply=False, reply_strategy="处理异常", topic="未知", alias="AngelHeart"
+                should_reply=False, reply_strategy="处理异常", topic="未知",
+                entities=[], facts=[], keywords=[]
             )
 
     async def perform_analysis(
@@ -327,7 +314,8 @@ class Secretary:
         )
         # 返回一个默认的不参与决策
         return SecretaryDecision(
-            should_reply=False, reply_strategy=f"{context}失败", topic="未知"
+            should_reply=False, reply_strategy=f"{context}失败", topic="未知",
+            entities=[], facts=[], keywords=[]
         )
 
     # ========== 4状态机制：状态感知分析 ==========
@@ -388,8 +376,6 @@ class Secretary:
                 logger.info(f"AngelHeart[{chat_id}]: 已为 {caption_count} 张图片生成转述")
 
             # 存储决策
-            decision.boundary_timestamp = boundary_ts
-            decision.recent_dialogue = recent_dialogue
             await self.angel_context.update_analysis_cache(chat_id, decision, reason="分析完成")
 
             # 启动耐心计时器

@@ -33,7 +33,7 @@ class FishingDirectReply:
         self.config_manager = config_manager
         self.angel_context = angel_context
 
-        
+
 
     async def generate_reply_strategy(self, chat_id: str, event, trigger_type: str) -> SecretaryDecision:
         """
@@ -49,7 +49,7 @@ class FishingDirectReply:
         """
         try:
             logger.debug(f"AngelHeart[{chat_id}]: 生成混脸熟策略，触发类型: {trigger_type}")
-            
+
             # 1. 根据触发类型选择策略
             if trigger_type == "echo_chamber":
                 strategy = "跟紧复读队形"
@@ -57,26 +57,30 @@ class FishingDirectReply:
             else:  # dense_conversation
                 strategy = "发个表情混个脸熟"
                 topic = "密集讨论"
-            
-            # 2. 创建决策对象
+
+            # 2. 创建决策对象 - 按照RAG规范添加字段
             decision = SecretaryDecision(
                 should_reply=True,
                 reply_strategy=strategy,
                 topic=topic,
-                reply_target=""
+                reply_target="",
+                entities=[],  # 实体应由LLM从实际内容中提取，混脸熟场景暂不提供
+                facts=[f"系统{strategy}"],  # 极简日志模式，不超过15字
+                keywords=[topic]  # 核心搜索词
             )
-            
+
             logger.debug(f"AngelHeart[{chat_id}]: 生成策略: {strategy}")
             return decision
-            
+
         except Exception as e:
             logger.error(f"AngelHeart[{chat_id}]: 生成混脸熟策略失败: {e}", exc_info=True)
-            # 返回默认策略
+            # 返回默认策略 - 按照RAG规范添加字段
             return SecretaryDecision(
                 should_reply=True,
                 reply_strategy="简单回应",
                 topic="混脸熟",
-                reply_target=""
+                reply_target="",
+                entities=[],  # 实体应由LLM从实际内容中提取，混脸熟场景暂不提供
+                facts=["系统简单回应"],  # 极简日志模式，不超过15字
+                keywords=["混脸熟"]  # 核心搜索词
             )
-
-    

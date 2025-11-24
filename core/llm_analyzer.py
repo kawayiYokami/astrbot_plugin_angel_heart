@@ -1,7 +1,6 @@
 import asyncio
 from typing import List, Dict
 import json
-from pathlib import Path
 import string
 
 try:
@@ -235,7 +234,8 @@ class LLMAnalyzer:
             logger.debug("AngelHeart分析器: 分析模型未配置, 跳过分析。")
             # 返回一个默认的不参与决策
             return SecretaryDecision(
-                should_reply=False, reply_strategy="未配置", topic="未知", alias=alias
+                should_reply=False, reply_strategy="未配置", topic="未知",
+                entities=[], facts=[], keywords=[]
             )
 
         if not self.is_ready:
@@ -244,7 +244,7 @@ class LLMAnalyzer:
                 should_reply=False,
                 reply_strategy="分析器未就绪",
                 topic="未知",
-                alias=alias,
+                entities=[], facts=[], keywords=[]
             )
 
         # 1. 调用轻量级AI进行分析
@@ -260,7 +260,7 @@ class LLMAnalyzer:
                 should_reply=False,
                 reply_strategy="分析内容为空",
                 topic="未知",
-                alias=alias,
+                entities=[], facts=[], keywords=[]
             )
 
         response_text = ""
@@ -283,7 +283,8 @@ class LLMAnalyzer:
 
         # 如果发生任何错误，都返回一个默认的不参与决策
         return SecretaryDecision(
-            should_reply=False, reply_strategy="分析失败", topic="未知", alias=alias
+            should_reply=False, reply_strategy="分析失败", topic="未知",
+            entities=[], facts=[], keywords=[]
         )
 
     def _parse_and_validate_decision(
@@ -292,8 +293,8 @@ class LLMAnalyzer:
         """解析并验证来自AI的响应文本，构建SecretaryDecision对象"""
 
         # 定义SecretaryDecision的字段要求
-        required_fields = ["should_reply", "reply_strategy", "topic", "reply_target"]
-        optional_fields = ["needs_search", "is_questioned", "is_interesting"]
+        required_fields = ["should_reply", "reply_strategy", "topic", "reply_target", "entities", "facts", "keywords"]
+        optional_fields = ["is_questioned", "is_interesting"]
 
         # 使用JsonParser提取JSON数据
         try:
@@ -318,7 +319,7 @@ class LLMAnalyzer:
                 should_reply=False,
                 reply_strategy="分析内容无有效JSON",
                 topic="未知",
-                alias=alias,
+                entities=[], facts=[], keywords=[]
             )
 
         # 对来自 AI 的 JSON 做健壮性处理，防止字段为 null 或类型不符合导致 pydantic 校验失败
@@ -373,6 +374,11 @@ class LLMAnalyzer:
         topic = str(raw.get("topic") or "未知话题")
         reply_target = str(raw.get("reply_target") or "")
 
+        # 提取新增的RAG字段
+        entities = raw.get("entities", [])
+        facts = raw.get("facts", [])
+        keywords = raw.get("keywords", [])
+
         # 创建决策对象
         decision = SecretaryDecision(
             should_reply=should_reply,
@@ -381,7 +387,9 @@ class LLMAnalyzer:
             reply_strategy=reply_strategy,
             topic=topic,
             reply_target=reply_target,
-            alias=alias,
+            entities=entities,
+            facts=facts,
+            keywords=keywords,
         )
 
         # 代码校验和修正逻辑
