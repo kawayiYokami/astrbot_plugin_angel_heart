@@ -5,7 +5,6 @@ JSON 解析工具，从文本中提取 JSON 数据
 import json
 from typing import Dict, Optional, Any, List
 
-# Removed logger imports for cleaner code
 def _strip_code_fences(text: str) -> str:
     """去除 Markdown 代码块围栏"""
     if not text:
@@ -88,9 +87,6 @@ class JsonParser:
             if isinstance(feedback_data, str):
                 try:
                     feedback_data = json.loads(feedback_data)
-                    self.logger.debug(
-                        "JsonParser: feedback_data 是字符串，已重新解析为字典"
-                    )
                 except json.JSONDecodeError:
                     return None
 
@@ -131,8 +127,6 @@ class JsonParser:
                 json_part = parts[1].strip()
             else:
                 return None
-        else:
-            self.logger.debug(f"JsonParser: 未找到分隔符 '{separator}'，将处理整个文本")
 
         # 2) 去掉代码围栏
         json_part = _strip_code_fences(json_part)
