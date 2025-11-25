@@ -158,9 +158,6 @@ class FrontDesk:
 
         # 7. 将消息添加到 Ledger
         self.context.conversation_ledger.add_message(chat_id, new_message)
-        logger.info(
-            f"AngelHeart[{chat_id}]: 消息已缓存，使用概要作为正文，包含 {len(content_list)} 个组件。"
-        )
 
     async def handle_event(self, event: AstrMessageEvent):
         """
@@ -431,8 +428,7 @@ class FrontDesk:
             # 启动耐心计时器
             await self.context.start_patience_timer(chat_id)
 
-            # 标记对话为已处理
-            self.context.conversation_ledger.mark_as_processed(chat_id, boundary_ts)
+            # Messages will be marked as processed after prompt construction in rewrite_prompt_for_llm
 
             # 注入上下文
             from ..core.utils import json_serialize_context
@@ -541,10 +537,6 @@ class FrontDesk:
                 msg for msg in current_messages if self._has_text_content(msg)
             ]
 
-            logger.debug(
-                f"AngelHeart[{chat_id}]: 当前消息总数: {total_messages}, 有文本的消息数: {len(text_messages)}"
-            )
-
             # 基于总消息数判断是否需要补充（不只是文本消息）
             if total_messages >= 7:
                 logger.debug(
@@ -586,19 +578,6 @@ class FrontDesk:
                 processed_count = sum(
                     1 for m in all_messages if m.get("is_processed", False)
                 )
-                logger.info(
-                    f"AngelHeart[{chat_id}]: 补充了 {len(supplement_messages)} 条已处理的历史消息"
-                )
-                logger.debug(
-                    f"AngelHeart[{chat_id}]: 总消息数: {len(all_messages)}, 已处理: {processed_count}, 未处理: {len(all_messages) - processed_count}"
-                )
-
-                # 调试：检查时间戳范围
-                if all_messages:
-                    timestamps = [m.get("timestamp", 0) for m in all_messages]
-                    logger.debug(
-                        f"AngelHeart[{chat_id}]: 时间戳范围: {min(timestamps)} - {max(timestamps)}"
-                    )
 
         except Exception as e:
             logger.error(f"AngelHeart[{chat_id}]: 补充历史消息失败: {e}")
@@ -626,10 +605,6 @@ class FrontDesk:
             # 解析群号
             group_id = self._extract_group_id(chat_id)
 
-            logger.debug(
-                f"AngelHeart[{chat_id}]: 准备从QQ API获取历史消息 - group_id: {group_id}"
-            )
-
             # 获取bot实例
             bot = self._get_bot_instance(event)
             if not bot:
@@ -641,19 +616,12 @@ class FrontDesk:
                 bot, group_id, needed_count
             )
 
-            logger.debug(
-                f"AngelHeart[{chat_id}]: 从QQ API获取到 {len(raw_messages)} 条历史记录"
-            )
-
             # 转换格式
             converted_messages = []
             for raw_msg in raw_messages:
                 msg = self._convert_raw_qq_message_to_angelheart_format(raw_msg)
                 if msg:
                     converted_messages.append(msg)
-                    logger.debug(f"AngelHeart[{chat_id}]: 转换消息成功")
-                else:
-                    logger.debug(f"AngelHeart[{chat_id}]: 跳过无文本内容的消息")
             return converted_messages
 
         except Exception as e:
@@ -892,6 +860,11 @@ class FrontDesk:
 
         # 生成聚焦指令
         final_prompt_str = format_final_prompt(recent_dialogue, decision)
+
+        # 如果决策需要回复且存在最近对话，则标记消息为已处理
+        if decision and decision.should_reply and recent_dialogue:
+            boundary_ts = max(msg.get('timestamp', 0) for msg in recent_dialogue)
+            self.context.conversation_ledger.mark_as_processed(chat_id, boundary_ts)
 
         # 3. 准备完整的对话历史 (Context)
         full_history = historical_context + recent_dialogue

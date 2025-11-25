@@ -1,24 +1,13 @@
 """
-Angel Eye 插件 - JSON 解析工具
-提供健壮的 JSON 提取功能，用于从模型返回的文本中安全地解析 JSON 数据
+JSON 解析工具，从文本中提取 JSON 数据
 """
 
 import json
 from typing import Dict, Optional, Any, List
 
-try:
-    from astrbot.api import logger
-except ImportError:
-    import logging
-
-    logger = logging.getLogger(__name__)
-
-
+# Removed logger imports for cleaner code
 def _strip_code_fences(text: str) -> str:
-    """
-    去除常见的 Markdown 代码块围栏，避免干扰解析。
-    例如: ```json ... ``` 或 ``` ... ```
-    """
+    """去除 Markdown 代码块围栏"""
     if not text:
         return text
     # 仅移除围栏标记，不移除内部内容
@@ -26,12 +15,7 @@ def _strip_code_fences(text: str) -> str:
 
 
 def _find_json_candidates(text: str) -> List[str]:
-    """
-    在文本中扫描并返回所有"平衡的大括号"子串，作为潜在的 JSON 候选。
-    - 跳过字符串字面量中的花括号
-    - 支持嵌套
-    返回顺序为出现顺序（从左到右）
-    """
+    """扫描文本中的平衡大括号，返回 JSON 候选"""
     candidates: List[str] = []
     if not text:
         return candidates
@@ -49,7 +33,6 @@ def _find_json_candidates(text: str) -> List[str]:
                 escape = True
             elif ch == '"':
                 in_string = False
-            # 字符串中不处理花括号
             continue
 
         if ch == '"':
@@ -79,29 +62,22 @@ class JsonParser:
     """
 
     def __init__(self):
-        """初始化 JSON 解析器。"""
-        self.logger = logger
+        pass
 
     def parse_llm_response(self, response_text: str) -> Optional[Dict[str, Any]]:
         """
         从 LLM 响应文本中解析出 feedback_data 字典。
 
-        使用高鲁棒性解析策略：
-        - 智能识别所有可能的JSON候选
-        - 根据字段完整性评分选择最佳候选
-        - 支持部分字段缺失的情况
-
         Args:
             response_text: LLM 的原始响应文本
 
         Returns:
-            解析后的 feedback_data 字典，失败时返回 None
+            解析后的 feedback_data 字典或 None
         """
         # 尝试提取JSON数据
         json_data = self.extract_json(response_text)
 
         if json_data is None:
-            self.logger.warning("JsonParser: 未能从响应中提取有效的 JSON")
             return None
 
         # 从 JSON 中提取 feedback_data
@@ -116,17 +92,10 @@ class JsonParser:
                         "JsonParser: feedback_data 是字符串，已重新解析为字典"
                     )
                 except json.JSONDecodeError:
-                    self.logger.warning(
-                        "JsonParser: feedback_data 是字符串但无法解析为 JSON"
-                    )
                     return None
 
             return feedback_data
         else:
-            # 如果没有 feedback_data 包装，直接返回整个 JSON
-            self.logger.debug(
-                "JsonParser: JSON 中未找到 'feedback_data' 字段，返回整个 JSON"
-            )
             return json_data
 
     def extract_json(
@@ -137,44 +106,30 @@ class JsonParser:
         optional_fields: Optional[List[str]] = None,
     ) -> Optional[Dict[str, Any]]:
         """
-        从可能包含其他文本的字符串中，智能地提取最符合条件的单个JSON对象。
+        从文本中提取 JSON 对象。
 
-        公共方法，用于从LLM响应中提取JSON数据。
+        Args:
+            text: 包含 JSON 的字符串
+            separator: 分隔符
+            required_fields: 必需字段列表
+            optional_fields: 可选字段列表
 
-        提取策略:
-        1.  **分割**: 如果存在分隔符，则优先处理分隔符之后的内容。
-        2.  **清理**: 自动去除常见的Markdown代码块围栏。
-        3.  **扫描**: 通过"平衡大括号"算法，找出所有结构上闭合的JSON候选片段。
-        4.  **筛选**: (如果提供了`required_fields`) 只保留那些包含所有必须字段的JSON对象。
-        5.  **评分**: (如果提供了`optional_fields`) 根据包含的可选字段数量为每个合格的JSON对象打分。
-        6.  **决策**: 返回分数最高的对象。如果分数相同，则选择在原文中位置最靠后的那一个。
-        7.  **回退**: 如果上述策略找不到，则尝试一次"从第一个'{'到最后一个'}'"的大包围策略。
-
-        :param text: 包含JSON的模型原始输出字符串。
-        :param separator: 用于分割内容的分隔符。
-        :param required_fields: 一个列表，JSON对象必须包含其中所有的字段才算合格。
-        :param optional_fields: 一个列表，用于对合格的JSON对象进行评分，包含的可选字段越多，分数越高。
-        :return: 最符合条件的JSON对象（字典），如果找不到则返回None。
+        Returns:
+            提取的 JSON 对象或 None
         """
         if not isinstance(text, str):
-            self.logger.warning(
-                f"JsonParser: 输入不是字符串，而是 {type(text)} 类型，无法解析"
-            )
             return None
 
         if not text.strip():
-            self.logger.debug("JsonParser: 输入为空字符串")
             return None
 
         # 1) 分隔符处理
         json_part = text
         if separator in text:
-            self.logger.debug(f"JsonParser: 找到分隔符 '{separator}' 进行分割")
             parts = text.split(separator, 1)
             if len(parts) > 1:
                 json_part = parts[1].strip()
             else:
-                self.logger.warning("JsonParser: 分隔符后无内容")
                 return None
         else:
             self.logger.debug(f"JsonParser: 未找到分隔符 '{separator}'，将处理整个文本")
@@ -184,7 +139,7 @@ class JsonParser:
 
         # 3) 扫描所有平衡的大括号候选
         candidates = _find_json_candidates(json_part)
-        self.logger.debug(f"JsonParser: 扫描到可能的 JSON 候选数量: {len(candidates)}")
+        # 扫描候选
 
         # 4) 筛选与评分
         qualified_jsons = []
@@ -197,9 +152,6 @@ class JsonParser:
                 # 硬性条件：检查必须字段
                 if required_fields:
                     if not all(field in parsed_json for field in required_fields):
-                        self.logger.debug(
-                            f"候选JSON缺少必须字段，跳过: {candidate_str[:100]}..."
-                        )
                         continue
 
                 # 计算分数
@@ -208,13 +160,11 @@ class JsonParser:
                     score = sum(1 for field in optional_fields if field in parsed_json)
 
                 qualified_jsons.append({"json": parsed_json, "score": score})
-                self.logger.debug(f"一个候选JSON合格，得分: {score}")
 
             except json.JSONDecodeError:
                 continue  # 解析失败，不是有效的JSON，跳过
 
         if not qualified_jsons:
-            self.logger.warning("JsonParser: 所有候选均不满足要求（或解析失败）。")
             return None
 
         # 5) 决策：选择分数最高的，同分则取最后的
