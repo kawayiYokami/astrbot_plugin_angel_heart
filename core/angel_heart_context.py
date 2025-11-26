@@ -291,9 +291,7 @@ class AngelHeartContext:
                         ticket.set_result("KILL")  # 叫号：离开
 
                     # 清理扣押记录
-                    self.pending_futures.pop(chat_id, None)
-                    self.detention_timeout_timers.pop(chat_id, None)
-                    self.pending_events.pop(chat_id, None)
+                    self._cleanup_detention_resources(chat_id)
                     return  # 等候被撤回结束
 
                 # 【简化】检查老板是否已经空闲（门锁已包含冷却机制）
@@ -307,9 +305,7 @@ class AngelHeartContext:
                         ticket.set_result("PROCESS")  # 叫号：请进
 
                     # 清理扣押记录
-                    self.pending_futures.pop(chat_id, None)
-                    self.detention_timeout_timers.pop(chat_id, None)
-                    self.pending_events.pop(chat_id, None)
+                    self._cleanup_detention_resources(chat_id)
                     return  # 等候成功结束
 
                 # 老板还在忙，继续等
@@ -328,18 +324,36 @@ class AngelHeartContext:
                 ticket.set_result("KILL")  # 叫号：不好意思，今天不接待了
 
             # 清理扣押记录
-            self.pending_futures.pop(chat_id, None)
-            self.detention_timeout_timers.pop(chat_id, None)
-            self.pending_events.pop(chat_id, None)
+            self._cleanup_detention_resources(chat_id)
 
         except asyncio.CancelledError:
             logger.debug(f"AngelHeart[{chat_id}]: 等候被取消（老板直接叫号了）")
             # 清理事件记录
-            self.pending_events.pop(chat_id, None)
+            self._cleanup_detention_resources(chat_id)
         except Exception as e:
             logger.error(
                 f"AngelHeart[{chat_id}]: 等候处理出错: {e}", exc_info=True
             )
+
+    def _cleanup_detention_resources(self, chat_id: str):
+        """
+        清理单个会话的扣押相关资源
+
+        Args:
+            chat_id (str): 会话ID
+        """
+        # 清理扣押记录
+        self.pending_futures.pop(chat_id, None)
+        self.detention_timeout_timers.pop(chat_id, None)
+        self.pending_events.pop(chat_id, None)
+
+        # 清理门牌占用记录
+        self.processing_chats.pop(chat_id, None)
+
+        # 清理冷却期记录
+        self.lock_cooldown_until.pop(chat_id, None)
+
+        logger.debug(f"AngelHeart[{chat_id}]: 已清理该会话的所有扣押资源")
 
     # ========== V3: Patience Timer (Multi-Stage) ==========
 

@@ -544,6 +544,14 @@ class AngelHeartPlugin(Star):
                     logger.debug(f"AngelHeart[{chat_id}]: 已在terminate时取消耐心计时器")
             self.angel_context.patience_timers.clear()
 
+            # 清理门牌占用记录
+            self.angel_context.processing_chats.clear()
+            logger.debug("AngelHeart: 已在terminate时清理所有门牌占用记录")
+
+            # 清理冷却期记录
+            self.angel_context.lock_cooldown_until.clear()
+            logger.debug("AngelHeart: 已在terminate时清理所有冷却期记录")
+
             logger.info("AngelHeart: 所有等待资源已清理完成")
 
         except Exception as e:
