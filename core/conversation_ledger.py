@@ -1,6 +1,8 @@
 import time
 import threading
 import sqlite3
+import hashlib
+import aiohttp
 from pathlib import Path
 from typing import List, Dict, Tuple
 from . import utils
@@ -44,6 +46,7 @@ class ConversationLedger:
 
         # 创建缓存表（如果不存在）
         with self._db_lock:
+            # 旧的 URL 缓存表 (保留但不使用)
             self.db_cursor.execute("""
                 CREATE TABLE IF NOT EXISTS caption_cache (
                     url TEXT PRIMARY KEY,
@@ -51,8 +54,32 @@ class ConversationLedger:
                     timestamp REAL NOT NULL
                 )
             """)
+            # 新的 内容哈希 缓存表
+            self.db_cursor.execute("""
+                CREATE TABLE IF NOT EXISTS image_content_cache (
+                    hash TEXT PRIMARY KEY,
+                    caption TEXT NOT NULL,
+                    timestamp REAL NOT NULL
+                )
+            """)
             self.db_conn.commit()
         logger.info(f"AngelHeart: 图片转述缓存数据库已初始化于 {db_path}")
+
+    async def _download_and_hash(self, url: str) -> str:
+        """下载图片并计算SHA-256哈希值"""
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=10) as resp:
+                    if resp.status == 200:
+                        data = await resp.read()
+                        sha256_hash = hashlib.sha256(data).hexdigest()
+                        return sha256_hash
+                    else:
+                        logger.warning(f"下载图片失败 status={resp.status}: {url}")
+                        return ""
+        except Exception as e:
+            logger.warning(f"下载/哈希计算异常: {e}, URL: {url}")
+            return ""
 
     def _get_or_create_ledger(self, chat_id: str) -> Dict:
         """获取或创建指定会话的账本。"""
@@ -394,19 +421,24 @@ class ConversationLedger:
                     # 我们只处理第一张图片的URL作为缓存键
                     target_url = image_urls[0]
                     final_caption = ""
+                    img_hash = ""
 
-                    # 1. 查询 SQLite 缓存（在锁保护下执行）
-                    with self._db_lock:
-                        self.db_cursor.execute("SELECT caption FROM caption_cache WHERE url = ?", (target_url,))
-                        result = self.db_cursor.fetchone()
+                    # 1. 下载并计算哈希
+                    img_hash = await self._download_and_hash(target_url)
 
-                    if result:
-                        # 缓存命中
-                        final_caption = result[0]
-                        logger.info(f"AngelHeart[{chat_id}]: 图片转述缓存命中 (SQLite): {target_url[:100]}...")
-                    else:
-                        # 2. 缓存未命中，调用 LLM
-                        logger.debug(f"AngelHeart[{chat_id}]: 缓存未命中，调用LLM转述URL: {target_url[:100]}...")
+                    # 2. 查询 SQLite 哈希缓存（在锁保护下执行）
+                    if img_hash:
+                        with self._db_lock:
+                            self.db_cursor.execute("SELECT caption FROM image_content_cache WHERE hash = ?", (img_hash,))
+                            result = self.db_cursor.fetchone()
+
+                        if result:
+                            final_caption = result[0]
+                            logger.info(f"AngelHeart[{chat_id}]: 图片转述缓存命中 (Hash: {img_hash[:8]}...): {target_url[:50]}...")
+
+                    if not final_caption:
+                        # 3. 缓存未命中，调用 LLM
+                        logger.debug(f"AngelHeart[{chat_id}]: 缓存未命中(Hash: {img_hash[:8]}...)，调用LLM转述URL: {target_url[:50]}...")
                         llm_resp = await caption_provider.text_chat(
                             prompt=img_cap_prompt,
                             image_urls=[target_url],
@@ -415,22 +447,24 @@ class ConversationLedger:
                         if llm_resp and llm_resp.completion_text:
                             final_caption = llm_resp.completion_text.strip()
 
-                            # 3. 结果存入 SQLite 缓存（在锁保护下执行）
-                            try:
-                                with self._db_lock:
-                                    self.db_cursor.execute(
-                                        "INSERT INTO caption_cache (url, caption, timestamp) VALUES (?, ?, ?)",
-                                        (target_url, final_caption, time.time())
-                                    )
-                                    self.db_conn.commit()
-                                logger.info(f"AngelHeart[{chat_id}]: 新图片转述已缓存 (SQLite): {target_url[:100]}...")
-                            except sqlite3.IntegrityError:
-                                # 在极少数并发情况下，可能另一线程已插入，忽略即可
-                                logger.debug(f"AngelHeart[{chat_id}]: 图片转述缓存写入时发生IntegrityError，可能为并发写入，已忽略。")
+                            # 4. 结果存入 SQLite 哈希缓存（在锁保护下执行）
+                            if img_hash:
+                                try:
+                                    with self._db_lock:
+                                        self.db_cursor.execute(
+                                            "INSERT OR REPLACE INTO image_content_cache (hash, caption, timestamp) VALUES (?, ?, ?)",
+                                            (img_hash, final_caption, time.time())
+                                        )
+                                        self.db_conn.commit()
+                                    logger.info(f"AngelHeart[{chat_id}]: 新图片转述已缓存 (Hash: {img_hash[:8]}...): {target_url[:50]}...")
+                                except sqlite3.IntegrityError:
+                                    logger.debug(f"AngelHeart[{chat_id}]: 缓存写入冲突，已忽略")
+                            else:
+                                logger.warning(f"AngelHeart[{chat_id}]: 图片哈希为空，无法写入缓存")
                         else:
                             logger.warning(f"AngelHeart[{chat_id}]: 图片转述返回空结果")
 
-                    # 4. 将最终的转述结果（来自缓存或LLM）添加到消息中
+                    # 5. 将最终的转述结果（来自缓存或LLM）添加到消息中
                     if final_caption:
                         if self.add_caption_to_message(chat_id, message["timestamp"], final_caption):
                             processed_count += 1

@@ -3,6 +3,8 @@ AngelHeart 插件 - 时间相关工具函数
 """
 
 import time
+from datetime import datetime, timezone, timedelta
+
 # 条件导入：当缺少astrbot依赖时使用Mock
 try:
     from astrbot.api import logger
@@ -83,3 +85,22 @@ def format_relative_time(timestamp: float) -> str:
         # 超过一天，可以考虑返回日期，这里简化处理
         days = int(delta / 86400)
         return f" ({days}天前)"
+
+
+def get_beijing_time_str() -> str:
+    """
+    获取当前的东八区（北京）时间字符串。
+    格式: YYYY-MM-DD HH:MM:SS (周X)
+    """
+    # 创建东八区时区
+    beijing_tz = timezone(timedelta(hours=8))
+    now = datetime.now(beijing_tz)
+
+    # 格式化时间
+    time_str = now.strftime("%Y-%m-%d %H:%M:%S")
+
+    # 获取星期几
+    weekdays = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+    weekday_str = weekdays[now.weekday()]
+
+    return f"{time_str} ({weekday_str})"

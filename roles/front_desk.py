@@ -21,7 +21,9 @@ from typing import Any, List, Dict  # 导入类型提示
 
 # 导入公共工具函数和 ConversationLedger
 from ..core.utils import format_relative_time
+from ..core.utils import format_message_to_xml
 from ..core.utils import partition_dialogue_raw, format_final_prompt
+from ..core.utils import get_beijing_time_str
 from ..core.image_processor import ImageProcessor
 
 from ..core.fishing_direct_reply import FishingDirectReply
@@ -859,7 +861,8 @@ class FrontDesk:
         )
 
         # 生成聚焦指令
-        final_prompt_str = format_final_prompt(recent_dialogue, decision)
+        alias = self.config_manager.alias
+        final_prompt_str = format_final_prompt(recent_dialogue, decision, alias)
 
         # 如果决策需要回复且存在最近对话，则标记消息为已处理
         if decision and decision.should_reply and recent_dialogue:
@@ -869,86 +872,60 @@ class FrontDesk:
         # 3. 准备完整的对话历史 (Context)
         full_history = historical_context + recent_dialogue
 
-        # 4. 在最顶部添加群聊说明消息（避免某些模型不允许第一条消息是助理）
+        # 4. 在最顶部添加群聊说明消息和当前时间（避免某些模型不允许第一条消息是助理）
+        current_time_str = get_beijing_time_str()
         new_contexts = [
             {
                 "role": "user",
-                "content": [{"type": "text", "text": "这是一个群聊场景。"}]
+                "content": [{"type": "text", "text": f"这是一个群聊场景。\n<当前时间>{current_time_str}</当前时间>"}]
             }
         ]
 
         # 5. 遍历 full_history 并动态注入元数据和图片转述
+        # 使用 XML 格式化增强 LLM 对上下文的理解
+        alias = self.config_manager.alias
+
         for msg in full_history:
-            if msg.get("role") == "user":
-                # 对于 user 消息，生成 header 并注入到 content 中
-                header = f"[群友: {msg.get('sender_name', '成员')}/{msg.get('sender_id', 'Unknown')}]{format_relative_time(msg.get('timestamp'))}: "
+            # 预处理消息内容：处理图片转述和多模态内容
+            # 使用深拷贝复制消息以进行修改，确保不污染原始数据
+            processed_msg = copy.deepcopy(msg)
+            original_content = processed_msg.get("content", [])
 
-                # 使用深拷贝复制 content 列表以进行修改，确保不污染原始数据
-                new_content = copy.deepcopy(msg.get("content", []))
-
-                # 【新增】处理图片转述 - 直接检查转述字段
-                image_caption = msg.get("image_caption")
-                if image_caption:
-                    # 有转述就无脑合并
-                    caption_text = f"[图片描述: {image_caption}]"
-
-                    # 移除所有图片组件
-                    new_content = [
-                        item for item in new_content if item.get("type") != "image_url"
-                    ]
-
-                    # 添加转述文本
-                    new_content.append({"type": "text", "text": caption_text})
-
-                    logger.debug(
-                        f"AngelHeart[{chat_id}]: 已将图片转述合成为文本: {caption_text[:50]}..."
-                    )
-
-                if isinstance(new_content, list) and new_content:
-                    # 找到第一个 text 组件并注入 header
-                    found_text = False
-                    for item in new_content:
-                        if item.get("type") == "text":
-                            item["text"] = header + item.get("text", "")
-                            found_text = True
-                            break
-                    # 如果没有 text 组件（纯图片），则在开头插入一个
-                    if not found_text:
-                        new_content.insert(0, {"type": "text", "text": header.strip()})
-
-                new_contexts.append({"role": "user", "content": new_content})
-            elif msg.get("role") == "assistant":
-                # 对 assistant 消息进行无条件图片移除和有条件转述合并
-                content = msg.get("content", "")
-
-                # 标准化 content 为列表格式
-                if isinstance(content, str):
-                    new_content = [{"type": "text", "text": content}]
-                elif isinstance(content, list):
-                    new_content = copy.deepcopy(content)
-                else:
-                    new_content = [{"type": "text", "text": str(content)}]
-
-                # 无条件移除所有图片组件
-                new_content = [item for item in new_content if item.get("type") != "image_url"]
-
-                # 有条件合并转述
-                image_caption = msg.get("image_caption")
-                if image_caption:
-                    caption_text = f"[图片描述: {image_caption}]"
-                    new_content.append({"type": "text", "text": caption_text})
-
-                # 【修复】将 new_content 列表转换为纯文本字符串
-                assistant_text = ""
-                for item in new_content:
-                    if item.get("type") == "text":
-                        assistant_text += item.get("text", "")
-
-                # 使用字符串作为 content，而不是列表
-                new_contexts.append({"role": "assistant", "content": assistant_text})
+            # 标准化 content 为列表格式
+            if isinstance(original_content, str):
+                content_list = [{"type": "text", "text": original_content}]
+            elif isinstance(original_content, list):
+                content_list = original_content
             else:
-                # 其他消息保持不变
-                new_contexts.append(msg)
+                content_list = [{"type": "text", "text": str(original_content)}]
+
+            # 处理图片转述
+            image_caption = processed_msg.get("image_caption")
+            if image_caption:
+                caption_text = f"[图片描述: {image_caption}]"
+                # 移除所有图片组件
+                content_list = [
+                    item for item in content_list if item.get("type") != "image_url"
+                ]
+                # 添加转述文本
+                content_list.append({"type": "text", "text": caption_text})
+
+                logger.debug(
+                    f"AngelHeart[{chat_id}]: 已将图片转述合成为文本: {caption_text[:50]}..."
+                )
+
+            # 更新消息内容为处理后的列表
+            processed_msg["content"] = content_list
+
+            # 调用 XML 格式化工具生成结构化文本
+            xml_content = format_message_to_xml(processed_msg, alias)
+
+            # 将 XML 内容作为纯文本消息添加到上下文
+            # 注意：这里我们构造一个新的消息对象，role保持不变，但content变成了包含XML的纯文本
+            new_contexts.append({
+                "role": msg.get("role", "user"),
+                "content": [{"type": "text", "text": xml_content}]
+            })
 
         # 6. 根据 Provider 的 modalities 配置过滤图片内容
         new_contexts = self.filter_images_for_provider(chat_id, new_contexts)

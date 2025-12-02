@@ -8,7 +8,7 @@ try:
 except ImportError:
     import logging
     logger = logging.getLogger(__name__)
-from ..core.utils import convert_content_to_string, format_relative_time, JsonParser
+from ..core.utils import convert_content_to_string, format_relative_time, JsonParser, format_message_for_llm
 from ..models.analysis_result import SecretaryDecision
 from .prompt_module_loader import PromptModuleLoader
 
@@ -195,9 +195,12 @@ class LLMAnalyzer:
         Returns:
             str: 构建好的提示词
         """
-        # 分别格式化历史上下文和最近对话
-        historical_text = self._format_conversation_history(historical_context)
-        recent_text = self._format_conversation_history(recent_dialogue)
+        # 分别格式化历史上下文和最近对话，并添加 XML 包裹
+        historical_body = self._format_conversation_history(historical_context)
+        recent_body = self._format_conversation_history(recent_dialogue)
+
+        historical_text = f"<已回应消息>\n{historical_body}\n</已回应消息>" if historical_body else ""
+        recent_text = f"<未回应消息>\n{recent_body}\n</未回应消息>" if recent_body else ""
 
         # 增强检查：如果历史文本为空，则记录警告日志
         if not historical_text and not recent_text:
@@ -441,70 +444,10 @@ class LLMAnalyzer:
                 )
                 continue  # 跳过分隔符本身，不添加到最终输出
 
-            # 使用新的辅助方法格式化单条消息
-            formatted_message = self._format_single_message(conv)
+            # 使用公共的工具函数格式化消息，确保使用统一的 XML 格式
+            alias = self.config_manager.alias if self.config_manager else "AngelHeart"
+            formatted_message = format_message_for_llm(conv, alias)
             lines.append(formatted_message)
 
         # 将所有格式化后的行连接成一个字符串并返回
         return "\n".join(lines)
-
-    def _format_single_message(self, conv: Dict) -> str:
-        """
-        格式化单条消息，生成统一的日志式格式。
-
-        Args:
-            conv (Dict): 包含消息信息的字典。
-
-        Returns:
-            str: 格式化后的消息字符串。
-        """
-        role = conv.get("role")
-        content = conv.get("content", "")
-
-        if role == "assistant":
-            # 助理消息格式: [助理]\n[内容: 文本]\n{content}
-            formatted_content = convert_content_to_string(content)
-            return f"[助理]\n[内容: 文本]\n{formatted_content}"
-        elif role == "user":
-            # 用户消息需要区分来源
-            # 检查是否包含sender_name字段，这通常意味着来自FrontDesk的缓存消息
-            if "sender_name" in conv:
-                # 来自缓存的新消息
-                sender_id = conv.get("sender_id", "Unknown")
-                sender_name = conv.get("sender_name", "成员")
-                timestamp = conv.get("timestamp")
-                relative_time_str = format_relative_time(timestamp)
-                formatted_content = convert_content_to_string(content)
-
-                # 新格式: [群友: 昵称 (ID: ...)] (相对时间)\n[内容: 类型]\n实际内容
-                header = f"[群友: {sender_name} (ID: {sender_id})]{relative_time_str}"
-
-                # 简单判断内容类型，这里可以更复杂
-                content_type = "文本"
-                if isinstance(content, str) and content.startswith("[图片]"):
-                    content_type = "图片"
-                elif isinstance(content, list):
-                    # 如果content是列表，convert_content_to_string会处理成字符串
-                    # 我们可以检查转换后的字符串是否包含[图片]
-                    temp_str = convert_content_to_string(content)
-                    if "[图片]" in temp_str:
-                        content_type = "图片"
-
-                return f"{header}\n[内容: {content_type}]\n{formatted_content}"
-            else:
-                # 来自数据库的历史消息
-                formatted_content = convert_content_to_string(content)
-                # 历史消息格式: [群友: (历史记录)]\n[内容: 类型]\n实际内容
-                header = "[群友: (历史记录)]"
-
-                # 同样判断内容类型
-                content_type = "文本"
-                if isinstance(formatted_content, str) and "[图片]" in formatted_content:
-                    content_type = "图片"
-
-                return f"{header}\n[内容: {content_type}]\n{formatted_content}"
-        else:
-            # 对于其他角色（如system等），可以考虑跳过或给予默认名称
-            # 这里为了简化，我们给一个通用名称
-            formatted_content = convert_content_to_string(content)
-            return f"[{role}]\n[内容: 文本]\n{formatted_content}"

@@ -5,6 +5,7 @@ AngelHeart 插件 - 消息处理相关工具函数
 
 from .content_utils import convert_content_to_string
 from .time_utils import format_relative_time
+from .xml_formatter import format_message_to_text
 
 # 条件导入：当缺少astrbot依赖时使用Mock
 try:
@@ -44,6 +45,7 @@ def prune_old_messages(
 def format_message_for_llm(msg: dict, alias: str) -> str:
     """
     按照轻量模型能看到的格式格式化消息。
+    生成文本格式，供上层调用者决定是否添加 XML 包裹。
 
     Args:
         msg (dict): 消息字典，包含 role, content, sender_name, sender_id, timestamp 等字段。
@@ -52,51 +54,7 @@ def format_message_for_llm(msg: dict, alias: str) -> str:
     Returns:
         str: 格式化后的消息字符串。
     """
-    role = msg.get("role")
-    content = msg.get("content", "")
-
-    if role == "assistant":
-        # 助理消息格式: [助理: {alias}]\n[内容: 文本]\n{content}
-        formatted_content = convert_content_to_string(content)
-        return f"[助理: {alias}]\n[内容: 文本]\n{formatted_content}"
-    elif role == "user":
-        # 用户消息需要区分来源
-        if "sender_name" in msg:
-            # 来自缓存的新消息
-            sender_id = msg.get("sender_id", "Unknown")
-            sender_name = msg.get("sender_name", "成员")
-            timestamp = msg.get("timestamp")
-            relative_time_str = format_relative_time(timestamp)
-            formatted_content = convert_content_to_string(content)
-
-            # 判断内容类型
-            content_type = "文本"
-            if isinstance(content, str) and content.startswith("[图片]"):
-                content_type = "图片"
-            elif isinstance(content, list):
-                temp_str = convert_content_to_string(content)
-                if "[图片]" in temp_str:
-                    content_type = "图片"
-
-            # 新格式: [群友: 昵称 (ID: ...)] (相对时间)\n[内容: 类型]\n实际内容
-            header = f"[群友: {sender_name} (ID: {sender_id})]{relative_time_str}"
-            return f"{header}\n[内容: {content_type}]\n{formatted_content}"
-        else:
-            # 来自数据库的历史消息
-            formatted_content = convert_content_to_string(content)
-            # 历史消息格式: [群友: (历史记录)]\n[内容: 类型]\n实际内容
-            header = "[群友: (历史记录)]"
-
-            # 判断内容类型
-            content_type = "文本"
-            if isinstance(formatted_content, str) and "[图片]" in formatted_content:
-                content_type = "图片"
-
-            return f"{header}\n[内容: {content_type}]\n{formatted_content}"
-    else:
-        # 对于其他角色
-        formatted_content = convert_content_to_string(content)
-        return f"[{role}]\n[内容: 文本]\n{formatted_content}"
+    return format_message_to_text(msg, alias)
 
 
 def serialize_message_chain(message_chain) -> list:
