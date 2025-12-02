@@ -26,6 +26,7 @@ except ImportError:
 
     logger = logging.getLogger(__name__)
 from astrbot.core.message.components import Plain, At, AtAll, Reply
+from astrbot.api.event import MessageChain
 
 from .core.config_manager import ConfigManager
 from .roles.front_desk import FrontDesk
@@ -115,7 +116,11 @@ class AngelHeartPlugin(Star):
                     f"AngelHeart[{chat_id}]: 处理 angelheart_context 时发生意外错误: {e}"
                 )
 
-        # 1. 从秘书那里获取决策
+        # 1. 检查是否存在未执行的工具调用反馈
+        # (这部分逻辑通常在 AstrBot 框架层面处理，但我们需要在这里确保拟人化反馈)
+        # 注意：这里主要处理 on_llm_request，工具反馈通常在 on_llm_response
+
+        # 2. 从秘书那里获取决策
         decision = self.secretary.get_decision(chat_id)
 
         # 2. 检查决策是否存在且有效
@@ -175,9 +180,10 @@ class AngelHeartPlugin(Star):
     async def capture_tool_results(
         self, event: AstrMessageEvent, response: LLMResponse
     ):
-        """捕获工具调用和结果，存储到天使之心对话总账"""
+        """捕获工具调用和结果，存储到天使之心对话总账，并处理拟人化反馈"""
         chat_id = event.unified_msg_origin
 
+        # --- 原有逻辑：捕获工具结果 ---
         # 获取 ProviderRequest 中的 tool_calls_result
         provider_request = event.get_extra("provider_request")
 
@@ -195,6 +201,8 @@ class AngelHeartPlugin(Star):
                 for tool_result in tool_results_list:
                     # 1. 存储助手的工具调用消息（保持完整的toolcall结构）
                     tool_calls_info = tool_result.tool_calls_info
+
+                    # --- 新增：拟人化反馈逻辑 ---
                     assistant_tool_msg = {
                         "role": tool_calls_info.role,  # "assistant"
                         "content": tool_calls_info.content,  # 可能为None

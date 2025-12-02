@@ -199,8 +199,8 @@ class LLMAnalyzer:
         historical_body = self._format_conversation_history(historical_context)
         recent_body = self._format_conversation_history(recent_dialogue)
 
-        historical_text = f"<已回应消息>\n{historical_body}\n</已回应消息>" if historical_body else ""
-        recent_text = f"<未回应消息>\n{recent_body}\n</未回应消息>" if recent_body else ""
+        historical_text = f"<已回应消息>\n{historical_body}\n</已回应消息>" if historical_body else " "
+        recent_text = f"<未回应消息>\n{recent_body}\n</未回应消息>" if recent_body else " "
 
         # 增强检查：如果历史文本为空，则记录警告日志
         if not historical_text and not recent_text:

@@ -245,9 +245,10 @@ def format_final_prompt(recent_dialogue: List[Dict], decision: 'SecretaryDecisio
     from .time_utils import get_beijing_time_str
 
     # 1. 将需要回应的新对话格式化为文本字符串（带 XML 包裹）
-    # 使用统一的格式增强 LLM 对对话上下文的理解，明确标记为未回应消息
+    # 使用统一的格式增强 LLM 对对话上下文的理解
+    # 修正：只为 recent_dialogue（待回应消息）使用XML包裹，历史记录不再使用XML，防止LLM复读XML标签
     dialogue_str = "\n".join([
-        format_message_to_xml(msg, alias, wrapper_tag="未回应消息")
+        format_message_to_xml(msg, alias, wrapper_tag="消息")
         for msg in recent_dialogue
     ])
 
