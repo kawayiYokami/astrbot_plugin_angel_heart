@@ -95,24 +95,24 @@ def partition_dialogue(
     # _get_or_create_ledger 是 protected, 但在这里为了重构暂时使用
     # 使用公共方法获取消息
     all_messages = ledger.get_all_messages(chat_id)
-    
+
     # 对所有消息进行工具调用压缩处理（在锁外）
     processed_messages = []
     for msg in all_messages:
         processed_msg = _compress_tool_message(msg)
         processed_messages.append(processed_msg)
-    
+
     # 根据 is_processed 标志进行分割
     historical_context = [m for m in processed_messages if m.get("is_processed", False)]
     recent_dialogue = [m for m in processed_messages if not m.get("is_processed", False)]
-    
+
     # 边界时间戳是新对话中最后一条消息的时间戳
     boundary_ts = 0.0
     if recent_dialogue:
         # 为确保准确，最好在取最后一个元素前按时间戳排序
         recent_dialogue.sort(key=lambda m: m.get("timestamp", 0))
         boundary_ts = recent_dialogue[-1].get("timestamp", 0.0)
-    
+
     return historical_context, recent_dialogue, boundary_ts
 
 
@@ -221,31 +221,33 @@ def partition_dialogue_raw(
     """
     # 使用公共方法获取消息
     all_messages = ledger.get_all_messages(chat_id)
-    
+
     # 不进行任何压缩处理，保留原始消息结构
     # 直接根据 is_processed 标志进行分割
     historical_context = [m for m in all_messages if m.get("is_processed", False)]
     recent_dialogue = [m for m in all_messages if not m.get("is_processed", False)]
-    
+
     # 边界时间戳是新对话中最后一条消息的时间戳
     boundary_ts = 0.0
     if recent_dialogue:
         # 为确保准确，最好在取最后一个元素前按时间戳排序
         recent_dialogue.sort(key=lambda m: m.get("timestamp", 0))
         boundary_ts = recent_dialogue[-1].get("timestamp", 0.0)
-    
+
     return historical_context, recent_dialogue, boundary_ts
 
 
-def format_final_prompt(recent_dialogue: List[Dict], decision: 'SecretaryDecision') -> str:
+def format_final_prompt(recent_dialogue: List[Dict], decision: 'SecretaryDecision', alias: str = "AngelHeart") -> str:
     """
     为大模型生成最终的、自包含的用户指令字符串 (Prompt)。
     """
-    from .content_utils import convert_content_to_string
+    from .xml_formatter import format_message_to_xml
+    from .time_utils import get_beijing_time_str
 
-    # 1. 将需要回应的新对话格式化为字符串
+    # 1. 将需要回应的新对话格式化为文本字符串（带 XML 包裹）
+    # 使用统一的格式增强 LLM 对对话上下文的理解，明确标记为未回应消息
     dialogue_str = "\n".join([
-        f"{msg.get('sender_name', '未知用户')}：{convert_content_to_string(msg.get('content', ''))}"
+        format_message_to_xml(msg, alias, wrapper_tag="未回应消息")
         for msg in recent_dialogue
     ])
 
@@ -254,11 +256,19 @@ def format_final_prompt(recent_dialogue: List[Dict], decision: 'SecretaryDecisio
     target = decision.reply_target
     strategy = decision.reply_strategy
 
+    # 获取当前时间
+    current_time = get_beijing_time_str()
+
     # 3. 组装最终的 Prompt 字符串
-    prompt = f"""需要你分析的最新对话（这是你唯一需要回应的对话，过去的对话已经过去了，仅供参考）
+    prompt = f"""<提醒>
+需要你分析的最新对话（这是你唯一需要回应的对话，过去的对话已经过去了，仅供参考）
+<当前时间>{current_time}</当前时间>
+</提醒>
 ---
 {dialogue_str}
 ---
-任务指令：请根据以上对话历史，围绕核心话题 '{topic}'，向 '{target}' 执行以下策略：'{strategy}'。"""
+<指令>
+请根据以上对话历史，围绕核心话题 '{topic}'，向 '{target}' 执行以下策略：'{strategy}'。
+</指令>"""
 
     return prompt
