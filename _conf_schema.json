@@ -169,5 +169,11 @@
     "description": "[调试功能] 调试模式",
     "hint": "启用后，分析器建议回复时仅记录日志，不会回复。",
     "default": false
+  },
+  "strip_markdown_enabled": {
+    "type": "bool",
+    "description": "[基础配置] 启用Markdown清洗",
+    "hint": "启用后，会在发送消息前自动去除Markdown格式（如**加粗**等），使消息更适合QQ显示。",
+    "default": true
   }
 }
