@@ -59,6 +59,11 @@ class ConfigManager:
         return self._config.get("debug_mode", False)
 
     @property
+    def strip_markdown_enabled(self) -> bool:
+        """是否启用Markdown清洗"""
+        return self._config.get("strip_markdown_enabled", True)
+
+    @property
     def alias(self) -> str:
         """AI助手的昵称"""
         return self._config.get("alias", "AngelHeart")
