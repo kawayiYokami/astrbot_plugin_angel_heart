@@ -1,8 +1,9 @@
 import time
 import threading
 import sqlite3
-import hashlib
 import aiohttp
+import io
+from PIL import Image
 from pathlib import Path
 from typing import List, Dict, Tuple
 from . import utils
@@ -54,10 +55,12 @@ class ConversationLedger:
                     timestamp REAL NOT NULL
                 )
             """)
-            # 新的 内容哈希 缓存表
+            # 新的 内容哈希 缓存表 (dHash)
+            # 重新建表以确保 Schema 匹配 dHash 格式
+            self.db_cursor.execute("DROP TABLE IF EXISTS image_content_cache")
             self.db_cursor.execute("""
                 CREATE TABLE IF NOT EXISTS image_content_cache (
-                    hash TEXT PRIMARY KEY,
+                    dhash TEXT PRIMARY KEY,
                     caption TEXT NOT NULL,
                     timestamp REAL NOT NULL
                 )
@@ -65,20 +68,104 @@ class ConversationLedger:
             self.db_conn.commit()
         logger.info(f"AngelHeart: 图片转述缓存数据库已初始化于 {db_path}")
 
-    async def _download_and_hash(self, url: str) -> str:
-        """下载图片并计算SHA-256哈希值"""
+    def _compute_dhash(self, image_data: bytes) -> str:
+        """计算图片的差值哈希 (dHash)"""
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, timeout=10) as resp:
-                    if resp.status == 200:
-                        data = await resp.read()
-                        sha256_hash = hashlib.sha256(data).hexdigest()
-                        return sha256_hash
-                    else:
-                        logger.warning(f"下载图片失败 status={resp.status}: {url}")
-                        return ""
+            # 1. 加载图片
+            img = Image.open(io.BytesIO(image_data))
+
+            # 2. 转为灰度图
+            img = img.convert("L")
+
+            # 3. 缩放到 9x8 (这样可以得到 8x8 的差值)
+            img = img.resize((9, 8), Image.Resampling.LANCZOS)
+
+            # 4. 计算差异值
+            diff = []
+            width, height = img.size
+            pixels = list(img.getdata())
+
+            for row in range(height):
+                for col in range(width - 1):
+                    # 获取当前像素索引和右侧像素索引
+                    pixel_left_idx = row * width + col
+                    pixel_right_idx = pixel_left_idx + 1
+                    # 如果左边比右边亮，记录1，否则0
+                    diff.append(pixels[pixel_left_idx] > pixels[pixel_right_idx])
+
+            # 5. 转为十六进制字符串
+            decimal_value = 0
+            for index, value in enumerate(diff):
+                if value:
+                    decimal_value += 1 << index
+
+            return hex(decimal_value)[2:]
+
         except Exception as e:
-            logger.warning(f"下载/哈希计算异常: {e}, URL: {url}")
+            logger.warning(f"dHash计算失败: {e}")
+            return ""
+
+    async def _download_and_compute_dhash(self, url: str) -> str:
+        """下载图片并计算 dHash"""
+        try:
+            # 1. 处理本地文件
+            if url.startswith("file:///"):
+                import os
+                path = url[8:]  # 移除 'file:///'
+
+                # 安全检查：验证路径
+                if '..' in path or path.startswith('/etc') or path.startswith('/sys'):
+                    logger.warning(f"拒绝访问受限路径: {path}")
+                    return ""
+
+                # 处理 Windows 路径 (file:///C:/path -> C:/path)
+                if os.name == 'nt' and len(path) > 2 and path[1] == ':':
+                    pass # Windows 绝对路径
+                elif os.name == 'nt' and path.startswith('/'): # file:///d:/path -> /d:/path -> d:/path
+                    path = path[1:]
+
+                if os.path.exists(path):
+                    # 限制文件大小（例如 10MB）
+                    if os.path.getsize(path) > 10 * 1024 * 1024:
+                        logger.warning(f"文件过大，拒绝处理: {path}")
+                        return ""
+
+                    with open(path, "rb") as f:
+                        data = f.read()
+                    return self._compute_dhash(data)
+                else:
+                    logger.warning(f"本地文件不存在: {path}")
+                    return ""
+
+            # 2. 处理网络文件
+            elif url.startswith("http"):
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url, timeout=10) as resp:
+                        if resp.status == 200:
+                            data = await resp.read()
+                            return self._compute_dhash(data)
+                        else:
+                            logger.warning(f"下载图片失败 status={resp.status}: {url}")
+                            return ""
+
+            # 3. 处理 Base64 数据
+            elif url.startswith("data:image"):
+                import base64
+                # data:image/jpeg;base64,xxxxxx
+                try:
+                    header, encoded = url.split(",", 1)
+                    data = base64.b64decode(encoded)
+                    return self._compute_dhash(data)
+                except Exception as e:
+                    logger.warning(f"Base64解码失败: {e}")
+                    return ""
+
+            else:
+                 logger.warning(f"不支持的URL协议: {url[:20]}...")
+                 return ""
+
+        except Exception as e:
+            logger.warning(f"下载/dHash计算异常: {e}, URL: {url}")
             return ""
 
     def _get_or_create_ledger(self, chat_id: str) -> Dict:
@@ -421,24 +508,24 @@ class ConversationLedger:
                     # 我们只处理第一张图片的URL作为缓存键
                     target_url = image_urls[0]
                     final_caption = ""
-                    img_hash = ""
+                    img_dhash = ""
 
-                    # 1. 下载并计算哈希
-                    img_hash = await self._download_and_hash(target_url)
+                    # 1. 下载并计算 dHash
+                    img_dhash = await self._download_and_compute_dhash(target_url)
 
-                    # 2. 查询 SQLite 哈希缓存（在锁保护下执行）
-                    if img_hash:
+                    # 2. 查询 SQLite dHash 缓存（在锁保护下执行）
+                    if img_dhash:
                         with self._db_lock:
-                            self.db_cursor.execute("SELECT caption FROM image_content_cache WHERE hash = ?", (img_hash,))
+                            self.db_cursor.execute("SELECT caption FROM image_content_cache WHERE dhash = ?", (img_dhash,))
                             result = self.db_cursor.fetchone()
 
                         if result:
                             final_caption = result[0]
-                            logger.info(f"AngelHeart[{chat_id}]: 图片转述缓存命中 (Hash: {img_hash[:8]}...): {target_url[:50]}...")
+                            logger.info(f"AngelHeart[{chat_id}]: 图片转述缓存命中 (dHash: {img_dhash}): {target_url[:50]}...")
 
                     if not final_caption:
                         # 3. 缓存未命中，调用 LLM
-                        logger.debug(f"AngelHeart[{chat_id}]: 缓存未命中(Hash: {img_hash[:8]}...)，调用LLM转述URL: {target_url[:50]}...")
+                        logger.debug(f"AngelHeart[{chat_id}]: 缓存未命中(dHash: {img_dhash})，调用LLM转述URL: {target_url[:50]}...")
                         llm_resp = await caption_provider.text_chat(
                             prompt=img_cap_prompt,
                             image_urls=[target_url],
@@ -447,20 +534,20 @@ class ConversationLedger:
                         if llm_resp and llm_resp.completion_text:
                             final_caption = llm_resp.completion_text.strip()
 
-                            # 4. 结果存入 SQLite 哈希缓存（在锁保护下执行）
-                            if img_hash:
+                            # 4. 结果存入 SQLite dHash 缓存（在锁保护下执行）
+                            if img_dhash:
                                 try:
                                     with self._db_lock:
                                         self.db_cursor.execute(
-                                            "INSERT OR REPLACE INTO image_content_cache (hash, caption, timestamp) VALUES (?, ?, ?)",
-                                            (img_hash, final_caption, time.time())
+                                            "INSERT OR REPLACE INTO image_content_cache (dhash, caption, timestamp) VALUES (?, ?, ?)",
+                                            (img_dhash, final_caption, time.time())
                                         )
                                         self.db_conn.commit()
-                                    logger.info(f"AngelHeart[{chat_id}]: 新图片转述已缓存 (Hash: {img_hash[:8]}...): {target_url[:50]}...")
+                                    logger.info(f"AngelHeart[{chat_id}]: 新图片转述已缓存 (dHash: {img_dhash}): {target_url[:50]}...")
                                 except sqlite3.IntegrityError:
                                     logger.debug(f"AngelHeart[{chat_id}]: 缓存写入冲突，已忽略")
                             else:
-                                logger.warning(f"AngelHeart[{chat_id}]: 图片哈希为空，无法写入缓存")
+                                logger.warning(f"AngelHeart[{chat_id}]: 图片dHash为空，无法写入缓存")
                         else:
                             logger.warning(f"AngelHeart[{chat_id}]: 图片转述返回空结果")
 

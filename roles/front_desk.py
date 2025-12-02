@@ -23,7 +23,6 @@ from typing import Any, List, Dict  # 导入类型提示
 from ..core.utils import format_relative_time
 from ..core.utils import format_message_to_xml
 from ..core.utils import partition_dialogue_raw, format_final_prompt
-from ..core.utils import get_beijing_time_str
 from ..core.image_processor import ImageProcessor
 
 from ..core.fishing_direct_reply import FishingDirectReply
@@ -870,14 +869,13 @@ class FrontDesk:
             self.context.conversation_ledger.mark_as_processed(chat_id, boundary_ts)
 
         # 3. 准备完整的对话历史 (Context)
-        full_history = historical_context + recent_dialogue
+        # full_history = historical_context + recent_dialogue # 不再合并，分别处理
 
-        # 4. 在最顶部添加群聊说明消息和当前时间（避免某些模型不允许第一条消息是助理）
-        current_time_str = get_beijing_time_str()
+        # 4. 在最顶部添加群聊说明消息（避免某些模型不允许第一条消息是助理）
         new_contexts = [
             {
                 "role": "user",
-                "content": [{"type": "text", "text": f"这是一个群聊场景。\n<当前时间>{current_time_str}</当前时间>"}]
+                "content": [{"type": "text", "text": "这是一个群聊场景。"}]
             }
         ]
 
@@ -885,47 +883,59 @@ class FrontDesk:
         # 使用 XML 格式化增强 LLM 对上下文的理解
         alias = self.config_manager.alias
 
-        for msg in full_history:
-            # 预处理消息内容：处理图片转述和多模态内容
-            # 使用深拷贝复制消息以进行修改，确保不污染原始数据
-            processed_msg = copy.deepcopy(msg)
-            original_content = processed_msg.get("content", [])
+        # 定义辅助函数来处理消息列表
+        def process_messages(messages, wrapper_tag):
+            for msg in messages:
+                # 预处理消息内容：处理图片转述和多模态内容
+                # 使用深拷贝复制消息以进行修改，确保不污染原始数据
+                processed_msg = copy.deepcopy(msg)
+                original_content = processed_msg.get("content", [])
 
-            # 标准化 content 为列表格式
-            if isinstance(original_content, str):
-                content_list = [{"type": "text", "text": original_content}]
-            elif isinstance(original_content, list):
-                content_list = original_content
-            else:
-                content_list = [{"type": "text", "text": str(original_content)}]
+                # 标准化 content 为列表格式
+                if isinstance(original_content, str):
+                    content_list = [{"type": "text", "text": original_content}]
+                elif isinstance(original_content, list):
+                    content_list = original_content
+                else:
+                    content_list = [{"type": "text", "text": str(original_content)}]
 
-            # 处理图片转述
-            image_caption = processed_msg.get("image_caption")
-            if image_caption:
-                caption_text = f"[图片描述: {image_caption}]"
-                # 移除所有图片组件
-                content_list = [
-                    item for item in content_list if item.get("type") != "image_url"
-                ]
-                # 添加转述文本
-                content_list.append({"type": "text", "text": caption_text})
+                # 处理图片转述
+                image_caption = processed_msg.get("image_caption")
+                if image_caption:
+                    caption_text = f"[图片描述: {image_caption}]"
+                    # 移除所有图片组件
+                    content_list = [
+                        item for item in content_list if item.get("type") != "image_url"
+                    ]
+                    # 添加转述文本
+                    content_list.append({"type": "text", "text": caption_text})
 
-                logger.debug(
-                    f"AngelHeart[{chat_id}]: 已将图片转述合成为文本: {caption_text[:50]}..."
-                )
+                    logger.debug(
+                        f"AngelHeart[{chat_id}]: 已将图片转述合成为文本: {caption_text[:50]}..."
+                    )
 
-            # 更新消息内容为处理后的列表
-            processed_msg["content"] = content_list
+                # 更新消息内容为处理后的列表
+                processed_msg["content"] = content_list
 
-            # 调用 XML 格式化工具生成结构化文本
-            xml_content = format_message_to_xml(processed_msg, alias)
+                # 强制将 tool 角色改为 user
+                role = msg.get("role", "user")
+                if role == "tool":
+                    role = "user"
 
-            # 将 XML 内容作为纯文本消息添加到上下文
-            # 注意：这里我们构造一个新的消息对象，role保持不变，但content变成了包含XML的纯文本
-            new_contexts.append({
-                "role": msg.get("role", "user"),
-                "content": [{"type": "text", "text": xml_content}]
-            })
+                # 调用 XML 格式化工具生成结构化文本，并应用 wrapper_tag
+                xml_content = format_message_to_xml(processed_msg, alias, wrapper_tag=wrapper_tag)
+
+                # 将 XML 内容作为纯文本消息添加到上下文
+                new_contexts.append({
+                    "role": role,
+                    "content": [{"type": "text", "text": xml_content}]
+                })
+
+        # 分别处理历史消息和最新消息
+        # 历史消息：完全纯文本，不加任何 wrapper_tag
+        process_messages(historical_context, None)
+        # 最新消息：加上 <消息> 标签作为 Prompt 强调
+        process_messages(recent_dialogue, "消息")
 
         # 6. 根据 Provider 的 modalities 配置过滤图片内容
         new_contexts = self.filter_images_for_provider(chat_id, new_contexts)
