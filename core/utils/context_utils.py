@@ -100,7 +100,8 @@ def partition_dialogue(
     processed_messages = []
     for msg in all_messages:
         processed_msg = _compress_tool_message(msg)
-        processed_messages.append(processed_msg)
+        if processed_msg:  # 只有在消息没有被丢弃时才添加
+            processed_messages.append(processed_msg)
 
     # 根据 is_processed 标志进行分割
     historical_context = [m for m in processed_messages if m.get("is_processed", False)]
@@ -116,75 +117,34 @@ def partition_dialogue(
     return historical_context, recent_dialogue, boundary_ts
 
 
-def _compress_tool_message(msg: Dict) -> Dict:
+def _compress_tool_message(msg: Dict) -> Union[Dict, None]:
     """
-    压缩工具调用相关的消息，便于秘书分析。
+    压缩或丢弃工具相关的消息，以便于秘书分析。
+    - 丢弃工具调用消息。
+    - 丢弃工具结果消息，以节省Token。
 
     Args:
         msg: 原始消息
 
     Returns:
-        压缩后的消息
+        消息字典，或 None (如果消息被丢弃)。
     """
-    # 创建消息副本，避免修改原始数据
-    compressed_msg = msg.copy()
+    role = msg.get("role")
 
-    # 处理工具结果消息 (role: "user" 且 sender_name: "tool_result")
-    if msg.get("role") == "user" and msg.get("sender_name") == "tool_result":
-        content = msg.get("content", "")
+    # 1. 丢弃工具结果消息 (role: "tool")
+    if role == "tool":
+        return None
 
-        # 处理 content 可能是列表的情况（多模态内容）
-        if isinstance(content, list):
-            # 提取所有文本内容
-            text_parts = []
-            for item in content:
-                if isinstance(item, dict) and item.get("type") == "text":
-                    text_parts.append(item.get("text", ""))
-            content = "".join(text_parts)
+    # 2. 丢弃旧的、被伪装的工具结果消息
+    if role == "user" and msg.get("sender_name") == "tool_result":
+        return None
 
-        # 移除"工具调用结果："前缀后压缩
-        if isinstance(content, str):
-            if content.startswith("工具调用结果："):
-                result_content = content[len("工具调用结果："):]
-                if len(result_content) > 20:
-                    compressed_msg["content"] = "工具调用结果：" + result_content[:20] + "..."
-                # 如果结果内容<=20字符，保持原样（不需要压缩）
-            elif len(content) > 20:
-                # 不以"工具调用结果："开头的普通内容，直接截断
-                compressed_msg["content"] = content[:20] + "..."
+    # 3. 丢弃工具调用消息 (assistant role with tool_calls)
+    if role == "assistant" and msg.get("tool_calls"):
+        return None
 
-    # 处理工具调用消息 (role: "assistant" 且 sender_name: "assistant" 且内容包含"调用")
-    # 新格式下，工具调用已经是纯文本，格式如："调用 function_name({args})"
-    elif msg.get("role") == "assistant" and msg.get("sender_name") == "assistant":
-        content = msg.get("content", "")
-
-        # 处理 content 可能是列表的情况（多模态内容）
-        if isinstance(content, list):
-            # 提取所有文本内容
-            text_parts = []
-            for item in content:
-                if isinstance(item, dict) and item.get("type") == "text":
-                    text_parts.append(item.get("text", ""))
-            content = "".join(text_parts)
-
-        # 如果内容以"调用"开头，说明这是工具调用消息
-        if content and isinstance(content, str) and content.startswith("调用 "):
-            # 提取函数名（不包含参数）来压缩
-            try:
-                # 格式: "调用 function_name({args})" 或 "调用 func1({args}); 调用 func2({args})"
-                tool_names = []
-                for call in content.split("; "):
-                    if call.startswith("调用 "):
-                        func_part = call[3:]  # 移除"调用 "
-                        func_name = func_part.split("(")[0] if "(" in func_part else func_part
-                        tool_names.append(func_name)
-
-                if tool_names:
-                    compressed_msg["content"] = f"[使用工具: {', '.join(tool_names)}]"
-            except Exception as e:
-                logger.warning(f"压缩工具调用消息失败: {e}, 保持原内容")
-
-    return compressed_msg
+    # 对于其他所有消息，保持原样
+    return msg
 
 
 def _generate_tool_description(tool_name: str, tool_args: Dict) -> str:
