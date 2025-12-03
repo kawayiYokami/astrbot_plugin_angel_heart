@@ -886,6 +886,27 @@ class FrontDesk:
         # 定义辅助函数来处理消息列表
         def process_messages(messages, wrapper_tag):
             for msg in messages:
+                # 检查是否为原生工具调用或结果，如果是，则直接保留，不进行文本化
+                is_tool_call = msg.get("role") == "assistant" and msg.get("tool_calls")
+                is_tool_result = msg.get("role") == "tool"
+
+                if is_tool_call:
+                    # 修复：将 ToolCall 对象转换为字典以兼容 Provider
+                    dict_msg = msg.copy()
+                    # 使用 .model_dump() 将 Pydantic 对象转换为字典
+                    dict_msg["tool_calls"] = [
+                        tc.model_dump() for tc in msg.get("tool_calls", [])
+                    ]
+                    new_contexts.append(dict_msg)
+                    continue
+
+                if is_tool_result:
+                    # 工具结果通常已经是字典，直接添加
+                    new_contexts.append(msg)
+                    continue
+
+                # --- 对非工具消息执行原有的文本化逻辑 ---
+
                 # 预处理消息内容：处理图片转述和多模态内容
                 # 使用深拷贝复制消息以进行修改，确保不污染原始数据
                 processed_msg = copy.deepcopy(msg)
@@ -917,18 +938,13 @@ class FrontDesk:
                 # 更新消息内容为处理后的列表
                 processed_msg["content"] = content_list
 
-                # 强制将 tool 角色改为 user
-                role = msg.get("role", "user")
-                if role == "tool":
-                    role = "user"
-
                 # 调用 XML 格式化工具生成结构化文本，并应用 wrapper_tag
                 xml_content = format_message_to_xml(processed_msg, alias, wrapper_tag=wrapper_tag)
 
                 # 将 XML 内容作为纯文本消息添加到上下文
                 new_contexts.append({
-                    "role": role,
-                    "content": [{"type": "text", "text": xml_content}]
+                    "role": msg.get("role", "user"), # 保持原始 role
+                    "content": xml_content # 修复：直接使用字符串，以兼容 Gemini Provider
                 })
 
         # 分别处理历史消息和最新消息

@@ -101,19 +101,9 @@ def format_message_to_text(
     elif role == "system":
         formatted_body = f"[系统通知]\n{text_content}"
 
-    # 4. Tool (工具结果) 消息处理
-    # 将工具结果伪装成群友（User）发言，确保模型能理解
-    elif role == "tool":
-        # 工具结果显示为系统通知或特殊用户
-        timestamp = msg.get("timestamp", 0)
-        relative_time = format_relative_time(timestamp)
-
-        # 使用特殊的 sender_name 和 sender_id 来标识这是工具结果
-        sender_name = msg.get("sender_name", "系统工具")
-        sender_id = msg.get("sender_id", "system_tool")
-
-        header = f"[{sender_name} (ID: {sender_id})]{relative_time}"
-        formatted_body = f"{header}\n[内容: 工具执行结果]\n{text_content}"
+    # 4. Tool (工具结果) 消息处理 - 此分支已废弃
+    # 由于已切换到原生工具调用格式，此处的文本化逻辑不再需要。
+    # 在 front_desk.py 中，role == "tool" 的消息会直接保留原始结构。
 
     # 5. 其他默认处理
     else:
