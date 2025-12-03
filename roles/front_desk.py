@@ -20,7 +20,6 @@ from astrbot.core.message.components import Image  # 导入 Image 和 Plain 组�
 from typing import Any, List, Dict  # 导入类型提示
 
 # 导入公共工具函数和 ConversationLedger
-from ..core.utils import format_relative_time
 from ..core.utils import format_message_to_xml
 from ..core.utils import partition_dialogue_raw, format_final_prompt
 from ..core.image_processor import ImageProcessor
@@ -157,8 +156,11 @@ class FrontDesk:
             ),
         }
 
-        # 7. 将消息添加到 Ledger
-        self.context.conversation_ledger.add_message(chat_id, new_message)
+        # 7. 检查AI是否不在场
+        is_not_present = self.context.is_not_present(chat_id)
+
+        # 8. 将消息添加到 Ledger，传递状态信息
+        self.context.conversation_ledger.add_message(chat_id, new_message, should_prune=is_not_present)
 
     async def handle_event(self, event: AstrMessageEvent):
         """
@@ -575,10 +577,7 @@ class FrontDesk:
                 # 使用公共方法更新消息列表
                 ledger.set_messages(chat_id, all_messages)
 
-                # 调试：检查消息状态
-                processed_count = sum(
-                    1 for m in all_messages if m.get("is_processed", False)
-                )
+
 
         except Exception as e:
             logger.error(f"AngelHeart[{chat_id}]: 补充历史消息失败: {e}")

@@ -213,6 +213,11 @@ class ConfigManager:
         """
         return self._config.get("leave_dense_reply", False)
 
+    @property
+    def max_conversation_tokens(self) -> int:
+        """当单个会话的估算Token数超过此限制时，触发清理。0为禁用。"""
+        return self._config.get("max_conversation_tokens", 100000)
+
     def get_config_summary(self) -> dict:
         """
         获取配置摘要，用于调试和监控
@@ -224,6 +229,7 @@ class ConfigManager:
             "basic": {
                 "waiting_time": self.waiting_time,
                 "cache_expiry": self.cache_expiry,
+                "max_conversation_tokens": self.max_conversation_tokens,
                 "alias": self.alias,
                 "analysis_on_mention_only": self.analysis_on_mention_only,
                 "comfort_words": self.comfort_words,

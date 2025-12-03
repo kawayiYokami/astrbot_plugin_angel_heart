@@ -21,14 +21,14 @@ class ConversationLedger:
     对话总账 - 插件内部权威的、唯一的对话记录中心。
     管理所有对话的完整历史，并以线程安全的方式处理状态。
     """
-    def __init__(self, cache_expiry: int, data_dir: Path):
+    def __init__(self, config_manager, data_dir: Path):
         import bisect
         self._lock = threading.Lock()
         # 专用于数据库操作的锁，保护并发访问 SQLite
         self._db_lock = threading.Lock()
         # 每个 chat_id 对应一个独立的账本
         self._ledgers: Dict[str, Dict] = {}
-        self.cache_expiry = cache_expiry
+        self.config_manager = config_manager
 
         # 每个会话的最大消息数量
         self.PER_CHAT_LIMIT = 1000
@@ -178,15 +178,17 @@ class ConversationLedger:
                 }
             return self._ledgers[chat_id]
 
-    def add_message(self, chat_id: str, message: Dict):
+    def add_message(self, chat_id: str, message: Dict, should_prune: bool = False):
         """
         向指定会话添加一条新消息。
         消息必须包含一个精确的 'timestamp' 字段。
-        """
-        # 1. 清理所有会话的过期消息
-        self._prune_all_expired_messages()
 
-        # 2. 添加新消息
+        Args:
+            chat_id: 会话ID
+            message: 消息字典
+            should_prune: 是否强制执行清理，默认为False
+        """
+        # 1. 添加新消息
         ledger = self._get_or_create_ledger(chat_id)
         with self._lock:
             # 添加一个字段标记消息是否已处理，如果未设置则默认为False
@@ -205,6 +207,14 @@ class ConversationLedger:
             if len(ledger["messages"]) > self.PER_CHAT_LIMIT:
                 # 保留最新的PER_CHAT_LIMIT条消息
                 ledger["messages"] = ledger["messages"][-self.PER_CHAT_LIMIT:]
+
+        # 2. 估算当前Token并判断是否需要清理
+        current_tokens = self._estimate_tokens(chat_id)
+        max_tokens = self.config_manager.max_conversation_tokens
+
+        # 如果上游指令要求清理，或者Token超限，则执行清理
+        if should_prune or (max_tokens > 0 and current_tokens > max_tokens):
+            self._prune_to_essentials(chat_id)
 
         # 3. 检查并限制总消息数量
         self._enforce_total_message_limit()
@@ -266,84 +276,6 @@ class ConversationLedger:
                 # 在完成所有标记后，更新“高水位标记”
                 ledger["last_processed_timestamp"] = boundary_timestamp
 
-    def _prune_expired_messages(self, chat_id: str):
-        """清理指定会话的过期消息。
-        确保至少保留最新的 MIN_RETAIN_COUNT 条消息，即使过期。
-        """
-        ledger = self._get_or_create_ledger(chat_id)
-        with self._lock:
-            current_time = time.time()
-            expiry_threshold = current_time - self.cache_expiry
-            all_messages = ledger["messages"]
-
-            # 如果总消息数不超过最小保留数量，跳过清理
-            if len(all_messages) <= self.MIN_RETAIN_COUNT:
-                return
-
-            # 按时间戳降序排序（最新的在前）
-            sorted_messages = sorted(all_messages, key=lambda m: m["timestamp"], reverse=True)
-
-            # 强制保留最新的 MIN_RETAIN_COUNT 条消息
-            retained_latest = sorted_messages[:self.MIN_RETAIN_COUNT]
-
-            # 对剩余消息进行正常的过期清理
-            remaining_messages = sorted_messages[self.MIN_RETAIN_COUNT:]
-            retained_remaining = [m for m in remaining_messages if m["timestamp"] > expiry_threshold]
-
-            # 合并保留的消息并按时间戳重新排序
-            new_messages = retained_latest + retained_remaining
-            new_messages.sort(key=lambda m: m["timestamp"])
-
-            ledger["messages"] = new_messages
-
-    def _prune_all_expired_messages(self):
-        """清理所有会话的过期消息，最小化锁争用"""
-        current_time = time.time()
-
-        # 收集需要处理的数据（快速持锁）
-        with self._lock:
-            chats_to_prune = [(cid, list(ld["messages"]))
-                              for cid, ld in self._ledgers.items()]
-
-        # 处理数据（释放锁）
-        pruned_data = {}
-        for chat_id, messages in chats_to_prune:
-            pruned_data[chat_id] = self._prune_messages_list(messages, current_time)
-
-        # 更新结果（再次持锁）
-        with self._lock:
-            for chat_id, pruned_messages in pruned_data.items():
-                if chat_id in self._ledgers:
-                    self._ledgers[chat_id]["messages"] = pruned_messages
-
-    def _prune_messages_list(self, messages: List[Dict], current_time: float) -> List[Dict]:
-        """处理单个消息列表的过期清理（无锁操作）"""
-        expiry_threshold = current_time - self.cache_expiry
-
-        # 将过期未处理的旧消息标记为已处理，避免干扰新消息分析
-        for msg in messages:
-            if not msg.get("is_processed", False) and msg["timestamp"] <= expiry_threshold:
-                msg["is_processed"] = True
-
-        # 如果总消息数不超过最小保留数量，跳过删除（但状态扭转已完成）
-        if len(messages) <= self.MIN_RETAIN_COUNT:
-            return messages
-
-        # 按时间戳降序排序（最新的在前）
-        sorted_messages = sorted(messages, key=lambda m: m["timestamp"], reverse=True)
-
-        # 强制保留最新的 MIN_RETAIN_COUNT 条消息
-        retained_latest = sorted_messages[:self.MIN_RETAIN_COUNT]
-
-        # 对剩余消息进行正常的过期清理
-        remaining_messages = sorted_messages[self.MIN_RETAIN_COUNT:]
-        retained_remaining = [m for m in remaining_messages if m["timestamp"] > expiry_threshold]
-
-        # 合并保留的消息并按时间戳重新排序
-        new_messages = retained_latest + retained_remaining
-        new_messages.sort(key=lambda m: m["timestamp"])
-
-        return new_messages
 
     def _enforce_total_message_limit(self):
         """强制执行总消息数量限制。
@@ -643,3 +575,109 @@ class ConversationLedger:
             return await self.generate_captions_for_chat(chat_id, caption_provider_id, astr_context)
 
         return 0
+
+    def _prune_to_essentials(self, chat_id: str):
+        """
+        精简会话消息，仅保留最新的7条非工具消息
+
+        Args:
+            chat_id: 会话ID
+        """
+        ledger = self._get_or_create_ledger(chat_id)
+        with self._lock:
+            # 1. 获取当前会话的所有消息
+            all_messages = ledger["messages"]
+
+            # 2. 筛选出所有非工具消息（role不为tool且不含tool_calls）
+            non_tool_messages = []
+            for msg in all_messages:
+                is_tool = msg.get("role") == "tool"
+                has_tool_calls = bool(msg.get("tool_calls"))
+                if not is_tool and not has_tool_calls:
+                    non_tool_messages.append(msg)
+
+            # 3. 如果非工具消息数量大于7，则只保留时间戳最新的7条
+            if len(non_tool_messages) > 7:
+                # 按时间戳降序排序（最新的在前）
+                non_tool_messages.sort(key=lambda m: m.get("timestamp", 0), reverse=True)
+                # 只保留最新的7条
+                essential_messages = non_tool_messages[:7]
+                # 按时间戳升序排序（恢复原始顺序）
+                essential_messages.sort(key=lambda m: m.get("timestamp", 0))
+
+                # 4. 用这批"精华消息"完全替换内存中该会话的整个消息列表
+                ledger["messages"] = essential_messages
+                logger.info(f"AngelHeart[{chat_id}]: 已精简会话消息，保留最新的7条非工具消息")
+
+    def _estimate_tokens(self, chat_id: str) -> int:
+        """
+        估算当前会话的Token数量
+
+        Args:
+            chat_id: 会话ID
+
+        Returns:
+            int: 估算的Token数量
+        """
+        ledger = self._get_or_create_ledger(chat_id)
+        with self._lock:
+            total_tokens = 0
+            messages = ledger["messages"]
+
+            for msg in messages:
+                # 获取消息内容
+                content = msg.get("content", "")
+
+                if isinstance(content, str):
+                    # 如果是字符串，直接计算
+                    total_tokens += self._count_tokens_in_text(content)
+                elif isinstance(content, list):
+                    # 如果是列表，遍历每个元素
+                    for item in content:
+                        if isinstance(item, dict):
+                            item_type = item.get("type", "")
+                            if item_type == "text":
+                                text = item.get("text", "")
+                                total_tokens += self._count_tokens_in_text(text)
+                            elif item_type == "image_url":
+                                # 图片内容估算为固定Token数
+                                total_tokens += 85  # OpenAI的图片Token估算
+
+                # 添加其他字段的Token估算
+                for key, value in msg.items():
+                    if key not in ["content", "timestamp", "is_processed"] and isinstance(value, str):
+                        total_tokens += self._count_tokens_in_text(value)
+
+            return total_tokens
+
+    def _count_tokens_in_text(self, text: str) -> int:
+        """
+        计算文本中的Token数量
+
+        Args:
+            text: 要计算的文本
+
+        Returns:
+            int: Token数量
+        """
+        if not text:
+            return 0
+
+        # 基于中英文字符不同权重的Token估算逻辑
+        chinese_chars = 0
+        english_chars = 0
+
+        for char in text:
+            # 中文字符（包括中文标点）
+            if '\u4e00' <= char <= '\u9fff' or char in '，。！？；：""''（）【】《》':
+                chinese_chars += 1
+            else:
+                english_chars += 1
+
+        # 估算规则（用户提供）：
+        # 1. 中文字符：每个字符约0.6个Token
+        # 2. 英文字符：每个字符约0.3个Token
+        # 3. 总Token数向上取整
+        tokens = chinese_chars * 0.6 + english_chars * 0.3
+
+        return int(tokens) + (1 if tokens % 1 > 0 else 0)
