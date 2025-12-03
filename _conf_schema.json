@@ -175,5 +175,11 @@
     "description": "[基础配置] 启用Markdown清洗",
     "hint": "启用后，会在发送消息前自动去除Markdown格式（如**加粗**等），使消息更适合QQ显示。",
     "default": true
+  },
+  "max_conversation_tokens": {
+    "type": "int",
+    "description": "[基础配置] 最大对话Token限制",
+    "hint": "当单个会话的估算Token数超过此限制时，将触发清理，仅保留最新的7条非工具消息。设置为0则禁用此功能。",
+    "default": 100000
   }
 }

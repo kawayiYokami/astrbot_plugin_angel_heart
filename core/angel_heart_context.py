@@ -5,7 +5,7 @@ AngelHeart 插件 - 全局上下文管理器
 
 import time
 import asyncio
-from typing import Dict, Optional
+from typing import Dict, Optional, Any
 from collections import OrderedDict
 
 try:
@@ -40,7 +40,7 @@ class AngelHeartContext:
 
         # 核心资源：对话总账
         self.conversation_ledger = ConversationLedger(
-            cache_expiry=config_manager.cache_expiry,
+            config_manager=config_manager,
             data_dir=data_dir
         )
 
@@ -54,7 +54,7 @@ class AngelHeartContext:
         # pending_futures[chat_id] = 等候牌（Future对象）
         self.pending_futures: Dict[str, asyncio.Future] = {}
         # pending_events[chat_id] = 正在等待的事件对象（用于检测事件是否被停止）
-        self.pending_events: Dict[str, any] = {}
+        self.pending_events: Dict[str, Any] = {}
         # dispatch_lock: 取号排队锁，防止来访者插队
         self.dispatch_lock: asyncio.Lock = asyncio.Lock()
 
@@ -396,7 +396,11 @@ class AngelHeartContext:
         self.patience_timers[chat_id] = asyncio.create_task(
             self._patience_timer_handler(chat_id)
         )
-        comfort_words = self.config_manager.comfort_words.split('|')
+        comfort_words_raw = self.config_manager.comfort_words
+        if not comfort_words_raw:
+            logger.warning(f"AngelHeart[{chat_id}]: comfort_words 配置为空，跳过安抚启动")
+            return
+        comfort_words = comfort_words_raw.split('|')
         logger.info(f"AngelHeart[{chat_id}]: 已启动安抚机制（{len(comfort_words)}次安抚，每隔{self.config_manager.patience_interval}秒一次）")
 
     async def cancel_patience_timer(self, chat_id: str):
