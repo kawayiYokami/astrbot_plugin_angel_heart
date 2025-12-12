@@ -20,14 +20,15 @@ from astrbot.core.message.components import Image  # 导入 Image 和 Plain 组�
 from typing import Any, List, Dict  # 导入类型提示
 
 # 导入公共工具函数和 ConversationLedger
-from ..core.utils import format_message_to_xml
 from ..core.utils import partition_dialogue_raw, format_final_prompt
 from ..core.image_processor import ImageProcessor
 
 from ..core.fishing_direct_reply import FishingDirectReply
+from ..core.message_processor import MessageProcessor
 
 # 导入状态枚举
 from ..core.angel_heart_status import AngelHeartStatus
+
 
 
 class FrontDesk:
@@ -853,156 +854,120 @@ class FrontDesk:
             # 出错时返回原始上下文，避免破坏流程
             return contexts
 
-    async def rewrite_prompt_for_llm(self, chat_id: str, req: Any):
+    def _get_conversation_data(self, chat_id: str):
         """
-        重构请求体，实现完整的对话历史格式化和指令注入。
+        获取对话数据：决策、最近对话、历史上下文
+        
+        Returns:
+            tuple: (decision, recent_dialogue, historical_context, boundary_ts)
         """
-        logger.debug(f"AngelHeart[{chat_id}]: 开始重构LLM请求体...")
-
-        # 1. 获取决策，如果不存在则无法继续
+        # 1. 获取决策
         decision = self.secretary.get_decision(chat_id)
         if not decision:
-            logger.debug(f"AngelHeart[{chat_id}]: 私聊不参与重构。")
-            return
-
-        # 2. 获取最近的对话数据（因为新模型没有recent_dialogue字段，需要从缓存获取）
-        # 这里需要重新获取对话数据，因为新的SecretaryDecision模型不再包含recent_dialogue字段
+            return None, None, None, None
+        
+        # 2. 获取最近的对话数据
         _, recent_dialogue, boundary_ts = self.context.conversation_ledger.get_context_snapshot(chat_id)
-
-        # 获取历史对话用于构建完整上下文（保留原始工具调用结构）
+        
+        # 3. 获取历史对话用于构建完整上下文
         historical_context, _, _ = partition_dialogue_raw(
             self.context.conversation_ledger, chat_id
         )
-
-        # 生成聚焦指令
-        alias = self.config_manager.alias
-        final_prompt_str = format_final_prompt(recent_dialogue, decision, alias)
-
-        # 如果决策需要回复且存在最近对话，则标记消息为已处理
+        
+        return decision, recent_dialogue, historical_context, boundary_ts
+    
+    def _generate_final_prompt(self, recent_dialogue: List[Dict], decision: Any, alias: str) -> str:
+        """生成聚焦指令"""
+        return format_final_prompt(recent_dialogue, decision, alias)
+    
+    def _mark_processed_if_needed(self, chat_id: str, decision: Any, recent_dialogue: List[Dict]):
+        """如果需要回复，标记消息为已处理"""
         if decision and decision.should_reply and recent_dialogue:
             boundary_ts = max(msg.get('timestamp', 0) for msg in recent_dialogue)
             self.context.conversation_ledger.mark_as_processed(chat_id, boundary_ts)
-
-        # 3. 准备完整的对话历史 (Context)
-        # full_history = historical_context + recent_dialogue # 不再合并，分别处理
-
-        # 4. 在最顶部添加群聊说明消息（避免某些模型不允许第一条消息是助理）
+    
+    def _build_contexts_with_processor(
+        self, 
+        processor: 'MessageProcessor', 
+        historical_context: List[Dict], 
+        recent_dialogue: List[Dict], 
+        chat_id: str
+    ) -> List[Dict]:
+        """使用 MessageProcessor 构建上下文列表"""
+        # 在最顶部添加群聊说明消息（避免某些模型不允许第一条消息是助理）
         new_contexts = [
             {
                 "role": "user",
                 "content": [{"type": "text", "text": "这是一个群聊场景。"}]
             }
         ]
-
-        # 5. 遍历 full_history 并动态注入元数据和图片转述
-        # 使用 XML 格式化增强 LLM 对上下文的理解
-        alias = self.config_manager.alias
-
-        # 定义辅助函数来处理消息列表
-        def process_messages(messages, wrapper_tag):
-            for msg in messages:
-                # 检查是否为原生工具调用或结果，如果是，则直接保留，不进行文本化
-                is_tool_call = msg.get("role") == "assistant" and msg.get("tool_calls")
-                is_tool_result = msg.get("role") == "tool"
-
-                if is_tool_call:
-                    # 修复：将 ToolCall 对象转换为字典以兼容 Provider
-                    dict_msg = msg.copy()
-                    # 使用 .model_dump() 将 Pydantic 对象转换为字典
-                    dict_msg["tool_calls"] = [
-                        tc.model_dump() for tc in msg.get("tool_calls", [])
-                    ]
-                    new_contexts.append(dict_msg)
-                    continue
-
-                if is_tool_result:
-                    # 工具结果通常已经是字典，直接添加
-                    new_contexts.append(msg)
-                    continue
-
-                # --- 对非工具消息执行原有的文本化逻辑 ---
-
-                # 预处理消息内容：处理图片转述和多模态内容
-                # 使用深拷贝复制消息以进行修改，确保不污染原始数据
-                processed_msg = copy.deepcopy(msg)
-                original_content = processed_msg.get("content", [])
-
-                # 标准化 content 为列表格式
-                if isinstance(original_content, str):
-                    content_list = [{"type": "text", "text": original_content}]
-                elif isinstance(original_content, list):
-                    content_list = original_content
-                else:
-                    content_list = [{"type": "text", "text": str(original_content)}]
-
-                # 处理图片转述
-                image_caption = processed_msg.get("image_caption")
-                if image_caption:
-                    caption_text = f"[图片描述: {image_caption}]"
-                    # 移除所有图片组件
-                    content_list = [
-                        item for item in content_list if item.get("type") != "image_url"
-                    ]
-                    # 添加转述文本
-                    content_list.append({"type": "text", "text": caption_text})
-
-                    logger.debug(
-                        f"AngelHeart[{chat_id}]: 已将图片转述合成为文本: {caption_text[:50]}..."
-                    )
-
-                # 更新消息内容为处理后的列表
-                processed_msg["content"] = content_list
-
-                # 调用 XML 格式化工具生成结构化文本，并应用 wrapper_tag
-                xml_content = format_message_to_xml(processed_msg, alias, wrapper_tag=wrapper_tag)
-
-                # --- 核心修复 v2 ---
-                # 提取原始的图片组件
-                image_components = []
-                if isinstance(original_content, list):
-                    image_components = [
-                        item for item in original_content if item.get("type") == "image_url"
-                    ]
-
-                final_content = None
-                # 根据是否存在图片，决定 content 的最终格式
-                if image_components:
-                    # 如果有图片，构建一个包含文本结构和图片的多模态列表
-                    final_content = [{"type": "text", "text": xml_content}]
-                    final_content.extend(image_components)
-                else:
-                    # 如果没有图片，为了兼容纯文本模型，直接使用字符串
-                    final_content = xml_content
-
-                # 将最终构建的 content 添加到上下文中
-                new_contexts.append({
-                    "role": msg.get("role", "user"), # 保持原始 role
-                    "content": final_content
-                })
-
+        
         # 分别处理历史消息和最新消息
         # 历史消息：完全纯文本，不加任何 wrapper_tag
-        process_messages(historical_context, None)
+        for msg in historical_context:
+            processed_msg = processor.process_message(msg, wrapper_tag=None)
+            new_contexts.append(processed_msg)
+        
         # 最新消息：加上 <消息> 标签作为 Prompt 强调
-        process_messages(recent_dialogue, "消息")
-
-        # 6. 根据 Provider 的 modalities 配置过滤图片内容
-        new_contexts = self.filter_images_for_provider(chat_id, new_contexts)
-
-        # 7. 完全覆盖原有的 contexts
-        req.contexts = new_contexts
-
-        # 8. 聚焦指令并赋值给 req.prompt
-        req.prompt = final_prompt_str
-
-        # 9. 清空 image_urls 并注入系统提示词
+        for msg in recent_dialogue:
+            processed_msg = processor.process_message(msg, wrapper_tag="消息")
+            new_contexts.append(processed_msg)
+        
+        return new_contexts
+    
+    def _update_request(
+        self, 
+        req: Any, 
+        contexts: List[Dict], 
+        final_prompt: str, 
+        alias: str
+    ):
+        """更新请求对象"""
+        # 完全覆盖原有的 contexts
+        req.contexts = contexts
+        
+        # 聚焦指令并赋值给 req.prompt
+        req.prompt = final_prompt
+        
+        # 清空 image_urls
         req.image_urls = []  # 图片已在 contexts 中
-
+        
         # 注入系统提示词
-        alias = self.config_manager.alias
         original_system_prompt = getattr(req, "system_prompt", "")
         new_system_prompt = f"{original_system_prompt}\n\n你正在一个群聊中扮演角色，你的昵称是 '{alias}'。"
         req.system_prompt = new_system_prompt
+
+    async def rewrite_prompt_for_llm(self, chat_id: str, req: Any):
+        """
+        重构请求体，实现完整的对话历史格式化和指令注入。
+        使用辅助方法和 MessageProcessor 类使逻辑更清晰。
+        """
+        logger.debug(f"AngelHeart[{chat_id}]: 开始重构LLM请求体...")
+
+        # 1. 获取对话数据
+        decision, recent_dialogue, historical_context, _ = self._get_conversation_data(chat_id)
+        if not decision:
+            logger.debug(f"AngelHeart[{chat_id}]: 私聊不参与重构。")
+            return
+
+        # 2. 生成聚焦指令
+        alias = self.config_manager.alias
+        final_prompt_str = self._generate_final_prompt(recent_dialogue, decision, alias)
+
+        # 3. 标记已处理消息（如果需要）
+        self._mark_processed_if_needed(chat_id, decision, recent_dialogue)
+
+        # 4. 使用 MessageProcessor 构建上下文
+        processor = MessageProcessor(alias)
+        new_contexts = self._build_contexts_with_processor(
+            processor, historical_context, recent_dialogue, chat_id
+        )
+
+        # 5. 根据 Provider 的 modalities 配置过滤图片内容
+        new_contexts = self.filter_images_for_provider(chat_id, new_contexts)
+
+        # 6. 更新请求对象
+        self._update_request(req, new_contexts, final_prompt_str, alias)
 
         logger.info(
             f"AngelHeart[{chat_id}]: LLM请求体已重构，采用'完整上下文+聚焦指令'模式。"

@@ -3,8 +3,6 @@ AngelHeart 插件 - 消息处理相关工具函数
 """
 
 
-from .content_utils import convert_content_to_string
-from .time_utils import format_relative_time
 from .xml_formatter import format_message_to_text
 
 # 条件导入：当缺少astrbot依赖时使用Mock
