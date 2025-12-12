@@ -116,5 +116,3 @@ def format_message_to_text(
         return formatted_body
 
 
-# 保持兼容性别名，但在新逻辑中应尽量使用 format_message_to_text
-format_message_to_xml = format_message_to_text

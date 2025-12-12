@@ -4,8 +4,8 @@ MessageProcessor - 前台消息处理器
 
 主要转换逻辑：
 1. 识别工具调用/结果消息：保持原始结构，确保兼容性
-2. 处理图片转述：将图片描述文本化，移除原始图片组件
-3. XML格式化：为消息添加结构化标签，增强 LLM 对上下文的理解
+2. 图片转述处理：使用 ConversationLedger 中已生成的 image_caption，移除原始图片组件
+3. 文本格式化：为消息添加结构化标签，增强 LLM 对上下文的理解
 4. 内容标准化：统一 content 字段格式，兼容纯文本和多模态模型
 
 输入：conversation_ledger.py 中的原始消息字典
@@ -15,7 +15,7 @@ MessageProcessor - 前台消息处理器
 import copy
 from typing import Any, List, Dict, Optional
 
-from .utils import format_message_to_xml
+from .utils import format_message_to_text
 
 
 class MessageProcessor:
@@ -25,8 +25,8 @@ class MessageProcessor:
     转换职责：
     - 工具调用识别与保留：保持 assistant 角色的 tool_calls 结构
     - 工具结果透传：保持 tool 角色的结果消息原样传递
-    - 图片转述处理：将 image_caption 转换为文本描述，适配纯文本模型
-    - XML 格式化：为消息添加结构化包装标签，区分历史/最新消息
+    - 图片转述处理：使用 ConversationLedger 中已生成的 image_caption，移除原始图片组件，适配纯文本模型
+    - 文本格式化：为消息添加结构化包装标签，区分历史/最新消息
     - 多模态内容构建：整合文本描述与原始图片组件，支持图片模型
     
     输入消息来自 conversation_ledger.py 的 get_context_snapshot() 方法
@@ -50,7 +50,7 @@ class MessageProcessor:
             处理后的消息字典，标准化为上游 Provider 可接受的格式：
             - 工具调用消息：保持 tool_calls 结构，转换为字典格式
             - 工具结果消息：保持原样传递
-            - 普通消息：处理图片转述，XML格式化，构建多模态/纯文本 content
+            - 普通消息：使用已有的图片转述，文本格式化，构建多模态/纯文本 content
         """
         # 检查是否为原生工具调用或结果，如果是，则直接保留
         if self._is_tool_call(msg):
@@ -83,15 +83,15 @@ class MessageProcessor:
         return msg.copy()
     
     def _handle_regular_message(self, msg: Dict[str, Any], wrapper_tag: Optional[str]) -> Dict[str, Any]:
-        """处理普通消息（包含图片转述、XML格式化等）"""
-        # 预处理消息内容：处理图片转述和多模态内容
+        """处理普通消息（使用已有的图片转述、文本格式化等）"""
+        # 预处理消息内容：使用已有的图片转述和多模态内容
         processed_msg = copy.deepcopy(msg)
         original_content = processed_msg.get("content", [])
         
         # 标准化 content 为列表格式
         content_list = self._normalize_content(original_content)
         
-        # 处理图片转述
+        # 使用 ConversationLedger 中已生成的图片转述
         image_caption = processed_msg.get("image_caption")
         if image_caption:
             content_list = self._apply_image_caption(content_list, image_caption)
@@ -99,8 +99,8 @@ class MessageProcessor:
         # 更新消息内容为处理后的列表
         processed_msg["content"] = content_list
         
-        # 调用 XML 格式化工具生成结构化文本
-        xml_content = format_message_to_xml(processed_msg, self.alias, wrapper_tag=wrapper_tag)
+        # 调用文本格式化工具生成结构化文本
+        xml_content = format_message_to_text(processed_msg, self.alias, wrapper_tag=wrapper_tag)
         
         # 提取原始的图片组件
         image_components = self._extract_image_components(original_content)
@@ -132,7 +132,7 @@ class MessageProcessor:
             return [{"type": "text", "text": str(content)}]
     
     def _apply_image_caption(self, content_list: List[Dict[str, Any]], image_caption: str) -> List[Dict[str, Any]]:
-        """应用图片转述：移除图片组件，添加转述文本"""
+        """使用 ConversationLedger 中已生成的 image_caption，移除图片组件，添加转述文本"""
         caption_text = f"[图片描述: {image_caption}]"
         # 移除所有图片组件
         filtered_list = [
