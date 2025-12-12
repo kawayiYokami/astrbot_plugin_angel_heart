@@ -821,6 +821,22 @@ class FrontDesk:
                             f"AngelHeart[{chat_id}]: 已过滤用户消息中的图片内容"
                         )
 
+                elif msg.get("role") == "assistant":
+                    # 对于 assistant 消息，强制将 content 转换为纯文本字符串
+                    content = filtered_msg.get("content", [])
+                    assistant_text = ""
+
+                    if isinstance(content, list):
+                        for item in content:
+                            if item.get("type") == "text":
+                                assistant_text += item.get("text", "")
+                    elif isinstance(content, str):
+                        assistant_text = content
+                    else:
+                        assistant_text = str(content)
+
+                    filtered_msg["content"] = assistant_text
+
                 filtered_contexts.append(filtered_msg)
 
             if images_filtered_count > 0:
@@ -940,10 +956,28 @@ class FrontDesk:
                 # 调用 XML 格式化工具生成结构化文本，并应用 wrapper_tag
                 xml_content = format_message_to_xml(processed_msg, alias, wrapper_tag=wrapper_tag)
 
-                # 将 XML 内容作为纯文本消息添加到上下文
+                # --- 核心修复 v2 ---
+                # 提取原始的图片组件
+                image_components = []
+                if isinstance(original_content, list):
+                    image_components = [
+                        item for item in original_content if item.get("type") == "image_url"
+                    ]
+
+                final_content = None
+                # 根据是否存在图片，决定 content 的最终格式
+                if image_components:
+                    # 如果有图片，构建一个包含文本结构和图片的多模态列表
+                    final_content = [{"type": "text", "text": xml_content}]
+                    final_content.extend(image_components)
+                else:
+                    # 如果没有图片，为了兼容纯文本模型，直接使用字符串
+                    final_content = xml_content
+
+                # 将最终构建的 content 添加到上下文中
                 new_contexts.append({
                     "role": msg.get("role", "user"), # 保持原始 role
-                    "content": xml_content # 修复：直接使用字符串，以兼容 Gemini Provider
+                    "content": final_content
                 })
 
         # 分别处理历史消息和最新消息
