@@ -439,11 +439,25 @@ class AngelHeartPlugin(Star):
                         logger.warning(f"AngelHeart[{chat_id}]: 无法提取任何文本内容，AI回复未被缓存")
 
             logger.debug(f"AngelHeart[{chat_id}]: 消息链中的Markdown格式清洗完成。")
-        finally:
-            # 在消息发送前，无论成功或失败，都取消耐心计时器并释放处理锁
-            await self.angel_context.cancel_patience_timer(chat_id)
+        except Exception as e:
+            logger.error(f"AngelHeart[{chat_id}]: strip_markdown_on_decorating_result 处理异常: {e}", exc_info=True)
+            # 不重新抛出异常，避免影响消息发送流程
 
-            # 处理状态转换：AI发送消息后转换到观测期
+    @filter.after_message_sent(priority=100)
+    async def handle_message_sent(self, event: AstrMessageEvent):
+        """
+        消息发送后处理：取消耐心计时器、状态转换、释放处理锁
+        
+        比 on_decorating_result 更可靠，因为即使消息链为空也会触发
+        """
+        chat_id = event.unified_msg_origin
+        try:
+            logger.debug(f"AngelHeart[{chat_id}]: 消息发送完成，开始后处理...")
+            
+            # 1. 取消耐心计时器
+            await self.angel_context.cancel_patience_timer(chat_id)
+            
+            # 2. 状态转换：AI发送消息后转换到观测期
             # 仅在消息链非空时才执行状态转换
             result = event.get_result()
             if result and result.chain:
@@ -453,11 +467,12 @@ class AngelHeartPlugin(Star):
                     logger.warning(f"AngelHeart[{chat_id}]: 状态转换处理异常: {e}")
             else:
                 logger.debug(f"AngelHeart[{chat_id}]: 消息链为空，跳过状态转换")
-
+            
+            # 3. 释放处理锁（设置冷却期）
             await self.angel_context.release_chat_processing(chat_id, set_cooldown=True)
-            logger.info(
-                f"AngelHeart[{chat_id}]: 任务处理完成，已在消息发送前释放处理锁。"
-            )
+            logger.info(f"AngelHeart[{chat_id}]: 任务处理完成，已在消息发送后释放处理锁。")
+        except Exception as e:
+            logger.error(f"AngelHeart[{chat_id}]: after_message_sent处理异常: {e}", exc_info=True)
 
     def _prepare_whitelist(self) -> set:
         """预处理白名单，将其转换为 set 以获得 O(1) 的查找性能。"""
