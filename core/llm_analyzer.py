@@ -8,7 +8,7 @@ try:
 except ImportError:
     import logging
     logger = logging.getLogger(__name__)
-from ..core.utils import convert_content_to_string, format_relative_time, JsonParser, format_message_for_llm
+from ..core.utils import JsonParser, format_message_for_llm
 from ..models.analysis_result import SecretaryDecision
 from .prompt_module_loader import PromptModuleLoader
 

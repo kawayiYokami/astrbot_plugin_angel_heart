@@ -26,7 +26,6 @@ except ImportError:
 
     logger = logging.getLogger(__name__)
 from astrbot.core.message.components import Plain, At, AtAll, Reply
-from astrbot.api.event import MessageChain
 
 from .core.config_manager import ConfigManager
 from .roles.front_desk import FrontDesk
