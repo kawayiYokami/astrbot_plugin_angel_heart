@@ -8,7 +8,7 @@ from .time_utils import get_latest_message_time, format_relative_time, get_beiji
 from .content_utils import convert_content_to_string, strip_markdown
 from .message_utils import prune_old_messages, format_message_for_llm
 from .context_utils import json_serialize_context, partition_dialogue, partition_dialogue_raw, format_final_prompt
-from .xml_formatter import format_message_to_xml
+from .xml_formatter import format_message_to_text
 from .json_parser import JsonParser
 
 # 导出所有函数和类
@@ -30,7 +30,7 @@ __all__ = [
     'json_serialize_context',
     'partition_dialogue',
     # XML 格式化相关
-    'format_message_to_xml',
+    'format_message_to_text',
     'partition_dialogue_raw',
     'format_final_prompt',
 
