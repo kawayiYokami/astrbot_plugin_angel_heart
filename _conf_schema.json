@@ -188,6 +188,12 @@
     "hint": "启用后，AI调用工具时会发送拟人化的提示消息。如果启用请关闭原生的工具提示！！",
     "default": false
   },
+  "tool_decoration_cooldown": {
+    "type": "float",
+    "description": "[工具调用提示] 工具修饰冷却时间（秒）",
+    "hint": "连续工具调用时，两次提示消息之间的最小间隔时间，避免刷屏。",
+    "default": 7.0
+  },
   "tool_decorations": {
     "type": "text",
     "description": "[工具调用提示] 工具修饰语配置",

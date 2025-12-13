@@ -224,6 +224,11 @@ class ConfigManager:
         return self._config.get("tool_decoration_enabled", False)
 
     @property
+    def tool_decoration_cooldown(self) -> float:
+        """工具修饰冷却时间（秒）"""
+        return self._config.get("tool_decoration_cooldown", 7.0)
+
+    @property
     def tool_decorations(self) -> dict:
         """工具修饰语配置字典"""
         import json

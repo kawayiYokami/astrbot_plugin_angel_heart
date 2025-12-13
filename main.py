@@ -61,6 +61,9 @@ class AngelHeartPlugin(Star):
         # 建立必要的相互引用
         self.front_desk.secretary = self.secretary
 
+        # -- 工具修饰冷却记录 --
+        self._tool_decoration_last_sent = {}  # {chat_id: timestamp}
+
         logger.info("💖 AngelHeart智能回复员初始化完成 (事件扣押机制 V2 已启用)")
 
     # --- 核心事件处理 ---
@@ -247,28 +250,40 @@ class AngelHeartPlugin(Star):
 
                 logger.info(f"AngelHeart[{chat_id}]: 已记录结构化工具调用和结果")
 
-                # 工具修饰消息发送
+                # 工具修饰消息发送（带冷却机制）
                 if self.config_manager.tool_decoration_enabled and tool_names:
-                    # 为每个工具查找修饰语
-                    decorations = []
-                    for tool_name in tool_names:
-                        decoration = self._get_tool_decoration(tool_name)
-                        if decoration:  # 只添加非空的修饰语
-                            decorations.append(decoration)
+                    # 检查冷却时间
+                    current_time = time.time()
+                    last_sent_time = self._tool_decoration_last_sent.get(chat_id, 0)
+                    cooldown = self.config_manager.tool_decoration_cooldown
+                    time_since_last_sent = current_time - last_sent_time
 
-                    # 只有当有修饰语时才发送消息
-                    if decorations:
-                        import random
-                        # 多个工具时，随机选择一个修饰语
-                        selected_decoration = random.choice(decorations)
+                    if time_since_last_sent < cooldown:
+                        # 还在冷却期，跳过发送
+                        logger.debug(f"AngelHeart[{chat_id}]: 工具修饰消息在冷却中（距上次 {time_since_last_sent:.1f}s < {cooldown}s），跳过")
+                    else:
+                        # 可以发送，为每个工具查找修饰语
+                        decorations = []
+                        for tool_name in tool_names:
+                            decoration = self._get_tool_decoration(tool_name)
+                            if decoration:  # 只添加非空的修饰语
+                                decorations.append(decoration)
 
-                        try:
-                            from astrbot.api.event import MessageChain
-                            message_chain = MessageChain().message(selected_decoration)
-                            await self.context.send_message(event.unified_msg_origin, message_chain)
-                            logger.info(f"AngelHeart[{chat_id}]: 已发送工具修饰消息: {selected_decoration}")
-                        except Exception as e:
-                            logger.error(f"AngelHeart[{chat_id}]: 发送工具修饰消息失败: {e}")
+                        # 只有当有修饰语时才发送消息
+                        if decorations:
+                            import random
+                            # 多个工具时，随机选择一个修饰语
+                            selected_decoration = random.choice(decorations)
+
+                            try:
+                                from astrbot.api.event import MessageChain
+                                message_chain = MessageChain().message(selected_decoration)
+                                await self.context.send_message(event.unified_msg_origin, message_chain)
+                                # 更新最后发送时间
+                                self._tool_decoration_last_sent[chat_id] = current_time
+                                logger.info(f"AngelHeart[{chat_id}]: 已发送工具修饰消息: {selected_decoration}")
+                            except Exception as e:
+                                logger.error(f"AngelHeart[{chat_id}]: 发送工具修饰消息失败: {e}")
 
     # --- 内部方法 ---
     def reload_config(self, new_config: dict):
