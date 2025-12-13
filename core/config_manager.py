@@ -218,6 +218,32 @@ class ConfigManager:
         """当单个会话的估算Token数超过此限制时，触发清理。0为禁用。"""
         return self._config.get("max_conversation_tokens", 100000)
 
+    @property
+    def tool_decoration_enabled(self) -> bool:
+        """是否启用工具修饰"""
+        return self._config.get("tool_decoration_enabled", False)
+
+    @property
+    def tool_decorations(self) -> dict:
+        """工具修饰语配置字典"""
+        import json
+
+        decorations = self._config.get("tool_decorations", "{}")
+
+        # 如果已经是字典，直接返回
+        if isinstance(decorations, dict):
+            return decorations
+
+        # 如果是字符串，尝试解析为JSON
+        if isinstance(decorations, str):
+            try:
+                return json.loads(decorations)
+            except json.JSONDecodeError:
+                # JSON解析失败，返回空字典
+                return {}
+
+        return {}
+
     def get_config_summary(self) -> dict:
         """
         获取配置摘要，用于调试和监控
