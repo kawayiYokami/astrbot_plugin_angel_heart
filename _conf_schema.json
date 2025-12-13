@@ -181,5 +181,20 @@
     "description": "[基础配置] 最大对话Token限制",
     "hint": "当单个会话的估算Token数超过此限制时，将触发清理，仅保留最新的7条非工具消息。设置为0则禁用此功能。",
     "default": 100000
+  },
+  "tool_decoration_enabled": {
+    "type": "bool",
+    "description": "[工具调用提示] 启用工具修饰",
+    "hint": "启用后，AI调用工具时会发送拟人化的提示消息。如果启用请关闭原生的工具提示！！",
+    "default": false
+  },
+  "tool_decorations": {
+    "type": "text",
+    "description": "[工具调用提示] 工具修饰语配置",
+    "hint": "JSON格式配置，键为工具名关键词（支持模糊匹配），值为修饰语（多个用 | 分隔）。配置从上往下匹配，越具体的配置应放在越前面，避免被通用配置覆盖。",
+    "editor_mode": true,
+    "editor_language": "json",
+    "editor_theme": "vs-dark",
+    "default": "{\n  \"memory_remember\": \"已记下|记住了|好的记下来了\",\n  \"memory_recall\": \"让我想想|回忆一下|想起来了\",\n  \"memory\": \"嗯让我想想|稍等\",\n  \"reminder\": \"好的|收到|已设置提醒\",\n  \"python\": \"让我算算|计算中...|稍等我写个代码\",\n  \"direction\": \"规划一下|看看路线|稍等\",\n  \"weather\": \"查了下天气|看看天气|稍等\",\n  \"news\": \"看看最新消息|稍等|嗯\",\n  \"fetch\": \"我看看|稍等|马上\",\n  \"map\": \"稍等|好\",\n  \"search\": \"搜一下|我查查|让我搜搜\"\n}"
   }
 }
