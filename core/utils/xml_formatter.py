@@ -54,7 +54,7 @@ def format_message_to_text(
                 content_type = "图片"
 
             header = f"[群友: {sender_name} (ID: {sender_id})]{relative_time}"
-            formatted_body = f"{header}\n[内容: {content_type}]\n{text_content}"
+            formatted_body = f"{header}: {text_content}"
         else:
             # 历史记录回退
             formatted_body = f"[群友(历史记录)]\n[内容: 文本]\n{text_content}"
@@ -114,5 +114,3 @@ def format_message_to_text(
         return f"<{wrapper_tag}>\n{formatted_body}\n</{wrapper_tag}>"
     else:
         return formatted_body
-
-

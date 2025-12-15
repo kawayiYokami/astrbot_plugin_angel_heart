@@ -208,7 +208,7 @@ def format_final_prompt(recent_dialogue: List[Dict], decision: 'SecretaryDecisio
     # 使用统一的格式增强 LLM 对对话上下文的理解
     # 修正：只为 recent_dialogue（待回应消息）使用XML包裹，历史记录不再使用XML，防止LLM复读XML标签
     dialogue_str = "\n".join([
-        format_message_to_text(msg, alias, wrapper_tag="消息")
+        format_message_to_text(msg, alias)
         for msg in recent_dialogue
     ])
 
@@ -221,15 +221,15 @@ def format_final_prompt(recent_dialogue: List[Dict], decision: 'SecretaryDecisio
     current_time = get_beijing_time_str()
 
     # 3. 组装最终的 Prompt 字符串
-    prompt = f"""<提醒>
-需要你分析的最新对话（这是你唯一需要回应的对话，过去的对话已经过去了，仅供参考）
-<当前时间>{current_time}</当前时间>
-</提醒>
----
+    prompt = f"""<系统决策>
+<系统提醒>该决策是系统简单分析之后的建议方向，你可以参考，但是仍以用户对话为优先</系统提醒>
+<参考核心话题>{topic}</参考核心话题>
+<建议交互对象>{target}</建议交互对象>
+<推荐执行策略>{strategy}</推荐执行策略>
+</系统决策>
+
+<用户对话组>
 {dialogue_str}
----
-<指令>
-请根据以上对话历史，围绕核心话题 '{topic}'，向 '{target}' 执行以下策略：'{strategy}'。
-</指令>"""
+</用户对话组>"""
 
     return prompt
