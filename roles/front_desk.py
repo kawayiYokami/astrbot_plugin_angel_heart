@@ -857,7 +857,7 @@ class FrontDesk:
     def _get_conversation_data(self, chat_id: str):
         """
         获取对话数据：决策、最近对话、历史上下文
-        
+
         Returns:
             tuple: (decision, recent_dialogue, historical_context, boundary_ts)
         """
@@ -865,32 +865,32 @@ class FrontDesk:
         decision = self.secretary.get_decision(chat_id)
         if not decision:
             return None, None, None, None
-        
+
         # 2. 获取最近的对话数据
         _, recent_dialogue, boundary_ts = self.context.conversation_ledger.get_context_snapshot(chat_id)
-        
+
         # 3. 获取历史对话用于构建完整上下文
         historical_context, _, _ = partition_dialogue_raw(
             self.context.conversation_ledger, chat_id
         )
-        
+
         return decision, recent_dialogue, historical_context, boundary_ts
-    
+
     def _generate_final_prompt(self, recent_dialogue: List[Dict], decision: Any, alias: str) -> str:
         """生成聚焦指令"""
         return format_final_prompt(recent_dialogue, decision, alias)
-    
+
     def _mark_processed_if_needed(self, chat_id: str, decision: Any, recent_dialogue: List[Dict]):
         """如果需要回复，标记消息为已处理"""
         if decision and decision.should_reply and recent_dialogue:
             boundary_ts = max(msg.get('timestamp', 0) for msg in recent_dialogue)
             self.context.conversation_ledger.mark_as_processed(chat_id, boundary_ts)
-    
+
     def _build_contexts_with_processor(
-        self, 
-        processor: 'MessageProcessor', 
-        historical_context: List[Dict], 
-        recent_dialogue: List[Dict], 
+        self,
+        processor: 'MessageProcessor',
+        historical_context: List[Dict],
+        recent_dialogue: List[Dict],
         chat_id: str
     ) -> List[Dict]:
         """使用 MessageProcessor 构建上下文列表"""
@@ -901,37 +901,37 @@ class FrontDesk:
                 "content": [{"type": "text", "text": "这是一个群聊场景。"}]
             }
         ]
-        
+
         # 分别处理历史消息和最新消息
-        # 历史消息：完全纯文本，不加任何 wrapper_tag
+        # 所有消息统一处理为纯文本格式
         for msg in historical_context:
-            processed_msg = processor.process_message(msg, wrapper_tag=None)
+            processed_msg = processor.process_message(msg)
             new_contexts.append(processed_msg)
-        
-        # 最新消息：加上 <消息> 标签作为 Prompt 强调
+
+        # 最新消息：不再添加冗余的 <消息> 标签
         for msg in recent_dialogue:
-            processed_msg = processor.process_message(msg, wrapper_tag="消息")
+            processed_msg = processor.process_message(msg)
             new_contexts.append(processed_msg)
-        
+
         return new_contexts
-    
+
     def _update_request(
-        self, 
-        req: Any, 
-        contexts: List[Dict], 
-        final_prompt: str, 
+        self,
+        req: Any,
+        contexts: List[Dict],
+        final_prompt: str,
         alias: str
     ):
         """更新请求对象"""
         # 完全覆盖原有的 contexts
         req.contexts = contexts
-        
+
         # 聚焦指令并赋值给 req.prompt
         req.prompt = final_prompt
-        
+
         # 清空 image_urls
         req.image_urls = []  # 图片已在 contexts 中
-        
+
         # 注入系统提示词
         original_system_prompt = getattr(req, "system_prompt", "")
         new_system_prompt = f"{original_system_prompt}\n\n你正在一个群聊中扮演角色，你的昵称是 '{alias}'。"
