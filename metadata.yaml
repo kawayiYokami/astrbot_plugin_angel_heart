@@ -1,5 +1,6 @@
 name: astrbot_plugin_angel_heart
-description: "天使心秘书，让astrbot拥有极其聪明，有分寸的群聊介入，和极其完备的群聊上下文管理"
+display_name: AngelHeart - AI群聊“情商”核心
+desc: "告别“人工智障”式群聊！本插件用【4状态机】教会AI观察时机、判断气氛，实现真人般社交直觉；再以【轻重双AI核】分离思考与决策，保证回复质量的同时大幅降低API成本。"
+version: 0.8.5
 author: kawayiYokami
-version: 0.8.4
 repo: https://github.com/kawayiYokami/astrbot_plugin_angel_heart
