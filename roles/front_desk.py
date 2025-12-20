@@ -264,25 +264,26 @@ class FrontDesk:
         except Exception as e:
             logger.error(f"AngelHeart[{chat_id}]: 超时检查异常: {e}", exc_info=True)
 
-    async def _try_acquire_lock(self, chat_id: str) -> tuple[bool, str]:
+    async def _try_acquire_lock(self, chat_id: str, event: AstrMessageEvent) -> tuple[bool, str, float]:
         """
         尝试获取门锁，统一管理扣押和上锁
 
         Args:
             chat_id: 会话ID
+            event: 当前消息事件
 
         Returns:
-            tuple[bool, str]: (是否成功获取, 原因)
+            tuple[bool, str, float]: (是否成功获取, 原因, 剩余时间)
         """
         # 尝试获取门锁（这会原子性地检查并上锁）
-        acquired = await self.context.acquire_chat_processing(chat_id)
+        acquired, reason, remaining_time = await self.context.acquire_chat_processing(chat_id, event)
 
         if not acquired:
-            # 门锁被占用，需要扣押
-            return True, "门锁占用"
+            # 门锁被占用或冷却
+            return False, reason, remaining_time
 
         # 成功获取门锁
-        return False, ""
+        return True, "SUCCESS", 0.0
 
 
     async def _enter_detention_queue(
@@ -317,11 +318,11 @@ class FrontDesk:
             return
 
         # 扣押解除后，尝试获取门锁
-        acquired = await self.context.acquire_chat_processing(chat_id)
+        acquired, reason, remaining_time = await self.context.acquire_chat_processing(chat_id, event)
         if not acquired:
             # 还是获取不到，重新进入扣押
-            logger.debug(f"AngelHeart[{chat_id}]: 门锁仍被占用，重新扣押")
-            await self._enter_detention_queue(event, "门锁占用")
+            logger.debug(f"AngelHeart[{chat_id}]: 门锁仍被占用 (原因: {reason})，重新扣押")
+            await self._enter_detention_queue(event, f"门锁占用({reason})")
             return
 
         # 成功获取门锁，通知秘书处理消息
@@ -495,7 +496,7 @@ class FrontDesk:
             chat_id = event.unified_msg_origin
 
             # 第一次尝试获取门锁
-            acquired, reason, remaining_time = await self.context.acquire_chat_processing(chat_id)
+            acquired, reason, remaining_time = await self.context.acquire_chat_processing(chat_id, event)
 
             if acquired:
                 # 首次尝试成功，直接处理
@@ -508,15 +509,15 @@ class FrontDesk:
                 await asyncio.sleep(remaining_time)
 
                 # 再次尝试获取门锁
-                acquired, reason, _ = await self.context.acquire_chat_processing(chat_id)
+                acquired, reason, _ = await self.context.acquire_chat_processing(chat_id, event)
                 if acquired:
                     # 等待后成功，直接处理
                     await self._call_secretary_and_execute(event, chat_id)
                     return
 
             # 如果是因为LOCKED，或者等待冷却后仍然LOCKED，才进入扣押队列
-            logger.debug(f"AngelHeart[{chat_id}]: 门锁被占用，进入扣押队列")
-            await self._enter_detention_queue(event, "门锁占用")
+            logger.debug(f"AngelHeart[{chat_id}]: 门锁被占用 (原因: {reason})，进入扣押队列")
+            await self._enter_detention_queue(event, f"门锁占用({reason})")
 
         except Exception as e:
             logger.error(

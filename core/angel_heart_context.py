@@ -45,7 +45,7 @@ class AngelHeartContext:
         )
 
         # 门牌管理
-        self.processing_chats: Dict[str, float] = {}  # chat_id -> 开始分析时间
+        self.processing_chats: Dict[str, tuple[float, Any]] = {}  # chat_id -> (开始分析时间, event对象)
         self.processing_lock: asyncio.Lock = asyncio.Lock()  # 门牌操作锁
         # 门锁冷却时间：归还门锁后需要等待的时间
         self.lock_cooldown_until: Dict[str, float] = {}  # chat_id -> 冷却结束时间
@@ -94,32 +94,57 @@ class AngelHeartContext:
 
     async def is_chat_processing(self, chat_id: str) -> bool:
         """
-        检查该会话是否正在被处理。
+        检查该会话是否正在被处理（v3: 包含冷却期检查与事件存活检测）。
+        只有当既不在处理中，也不在冷却期时，才返回 False（表示空闲）。
 
         Args:
             chat_id (str): 会话ID。
 
         Returns:
-            bool: 如果正在处理返回 True，否则返回 False。
+            bool: 如果正忙（处理中或冷却中）返回 True，完全空闲返回 False。
         """
         async with self.processing_lock:
-            # 检查门牌是否存在且未卡死
-            if chat_id in self.processing_chats:
-                # 检查是否卡死（超过5分钟）
-                if time.time() - self.processing_chats[chat_id] > 300:
-                    logger.warning(f"检测到卡死的门牌，自动清理: {chat_id}")
-                    self.processing_chats.pop(chat_id, None)
-                    return False
-                return True
-            return False
+            current_time = time.time()
 
-    async def acquire_chat_processing(self, chat_id: str) -> tuple[bool, str, float]:
+            # 1. 检查冷却期 (冷却期也视为正忙)
+            cooldown_end = self.lock_cooldown_until.get(chat_id, 0)
+            if current_time < cooldown_end:
+                return True
+
+            # 2. 检查实际处理情况
+            if chat_id not in self.processing_chats:
+                return False
+
+            start_time, occupant_event = self.processing_chats[chat_id]
+
+            # 3. 实时探活：检查占用者事件是否已停止
+            if occupant_event and hasattr(occupant_event, 'is_stopped') and occupant_event.is_stopped():
+                # 事件停止，立即转入冷却期
+                cooldown_duration = self.config_manager.waiting_time
+                self.lock_cooldown_until[chat_id] = current_time + cooldown_duration
+                logger.info(f"AngelHeart[{chat_id}]: 检测到占用门牌的事件已停止，清理并进入 {cooldown_duration} 秒冷却期。")
+                self.processing_chats.pop(chat_id, None)
+                return True # 现在转为冷却了，依然算“正忙”
+
+            # 4. 硬超时：检查是否卡死（超过5分钟）
+            if current_time - start_time > 300:
+                # 卡死清理也强制进入冷却，保证节奏
+                cooldown_duration = self.config_manager.waiting_time
+                self.lock_cooldown_until[chat_id] = current_time + cooldown_duration
+                logger.warning(f"AngelHeart[{chat_id}]: 检测到卡死的门牌 (超过300秒)，自动清理并进入冷却。")
+                self.processing_chats.pop(chat_id, None)
+                return True
+
+            return True
+
+    async def acquire_chat_processing(self, chat_id: str, event: Any) -> tuple[bool, str, float]:
         """
         原子性地尝试获取会话处理权（挂上门牌）。
-        包含冷却机制：归还门锁后需要等待一段时间才能再次获取。
+        包含冷却机制和占用者存活检测。
 
         Args:
             chat_id (str): 会话ID。
+            event (Any): 当前尝试获取锁的事件对象。
 
         Returns:
             tuple[bool, str, float]: (是否成功, 失败原因, 剩余时间)
@@ -130,46 +155,47 @@ class AngelHeartContext:
         async with self.processing_lock:
             current_time = time.time()
 
-            # 【新增】检查是否在冷却期，并自动清理过期记录
+            # 1. 检查冷却期
             cooldown_end = self.lock_cooldown_until.get(chat_id, 0)
             if current_time < cooldown_end:
                 remaining = cooldown_end - current_time
-                logger.debug(
-                    f"AngelHeart[{chat_id}]: 门锁在冷却期，剩余 {remaining:.1f} 秒"
-                )
+                logger.debug(f"AngelHeart[{chat_id}]: 门锁在冷却期，剩余 {remaining:.1f} 秒")
                 return False, "COOLDOWN", remaining
 
             # 自动清理过期的冷却记录
             if chat_id in self.lock_cooldown_until and current_time >= cooldown_end:
                 del self.lock_cooldown_until[chat_id]
-                logger.debug(f"AngelHeart[{chat_id}]: 已清理过期的冷却记录")
 
-            start_time = self.processing_chats.get(chat_id)
+            # 2. 检查门牌占用情况
+            if chat_id in self.processing_chats:
+                start_time, occupant_event = self.processing_chats[chat_id]
 
-            # 检查门牌是否卡死（例如，超过5分钟）
-            if start_time is not None:
-                STALE_THRESHOLD_SECONDS = 300  # 5分钟
-                if current_time - start_time > STALE_THRESHOLD_SECONDS:
-                    logger.warning(
-                        f"AngelHeart[{chat_id}]: 检测到会话处理卡死 (超过 {STALE_THRESHOLD_SECONDS} 秒)，自动重置门牌。"
-                    )
-                    # 自动清理卡死的门牌
+                # 2.1. 实时探活：检查占用者事件是否已停止
+                if occupant_event and hasattr(occupant_event, 'is_stopped') and occupant_event.is_stopped():
+                    # 前任死了，但我们要等它“断气”完（进入冷却期）
+                    cooldown_duration = self.config_manager.waiting_time
+                    self.lock_cooldown_until[chat_id] = current_time + cooldown_duration
+                    logger.info(f"AngelHeart[{chat_id}]: 检测到占用门牌的事件已停止，清理并进入 {cooldown_duration} 秒冷却。")
                     self.processing_chats.pop(chat_id, None)
-                    start_time = None
+                    return False, "COOLDOWN", cooldown_duration
 
-            # 如果门牌不存在（或刚被清理），则挂上新门牌
-            if start_time is None:
-                self.processing_chats[chat_id] = current_time
-                logger.debug(
-                    f"AngelHeart[{chat_id}]: 已挂上门牌 (开始处理时间: {self.processing_chats[chat_id]})"
-                )
-                return True, "SUCCESS", 0.0
-            else:
-                # 门牌正挂着，且未卡死
-                logger.debug(
-                    f"AngelHeart[{chat_id}]: 门牌已被占用 (开始时间: {start_time})"
-                )
+                # 2.2. 硬超时：检查是否卡死（超过5分钟）
+                STALE_THRESHOLD_SECONDS = 300
+                if current_time - start_time > STALE_THRESHOLD_SECONDS:
+                    cooldown_duration = self.config_manager.waiting_time
+                    self.lock_cooldown_until[chat_id] = current_time + cooldown_duration
+                    logger.warning(f"AngelHeart[{chat_id}]: 检测到会话处理卡死，强制进入冷却清理。")
+                    self.processing_chats.pop(chat_id, None)
+                    return False, "COOLDOWN", cooldown_duration
+
+                # 2.3. 门牌正被活跃事件占用
+                logger.debug(f"AngelHeart[{chat_id}]: 门牌已被活跃事件占用 (开始时间: {start_time})")
                 return False, "LOCKED", 0.0
+
+            # 3. 如果门牌不存在，则挂上新门牌
+            self.processing_chats[chat_id] = (current_time, event)
+            logger.debug(f"AngelHeart[{chat_id}]: 已挂上门牌 (开始处理时间: {current_time}, 事件: {id(event)})")
+            return True, "SUCCESS", 0.0
 
     async def release_chat_processing(self, chat_id: str, set_cooldown: bool = True, duration: Optional[float] = None):
         """
@@ -250,7 +276,7 @@ class AngelHeartContext:
             )
 
             logger.info(
-                f"AngelHeart[{chat_id}]: 已发放等候牌，最长等待180秒"
+                f"AngelHeart[{chat_id}]: 已发放等候牌，最长等待{int(self.detention_max_wait_time)}秒"
             )
 
             # 5. 返回等候牌给来访者
@@ -266,16 +292,18 @@ class AngelHeartContext:
         等待策略：
         1. 先等待一个基础等待时间（让老板处理完当前事务）
         2. 然后进入轮询模式，每3秒检查一次老板是否空闲
-        3. 最多等待3分钟，超时自动离开
+        3. 最多等待配置的等待时间，超时自动离开
 
         Args:
             chat_id (str): 来访者ID
         """
         try:
             # 1. 设置轮询参数
-            detention_timeout_seconds = 180  # 扣押超时时间：最多等待3分钟
+            detention_timeout_seconds = int(self.detention_max_wait_time)  # 扣押超时时间：使用配置的等待时间
             recheck_interval_seconds = 3  # 每3秒检查一次
             total_waited = 0
+
+            logger.info(f"AngelHeart[{chat_id}]: 开始进入等候室，最长等待 {detention_timeout_seconds} 秒...")
 
             # 2. 进入轮询等待模式
             while total_waited < detention_timeout_seconds:
@@ -286,7 +314,7 @@ class AngelHeartContext:
                     ticket = self.pending_futures.get(chat_id)
                     if ticket and not ticket.done():
                         logger.info(
-                            f"AngelHeart[{chat_id}]: 检测到事件被撤回，立即结束等待"
+                            f"AngelHeart[{chat_id}]: 检测到等候的事件被撤回，立即结束等待"
                         )
                         ticket.set_result("KILL")  # 叫号：离开
 
@@ -300,7 +328,7 @@ class AngelHeartContext:
                     ticket = self.pending_futures.get(chat_id)
                     if ticket and not ticket.done():
                         logger.info(
-                            f"AngelHeart[{chat_id}]: 老板已空闲，请来访者进来"
+                            f"AngelHeart[{chat_id}]: 老板已空闲 (等待了{total_waited}秒)，请来访者进来"
                         )
                         ticket.set_result("PROCESS")  # 叫号：请进
 
@@ -309,9 +337,6 @@ class AngelHeartContext:
                     return  # 等候成功结束
 
                 # 老板还在忙，继续等
-                logger.debug(
-                    f"AngelHeart[{chat_id}]: 等待中... (已等 {total_waited}秒/{detention_timeout_seconds}秒, 事件状态: {'已停止' if event and hasattr(event, 'is_stopped') and event.is_stopped() else '正常'})"
-                )
                 await asyncio.sleep(recheck_interval_seconds)
                 total_waited += recheck_interval_seconds
 
