@@ -419,7 +419,7 @@ class AngelHeartPlugin(Star):
             )
             return False  # 异常时保守处理，不处理消息
 
-    @filter.on_decorating_result(priority=-200)
+    @filter.on_decorating_result(priority=200)
     async def strip_markdown_on_decorating_result(
         self, event: AstrMessageEvent, *args, **kwargs
     ):

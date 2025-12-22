@@ -407,7 +407,7 @@ class ConversationLedger:
             # 查找所有包含图片且未转述的消息
             messages_needing_caption = []
             for message in ledger["messages"]:
-                if (message.get("role") in ["user", "assistant"] and
+                if (message.get("role") == "user" and  # 只转述用户消息
                     isinstance(message.get("content"), list) and
                     not message.get("image_caption")):  # 还没有转述
 
@@ -519,7 +519,7 @@ class ConversationLedger:
 
             has_images_needing_caption = False
             for message in all_messages:
-                if (message.get("role") in ["user", "assistant"] and
+                if (message.get("role") == "user" and  # 只检查用户消息
                     isinstance(message.get("content"), list) and
                     not message.get("image_caption")):  # 还没有转述
 
