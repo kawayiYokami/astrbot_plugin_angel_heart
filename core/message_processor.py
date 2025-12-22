@@ -130,7 +130,7 @@ class MessageProcessor:
 
     def _apply_image_caption(self, content_list: List[Dict[str, Any]], image_caption: str) -> List[Dict[str, Any]]:
         """使用 ConversationLedger 中已生成的 image_caption，移除图片组件，添加转述文本"""
-        caption_text = f"[图片描述: {image_caption}]"
+        caption_text = f"<图片转述>{image_caption}</图片转述>"
         # 移除所有图片组件
         filtered_list = [
             item for item in content_list if item.get("type") != "image_url"
