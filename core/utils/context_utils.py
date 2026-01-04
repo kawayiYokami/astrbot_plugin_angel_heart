@@ -197,39 +197,40 @@ def partition_dialogue_raw(
     return historical_context, recent_dialogue, boundary_ts
 
 
+def format_decision_xml(decision: 'SecretaryDecision') -> str:
+    """
+    生成系统决策 XML 字符串。
+
+    Args:
+        decision: 秘书决策对象
+
+    Returns:
+        str: 系统决策 XML 字符串
+    """
+    topic = decision.topic
+    target = decision.reply_target
+    strategy = decision.reply_strategy
+
+    decision_xml = f"""<系统决策>
+<系统提醒>该决策是系统简单分析之后的建议方向，你可以参考，但是仍以用户对话为优先</系统提醒>
+<参考核心话题>{topic}</参考核心话题>
+<建议交互对象>{target}</建议交互对象>
+<推荐执行策略>{strategy}</推荐执行策略>
+</系统决策>"""
+
+    return decision_xml
+
+
 def format_final_prompt(recent_dialogue: List[Dict], decision: 'SecretaryDecision', alias: str = "AngelHeart") -> str:
     """
-    为大模型生成最终的、自包含的用户指令字符串 (Prompt)。
+    为大模型生成最终的用户对话文本（不包含系统决策和 XML 包裹）。
     """
     from .xml_formatter import format_message_to_text
-    from .time_utils import get_beijing_time_str
 
-    # 1. 将需要回应的新对话格式化为文本字符串（带 XML 包裹）
-    # 使用统一的格式增强 LLM 对对话上下文的理解
-    # 修正：只为 recent_dialogue（待回应消息）使用XML包裹，历史记录不再使用XML，防止LLM复读XML标签
+    # 将需要回应的新对话格式化为文本字符串
     dialogue_str = "\n".join([
         format_message_to_text(msg, alias)
         for msg in recent_dialogue
     ])
 
-    # 2. 从决策中获取核心信息
-    topic = decision.topic
-    target = decision.reply_target
-    strategy = decision.reply_strategy
-
-    # 获取当前时间
-    current_time = get_beijing_time_str()
-
-    # 3. 组装最终的 Prompt 字符串
-    prompt = f"""<系统决策>
-<系统提醒>该决策是系统简单分析之后的建议方向，你可以参考，但是仍以用户对话为优先</系统提醒>
-<参考核心话题>{topic}</参考核心话题>
-<建议交互对象>{target}</建议交互对象>
-<推荐执行策略>{strategy}</推荐执行策略>
-</系统决策>
-
-<用户对话组>
-{dialogue_str}
-</用户对话组>"""
-
-    return prompt
+    return dialogue_str
