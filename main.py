@@ -26,6 +26,7 @@ except ImportError:
 
     logger = logging.getLogger(__name__)
 from astrbot.core.message.components import Plain, At, AtAll, Reply
+from astrbot.core.agent.message import TextPart
 
 from .core.config_manager import ConfigManager
 from .roles.front_desk import FrontDesk
@@ -33,6 +34,7 @@ from .roles.secretary import Secretary
 from .core.utils import strip_markdown
 from .core.utils.message_utils import serialize_message_chain
 from .core.angel_heart_context import AngelHeartContext
+from .core.utils.context_utils import format_decision_xml
 
 
 @register("astrbot_plugin_angel_heart", "kawayiYokami", "天使心秘书，让astrbot拥有极其聪明，有分寸的群聊介入，和极其完备的群聊上下文管理", "0.6.8", "https://github.com/kawayiYokami/astrbot_plugin_angel_heart")
@@ -145,24 +147,15 @@ class AngelHeartPlugin(Star):
             )
             return
 
-        # 4. 构建补充提示词，包含回复目标
-        decision_context = f"\n\n---\n[经过我对聊天记录的分析，我得到了如下结论] 我的昵称是 {alias}。我将围绕以下要点回复：\n- 核心话题: {topic}\n- 回复策略: {strategy}\n- 回复目标: {reply_target}"
+        # 4. 构建系统决策 XML
+        decision_xml = format_decision_xml(decision)
 
-        # 5. 根据是否启用增强模式，选择不同的注入方式
-        if self.config_manager.group_chat_enhancement:
-            # 增强模式：将决策上下文存储到临时属性中，由 rewrite_prompt_for_llm 处理
-            req.angelheart_decision_context = decision_context
-            logger.debug(f"AngelHeart[{chat_id}]: 已将决策上下文存储到临时属性中。")
-        else:
-            # 传统模式：注入到 req.system_prompt
-            # 遵循 AstrBot 框架的设计，system_prompt 用于传递不会被存入历史记录的系统级指令
-            if req.system_prompt:
-                # 如果 system_prompt 已有内容，则追加
-                req.system_prompt += f"\n{decision_context}"
-            else:
-                # 否则，直接赋值
-                req.system_prompt = decision_context
-            logger.debug(f"AngelHeart[{chat_id}]: 已将决策上下文注入到 system_prompt。")
+        # 5. 注入到 extra_user_content_parts（所有模式统一）
+        if not hasattr(req, 'extra_user_content_parts'):
+            req.extra_user_content_parts = []
+
+        req.extra_user_content_parts.append(TextPart(text=decision_xml))
+        logger.debug(f"AngelHeart[{chat_id}]: 已将决策注入到 extra_user_content_parts。")
 
     @filter.on_llm_request(priority=50)  # 在决策注入之后，日志之前执行
     async def delegate_prompt_rewriting(
