@@ -808,12 +808,13 @@ class FrontDesk:
                     has_image = False
 
                     for item in original_content:
-                        if item.get("type") == "image_url":
+                        # 只处理字典类型的组件，保留 Pydantic 模型对象（如 ThinkPart）
+                        if isinstance(item, dict) and item.get("type") == "image_url":
                             has_image = True
                             images_filtered_count += 1
                             # 静默移除图片，不添加任何提示
                         else:
-                            # 保留非图片的所有组件（文本、文件等）
+                            # 保留非图片的所有组件（文本、ThinkPart、文件等）
                             filtered_content.append(item)
 
                     filtered_msg["content"] = filtered_content
@@ -830,7 +831,8 @@ class FrontDesk:
 
                     if isinstance(content, list):
                         for item in content:
-                            if item.get("type") == "text":
+                            # 只处理字典类型的文本组件
+                            if isinstance(item, dict) and item.get("type") == "text":
                                 assistant_text += item.get("text", "")
                     elif isinstance(content, str):
                         assistant_text = content
