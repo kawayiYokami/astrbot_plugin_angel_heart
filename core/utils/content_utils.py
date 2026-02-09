@@ -2,6 +2,7 @@
 AngelHeart 插件 - 内容处理相关工具函数
 """
 
+import re
 from markdown_it import MarkdownIt
 from mdit_plain.renderer import RendererPlain
 
@@ -34,16 +35,49 @@ def convert_content_to_string(content) -> str:
         return str(content).strip()
 
 
+def strip_reasoning_chain(text: str) -> str:
+    """
+    清洗文本中的思维链内容，移除推理模型的推理过程标记。
+
+    支持的格式：
+    - 思维链内容</think> XML 标签格式
+
+    Args:
+        text (str): 可能包含思维链的原始文本。
+
+    Returns:
+        str: 清洗后的文本，已移除思维链内容。
+    """
+    # 匹配 ...</think> XML 标签及其内容
+    # 使用 re.DOTALL 使 . 匹配换行符，支持多行思维链
+    reasoning_pattern = re.compile(
+        r'[\s\S]*?</think>',
+        re.IGNORECASE | re.DOTALL
+    )
+
+    # 移除所有匹配的思维链内容
+    cleaned_text = reasoning_pattern.sub('', text)
+
+    # 清理可能留下的多余空行
+    cleaned_text = re.sub(r'\n\s*\n', '\n\n', cleaned_text).strip()
+
+    return cleaned_text
+
+
 def strip_markdown(text: str) -> str:
     """
     使用 markdown-it-py 和 mdit_plain 库将 Markdown 文本转换为纯文本。
+    同时会先清洗文本中的思维链内容。
 
     Args:
-        text (str): 包含 Markdown 格式的原始文本。
+        text (str): 包含 Markdown 格式和可能包含思维链的原始文本。
 
     Returns:
-        str: 清洗后的纯文本。
+        str: 清洗后的纯文本（已移除思维链和 Markdown 格式）。
     """
+    # 先清洗思维链内容
+    text = strip_reasoning_chain(text)
+
     # 使用全局的 MarkdownIt 实例以提高性能
     global _md_strip_instance
     # 渲染并返回纯文本

@@ -1,6 +1,6 @@
 name: astrbot_plugin_angel_heart
 display_name: AngelHeart - AI群聊“情商”核心
 desc: "告别“人工智障”式群聊！本插件用【4状态机】教会AI观察时机、判断气氛，实现真人般社交直觉；再以【轻重双AI核】分离思考与决策，保证回复质量的同时大幅降低API成本。"
-version: 0.8.8
+version: 0.8.9
 author: kawayiYokami
 repo: https://github.com/kawayiYokami/astrbot_plugin_angel_heart
