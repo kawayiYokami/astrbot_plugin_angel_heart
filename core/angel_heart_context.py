@@ -372,13 +372,10 @@ class AngelHeartContext:
         self.detention_timeout_timers.pop(chat_id, None)
         self.pending_events.pop(chat_id, None)
 
-        # 清理门牌占用记录
-        self.processing_chats.pop(chat_id, None)
-
-        # 清理冷却期记录
-        self.lock_cooldown_until.pop(chat_id, None)
-
-        logger.debug(f"AngelHeart[{chat_id}]: 已清理该会话的所有扣押资源")
+        # 注意：这里不能清理 processing_chats / lock_cooldown_until。
+        # 门牌与冷却期属于会话处理锁生命周期，应仅由 acquire/release 维护。
+        # 否则会在排队清理时误放行正在处理中的会话，导致并发串线。
+        logger.debug(f"AngelHeart[{chat_id}]: 已清理该会话的扣押资源")
 
     # ========== V3: Patience Timer (Multi-Stage) ==========
 
