@@ -326,12 +326,10 @@ class FrontDesk:
             return
 
         # 成功获取门锁，通知秘书处理消息
-        try:
-            # 调用秘书并执行决策
-            await self._call_secretary_and_execute(event, chat_id)
-        finally:
-            # 确保释放门锁（不设置冷却，因为是否设置冷却由内部逻辑决定）
-            await self.context.release_chat_processing(chat_id, set_cooldown=False)
+        # 注意：不要在这里统一释放门锁。
+        # - 不回复：由 _call_secretary_and_execute 内部按 no_reply_cooldown 释放
+        # - 需要回复：由 main.py 的 after_message_sent 在消息发送并写入总账后释放
+        await self._call_secretary_and_execute(event, chat_id)
 
 
     async def _call_secretary_and_execute(self, event: AstrMessageEvent, chat_id: str):
