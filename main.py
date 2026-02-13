@@ -37,7 +37,7 @@ from .core.angel_heart_context import AngelHeartContext
 from .core.utils.context_utils import format_decision_xml
 
 
-@register("astrbot_plugin_angel_heart", "kawayiYokami", "天使心秘书，让astrbot拥有极其聪明，有分寸的群聊介入，和极其完备的群聊上下文管理", "0.6.8", "https://github.com/kawayiYokami/astrbot_plugin_angel_heart")
+@register("astrbot_plugin_angel_heart", "kawayiYokami", "天使心秘书，让astrbot拥有极其聪明，有分寸的群聊介入，和极其完备的群聊上下文管理", "0.8.10", "https://github.com/kawayiYokami/astrbot_plugin_angel_heart")
 class AngelHeartPlugin(Star):
     """AngelHeart插件 - 专注的智能回复员"""
 
@@ -168,7 +168,7 @@ class AngelHeartPlugin(Star):
         if not self.config_manager.group_chat_enhancement:
             return
 
-        await self.front_desk.rewrite_prompt_for_llm(chat_id, req)
+        await self.front_desk.rewrite_prompt_for_llm(chat_id, event, req)
 
     # 捕获工具调用结果
     @register_on_llm_response()

@@ -8,6 +8,7 @@ import copy
 import json
 import os
 import time
+import uuid
 
 try:
     from astrbot.api import logger
@@ -61,6 +62,37 @@ class FrontDesk:
 
         # secretary 引用将由 main.py 设置
         self.secretary = None
+
+    def _get_event_message_id(self, event: AstrMessageEvent) -> str:
+        """
+        获取内部事件ID（仅使用 AngelHeart 自生成ID）。
+        仅返回字符串，不抛异常。
+        """
+        return str(getattr(event, "angelheart_event_id", "") or "")
+
+    def _ensure_internal_event_id(self, event: AstrMessageEvent) -> str:
+        """
+        为当前事件确保一个可用的内部ID，并挂载到 event。
+        不抛异常，失败时返回空字符串。
+        """
+        try:
+            existing_id = str(getattr(event, "angelheart_event_id", "") or "")
+            if existing_id:
+                return existing_id
+
+            internal_id = f"ah-{uuid.uuid4().hex}"
+            setattr(event, "angelheart_event_id", internal_id)
+
+            # 尽量也挂到 extra（如果框架支持），便于跨阶段读取
+            if hasattr(event, "set_extra"):
+                try:
+                    event.set_extra("angelheart_event_id", internal_id)
+                except Exception:
+                    pass
+
+            return internal_id
+        except Exception:
+            return ""
 
     async def cache_message(self, chat_id: str, event: AstrMessageEvent):
         """
@@ -145,18 +177,20 @@ class FrontDesk:
             content_list.append({"type": "text", "text": ""})
 
         # 6. 构建完整的消息字典
+        source_event_id = self._get_event_message_id(event)
         new_message = {
             "role": "user",
             "content": content_list,  # 标准多模态列表
             "sender_id": event.get_sender_id(),
             "sender_name": event.get_sender_name(),
+            # 事件消息ID：用于后续“补历史”阶段精确过滤当前这条消息
+            "source_event_id": source_event_id,
             "timestamp": (
                 event.get_timestamp()
                 if hasattr(event, "get_timestamp") and event.get_timestamp()
                 else time.time()
             ),
         }
-
         # 7. 检查AI是否不在场
         is_not_present = self.context.is_not_present(chat_id)
 
@@ -173,6 +207,8 @@ class FrontDesk:
         message_content = event.get_message_outline()
 
         try:
+            self._ensure_internal_event_id(event)
+
             # 优先进行超时检查
             await self._check_and_handle_timeout(chat_id, current_time)
 
@@ -713,6 +749,7 @@ class FrontDesk:
                 "content": content,
                 "sender_id": sender_id,
                 "sender_name": sender_name,
+                "source_event_id": str(raw_msg.get("message_id", "") or ""),
                 "timestamp": timestamp,
                 "is_processed": True,
                 "source": "qq_api",
@@ -892,7 +929,8 @@ class FrontDesk:
         processor: 'MessageProcessor',
         historical_context: List[Dict],
         recent_dialogue: List[Dict],
-        chat_id: str
+        chat_id: str,
+        current_event_id: str
     ) -> List[Dict]:
         """使用 MessageProcessor 构建上下文列表"""
         # 在最顶部添加群聊说明消息（避免某些模型不允许第一条消息是助理）
@@ -903,14 +941,15 @@ class FrontDesk:
             }
         ]
 
-        # 分别处理历史消息和最新消息
-        # 所有消息统一处理为纯文本格式
+        # 1) 历史消息
         for msg in historical_context:
             processed_msg = processor.process_message(msg)
             new_contexts.append(processed_msg)
 
-        # 最新消息：不再添加冗余的 <消息> 标签
+        # 2) 最新消息（重建时按当前事件ID过滤，避免与 req.prompt 对应的新消息重复）
         for msg in recent_dialogue:
+            if current_event_id and str(msg.get("source_event_id", "") or "") == current_event_id:
+                continue
             processed_msg = processor.process_message(msg)
             new_contexts.append(processed_msg)
 
@@ -938,7 +977,7 @@ class FrontDesk:
         new_system_prompt = f"{original_system_prompt}\n\n你正在一个群聊中扮演角色，你的昵称是 '{alias}'。"
         req.system_prompt = new_system_prompt
 
-    async def rewrite_prompt_for_llm(self, chat_id: str, req: Any):
+    async def rewrite_prompt_for_llm(self, chat_id: str, event: AstrMessageEvent, req: Any):
         """
         重构请求体，实现完整的对话历史格式化和指令注入。
         使用辅助方法和 MessageProcessor 类使逻辑更清晰。
@@ -954,6 +993,7 @@ class FrontDesk:
         # 2. 生成聚焦指令
         alias = self.config_manager.alias
         final_prompt_str = self._generate_final_prompt(recent_dialogue, decision, alias)
+        current_event_id = self._get_event_message_id(event)
 
         # 3. 标记已处理消息（如果需要）
         self._mark_processed_if_needed(chat_id, decision, recent_dialogue)
@@ -961,7 +1001,7 @@ class FrontDesk:
         # 4. 使用 MessageProcessor 构建上下文
         processor = MessageProcessor(alias)
         new_contexts = self._build_contexts_with_processor(
-            processor, historical_context, recent_dialogue, chat_id
+            processor, historical_context, recent_dialogue, chat_id, current_event_id
         )
 
         # 5. 根据 Provider 的 modalities 配置过滤图片内容
