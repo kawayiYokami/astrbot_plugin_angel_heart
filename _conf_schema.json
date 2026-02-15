@@ -2,7 +2,8 @@
   "analyzer_model": {
     "type": "string",
     "description": "[基础配置] 秘书模型",
-    "hint": "用于分析对话、决定是否回复的快速、低成本模型提供商名称。",
+    "hint": "用于分析对话、决定是否回复的快速、低成本模型提供商。",
+    "_special": "select_provider",
     "default": ""
   },
   "is_reasoning_model": {
