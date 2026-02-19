@@ -37,7 +37,7 @@ from .core.angel_heart_context import AngelHeartContext
 from .core.utils.context_utils import format_decision_xml
 
 
-@register("astrbot_plugin_angel_heart", "kawayiYokami", "天使心秘书，让astrbot拥有极其聪明，有分寸的群聊介入，和极其完备的群聊上下文管理", "0.8.10", "https://github.com/kawayiYokami/astrbot_plugin_angel_heart")
+@register("astrbot_plugin_angel_heart", "kawayiYokami", "天使心秘书，让astrbot拥有极其聪明，有分寸的群聊介入，和极其完备的群聊上下文管理", "0.8.11", "https://github.com/kawayiYokami/astrbot_plugin_angel_heart")
 class AngelHeartPlugin(Star):
     """AngelHeart插件 - 专注的智能回复员"""
 
@@ -545,12 +545,18 @@ class AngelHeartPlugin(Star):
                     logger.warning(f"AngelHeart[{chat_id}]: 状态转换处理异常: {e}")
             else:
                 logger.debug(f"AngelHeart[{chat_id}]: 消息链为空，跳过状态转换")
-
-            # 3. 释放处理锁（设置冷却期）
-            await self.angel_context.release_chat_processing(chat_id, set_cooldown=True)
-            logger.info(f"AngelHeart[{chat_id}]: 任务处理完成，已在消息发送后释放处理锁。")
         except Exception as e:
             logger.error(f"AngelHeart[{chat_id}]: after_message_sent处理异常: {e}", exc_info=True)
+        finally:
+            try:
+                # 3. 释放处理锁（设置冷却期）
+                await self.angel_context.release_chat_processing(chat_id, set_cooldown=True)
+                logger.info(f"AngelHeart[{chat_id}]: 任务处理完成，已在消息发送后释放处理锁。")
+            except Exception as release_error:
+                logger.error(
+                    f"AngelHeart[{chat_id}]: after_message_sent 释放处理锁异常: {release_error}",
+                    exc_info=True,
+                )
 
     def _prepare_whitelist(self) -> set:
         """预处理白名单，将其转换为 set 以获得 O(1) 的查找性能。"""
