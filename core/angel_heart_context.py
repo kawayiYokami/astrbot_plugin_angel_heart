@@ -90,6 +90,15 @@ class AngelHeartContext:
         """扣押最长等待时间（秒），来访者愿意等待老板的最长时间"""
         return self.config_manager.waiting_time
 
+    def _get_processing_stale_threshold(self) -> float:
+        """
+        获取会话处理僵尸占用阈值（秒）。
+
+        设计目标：阈值受 waiting_time 约束，但最大不超过 300 秒。
+        """
+        waiting_time = max(0.0, float(self.config_manager.waiting_time))
+        return min(waiting_time, 300.0)
+
     # ========== 门牌管理 ==========
 
     async def is_chat_processing(self, chat_id: str) -> bool:
@@ -126,12 +135,15 @@ class AngelHeartContext:
                 self.processing_chats.pop(chat_id, None)
                 return True # 现在转为冷却了，依然算“正忙”
 
-            # 4. 硬超时：检查是否卡死（超过5分钟）
-            if current_time - start_time > 300:
+            # 4. 硬超时：检查是否卡死（超过 min(waiting_time, 300) 秒）
+            stale_threshold = self._get_processing_stale_threshold()
+            if current_time - start_time > stale_threshold:
                 # 卡死清理也强制进入冷却，保证节奏
                 cooldown_duration = self.config_manager.waiting_time
                 self.lock_cooldown_until[chat_id] = current_time + cooldown_duration
-                logger.warning(f"AngelHeart[{chat_id}]: 检测到卡死的门牌 (超过300秒)，自动清理并进入冷却。")
+                logger.warning(
+                    f"AngelHeart[{chat_id}]: 检测到卡死的门牌 (超过{stale_threshold:.1f}秒)，自动清理并进入冷却。"
+                )
                 self.processing_chats.pop(chat_id, None)
                 return True
 
@@ -179,12 +191,14 @@ class AngelHeartContext:
                     self.processing_chats.pop(chat_id, None)
                     return False, "COOLDOWN", cooldown_duration
 
-                # 2.2. 硬超时：检查是否卡死（超过5分钟）
-                STALE_THRESHOLD_SECONDS = 300
-                if current_time - start_time > STALE_THRESHOLD_SECONDS:
+                # 2.2. 硬超时：检查是否卡死（超过 min(waiting_time, 300) 秒）
+                stale_threshold = self._get_processing_stale_threshold()
+                if current_time - start_time > stale_threshold:
                     cooldown_duration = self.config_manager.waiting_time
                     self.lock_cooldown_until[chat_id] = current_time + cooldown_duration
-                    logger.warning(f"AngelHeart[{chat_id}]: 检测到会话处理卡死，强制进入冷却清理。")
+                    logger.warning(
+                        f"AngelHeart[{chat_id}]: 检测到会话处理卡死(>{stale_threshold:.1f}s)，强制进入冷却清理。"
+                    )
                     self.processing_chats.pop(chat_id, None)
                     return False, "COOLDOWN", cooldown_duration
 
@@ -359,6 +373,7 @@ class AngelHeartContext:
             logger.error(
                 f"AngelHeart[{chat_id}]: 等候处理出错: {e}", exc_info=True
             )
+            self._cleanup_detention_resources(chat_id)
 
     def _cleanup_detention_resources(self, chat_id: str):
         """

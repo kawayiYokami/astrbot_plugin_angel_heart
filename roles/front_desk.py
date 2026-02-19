@@ -392,10 +392,17 @@ class FrontDesk:
                 await self.context.release_chat_processing(chat_id, set_cooldown=True, duration=no_reply_cd)
             # 注意：需要回复的情况，门锁释放由 main.py 的 strip_markdown_on_decorating_result 方法统一处理
         except Exception as e:
-            logger.error(f"AngelHeart[{chat_id}]: 调用秘书异常: {e}", exc_info=True)
+            event_id = self._get_event_message_id(event)
+            logger.error(
+                f"AngelHeart[{chat_id}]: 调用秘书异常，准备释放门锁 (event_id={event_id}): {e}",
+                exc_info=True,
+            )
             # 发生异常时也要释放门锁，避免死锁
             try:
                 await self.context.release_chat_processing(chat_id, set_cooldown=False)
+                logger.warning(
+                    f"AngelHeart[{chat_id}]: 已因异常释放门锁 (event_id={event_id})"
+                )
             except Exception:
                 pass  # 忽略释放门锁时的异常
 
@@ -427,6 +434,7 @@ class FrontDesk:
             )
         except Exception as e:
             logger.error(f"AngelHeart[{chat_id}]: 执行秘书决策异常: {e}", exc_info=True)
+            raise
 
     async def _process_decision_result(
         self, decision, recent_dialogue, historical_context, boundary_ts, event, chat_id
