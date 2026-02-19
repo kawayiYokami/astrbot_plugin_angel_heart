@@ -15,8 +15,6 @@ config.local.yaml
 # Claude Code Router
 .claude-code-router/
 .*/
-AGENTS.md
-CLAUDE.md
 .lsp_mcp.port
 .claude/
 !.claude/skills/
