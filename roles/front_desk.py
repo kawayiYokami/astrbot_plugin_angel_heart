@@ -704,7 +704,7 @@ class FrontDesk:
                 return []
 
         except Exception as e:
-            logger.error(f"AngelHeart: 调用QQ API失败: {e}")
+            logger.info(f"AngelHeart: 首次补历史调用QQ API失败（不影响主流程）: {e}")
             return []
 
     def _extract_group_id(self, chat_id: str) -> str:

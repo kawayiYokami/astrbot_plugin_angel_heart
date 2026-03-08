@@ -165,32 +165,17 @@ AngelHeart 让AI在群聊中变得更自然懂分寸：
 
 ### 安装步骤
 
-1. **下载插件**
+1. **非市场安装**
    ```bash
    # 将插件克隆或下载到 AstrBot 的 plugins 目录
-   cd /path/to/AstrBot/data/plugins
-   git clone https://github.com/your-repo/astrbot_plugin_angel_heart.git
    ```
 
-2. **安装依赖**
-   ```bash
-   pip install apscheduler
-   ```
-
-3. **启用插件**
-   - 在 AstrBot 的 WebUI 中启用 `AngelHeart` 插件
-   - 重启 AstrBot 服务
-
+2. **市场安装**
+   - 在 AstrBot 的 插件-插件市场中搜索「天使之心」安装
 
 ## 🤝 贡献指南
 
 欢迎提交Issue和Pull Request来改进这个项目！
-
-1. Fork 本项目
-2. 创建特性分支 (`git checkout -b feature/AmazingFeature`)
-3. 提交更改 (`git commit -m 'Add some AmazingFeature'`)
-4. 推送到分支 (`git push origin feature/AmazingFeature`)
-5. 开启Pull Request
 
 ## 📄 许可证
 
