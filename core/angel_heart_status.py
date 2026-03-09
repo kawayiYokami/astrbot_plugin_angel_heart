@@ -131,6 +131,23 @@ class StatusChecker:
             logger.warning(f"AngelHeart[{chat_id}]: 获取最新消息失败: {e}")
             return None
 
+    def _get_latest_user_message(self, chat_id: str) -> Optional[Dict]:
+        """获取最新的用户消息（过滤 assistant/tool/system）"""
+        try:
+            ledger = self.angel_context.conversation_ledger
+            all_messages = ledger.get_all_messages(chat_id)
+            if not all_messages:
+                return None
+
+            user_messages = [m for m in all_messages if m.get("role") == "user"]
+            if not user_messages:
+                return None
+
+            return max(user_messages, key=lambda m: m.get("timestamp", 0))
+        except Exception as e:
+            logger.warning(f"AngelHeart[{chat_id}]: 获取最新用户消息失败: {e}")
+            return None
+
     def _extract_message_content(self, message: Dict) -> str:
         """提取消息内容"""
         if not message:
@@ -154,12 +171,12 @@ class StatusChecker:
             if self._is_silenced(chat_id):
                 return False
 
-            # 检查是否检测到唤醒词或@消息
-            latest_message = self._get_latest_message(chat_id)
-            if not latest_message:
+            # 仅基于最新用户消息检测呼唤，避免 assistant 消息反向触发
+            latest_user_message = self._get_latest_user_message(chat_id)
+            if not latest_user_message:
                 return False
 
-            message_content = self._extract_message_content(latest_message)
+            message_content = self._extract_message_content(latest_user_message)
             return self._detect_wake_word(chat_id, message_content)
         except Exception as e:
             logger.debug(f"AngelHeart[{chat_id}]: 检查被呼唤状态失败: {e}")
