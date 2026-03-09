@@ -79,6 +79,11 @@ class ConfigManager:
         return self._config.get("analysis_on_mention_only", False)
 
     @property
+    def force_reply_when_summoned(self) -> bool:
+        """被呼唤时是否强制回复"""
+        return self._config.get("force_reply_when_summoned", True)
+
+    @property
     def slap_words(self) -> str:
         """用于触发闭嘴的关键词，多个词用'|'分隔"""
         return self._config.get("slap_words", "")
@@ -268,6 +273,7 @@ class ConfigManager:
                 "max_conversation_tokens": self.max_conversation_tokens,
                 "alias": self.alias,
                 "analysis_on_mention_only": self.analysis_on_mention_only,
+                "force_reply_when_summoned": self.force_reply_when_summoned,
                 "comfort_words": self.comfort_words,
                 "slap_words": self.slap_words,
                 "silence_duration": self.silence_duration,
