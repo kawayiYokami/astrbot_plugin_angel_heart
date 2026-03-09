@@ -104,6 +104,12 @@
     "hint": "启用后，插件仅在消息中包含人格名称或昵称时才会进行分析。",
     "default": false
   },
+  "force_reply_when_summoned": {
+    "type": "bool",
+    "description": "[唤醒与交互] 必须响应呼唤",
+    "hint": "启用后，只要消息命中人格名称或昵称，AI都会直接回复，不受秘书“不回复”判断影响。",
+    "default": true
+  },
   "alias": {
     "type": "string",
     "description": "[唤醒与交互] AI助手昵称",
