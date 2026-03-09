@@ -13,7 +13,7 @@ MessageProcessor - 前台消息处理器
 """
 
 import copy
-from typing import Any, List, Dict, Optional
+from typing import Any, List, Dict
 
 from .utils import format_message_to_text
 
