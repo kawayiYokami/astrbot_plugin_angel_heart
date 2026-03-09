@@ -94,10 +94,10 @@ class AngelHeartContext:
         """
         获取会话处理僵尸占用阈值（秒）。
 
-        设计目标：阈值受 waiting_time 约束，但最大不超过 300 秒。
+        设计目标：使用独立的 LLM 超时配置，最大不超过 300 秒。
         """
-        waiting_time = max(0.0, float(self.config_manager.waiting_time))
-        return min(waiting_time, 300.0)
+        llm_timeout = max(0.0, float(self.config_manager.llm_timeout))
+        return min(llm_timeout, 300.0)
 
     # ========== 门牌管理 ==========
 
