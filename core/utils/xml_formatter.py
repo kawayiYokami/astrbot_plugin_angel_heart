@@ -1,4 +1,4 @@
-"""
+﻿"""
 AngelHeart 插件 - 消息格式化工具
 负责将各种角色的消息转换为文本格式，并支持可选的 XML 包裹。
 """
@@ -48,10 +48,6 @@ def format_message_to_text(
             # [内容: 类型]
             # 实际内容
 
-            # 判断内容类型 (简单判断)
-            content_type = "文本"
-            if "[图片]" in text_content:
-                content_type = "图片"
 
             header = f"[群友: {sender_name} (ID: {sender_id})]{relative_time}"
             formatted_body = f"{header}: {text_content}"

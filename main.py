@@ -135,10 +135,6 @@ class AngelHeartPlugin(Star):
         # 3. 严格检查参数合法性
         topic = getattr(decision, "topic", None)
         strategy = getattr(decision, "reply_strategy", None)
-        reply_target = getattr(
-            decision, "reply_target", ""
-        )  # 获取回复目标，默认为空字符串
-        alias = getattr(decision, "alias", "AngelHeart")
 
         if not topic or not strategy:
             # 如果话题或策略为空，则不进行任何操作，防止污染
