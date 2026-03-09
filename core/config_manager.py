@@ -24,6 +24,11 @@ class ConfigManager:
         return self._config.get("waiting_time", 7.0)
 
     @property
+    def llm_timeout(self) -> float:
+        """LLM 处理超时时间（秒）- 会话处理卡死检测阈值"""
+        return self._config.get("llm_timeout", 180.0)
+
+    @property
     def no_reply_cooldown(self) -> float:
         """不回复时的冷却时间（秒）"""
         return self._config.get("no_reply_cooldown", 3.0)
