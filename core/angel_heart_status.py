@@ -191,7 +191,10 @@ class StatusChecker:
     def _detect_wake_word(self, chat_id: str, message_content: str) -> bool:
         """检测唤醒词或@消息"""
         # 检查是否启用呼唤模式
-        if not self.config_manager.analysis_on_mention_only:
+        if (
+            not self.config_manager.analysis_on_mention_only
+            and not self.config_manager.force_reply_when_summoned
+        ):
             return False
 
         # 获取昵称列表
