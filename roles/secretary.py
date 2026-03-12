@@ -101,8 +101,11 @@ class Secretary:
     async def _handle_familiarity_reply(self, event: AstrMessageEvent, chat_id: str) -> SecretaryDecision:
         """处理混脸熟状态 - 快速回复"""
         try:
-            # 设置默认触发类型
-            trigger_type = "dense_conversation"
+            # 检测实际触发类型
+            if self.status_checker._detect_echo_chamber(chat_id):
+                trigger_type = "echo_chamber"
+            else:
+                trigger_type = "dense_conversation"
 
             logger.info(f"AngelHeart[{chat_id}]: 秘书处理混脸熟状态，触发类型: {trigger_type}")
 
