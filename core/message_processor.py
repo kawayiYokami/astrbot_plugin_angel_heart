@@ -101,6 +101,7 @@ class MessageProcessor:
 
         # 提取原始的图片组件
         image_components = self._extract_image_components(original_content)
+        image_ref_text = self._build_image_refs_text(image_components)
 
         # 构建最终内容
         role = msg.get("role", "user")
@@ -109,9 +110,13 @@ class MessageProcessor:
         # 2. 用户消息：无图片 -> 字符串，有图片 -> 多模态列表
         if role == "assistant" or not image_components:
             final_content = xml_content  # 纯文本字符串
+            if image_ref_text:
+                final_content = f"{final_content}\n{image_ref_text}"
         else:
             # 只有用户消息且包含图片时，返回多模态列表
             final_content = [{"type": "text", "text": xml_content}]
+            if image_ref_text:
+                final_content.append({"type": "text", "text": image_ref_text})
             final_content.extend(image_components)
 
         return {
@@ -148,3 +153,34 @@ class MessageProcessor:
             item for item in original_content
             if item.get("type") == "image_url"
         ]
+
+    def _build_image_refs_text(self, image_components: List[Dict[str, Any]]) -> str:
+        """将图片组件中的可用引用拼接为文本，确保历史消息中也可见。"""
+        if not image_components:
+            return ""
+
+        refs = []
+        for item in image_components:
+            if not isinstance(item, dict):
+                continue
+            ref = (
+                item.get("local_file_path")
+                or item.get("original_file_url")
+                or item.get("original_url")
+            )
+
+            if not ref:
+                image_url = item.get("image_url", {})
+                if isinstance(image_url, dict):
+                    url = image_url.get("url", "")
+                    if isinstance(url, str) and url and not url.startswith("data:"):
+                        ref = url
+
+            if isinstance(ref, str) and ref:
+                refs.append(ref)
+
+        if not refs:
+            return ""
+
+        lines = [f"[Image Ref {idx}] {ref}" for idx, ref in enumerate(refs, start=1)]
+        return "\n".join(lines)

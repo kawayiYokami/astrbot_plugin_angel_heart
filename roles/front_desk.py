@@ -141,6 +141,7 @@ class FrontDesk:
                                     "type": "image_url",
                                     "image_url": {"url": data_url},
                                     "original_url": url,  # 保存原始URL供转述使用
+                                    "original_file_url": url,  # 兼容下游统一读取字段
                                 }
                             )
                         else:
@@ -160,6 +161,7 @@ class FrontDesk:
                                     "type": "image_url",
                                     "image_url": {"url": data_url},
                                     "original_url": url,  # 保存原始URL供转述使用
+                                    "original_file_url": url,  # 兼容下游统一读取字段
                                 }
                             )
                         else:
