@@ -334,6 +334,11 @@ class AngelHeartPlugin(Star):
         parts = unified_id.split(":")
         return parts[-1] if parts else ""
 
+    def _is_private_chat(self, unified_id: str) -> bool:
+        """根据 unified_msg_origin 判断是否为私聊。"""
+        parts = unified_id.split(":")
+        return len(parts) >= 3 and parts[1] == "FriendMessage"
+
     def _should_process(self, event: AstrMessageEvent) -> bool:
         """检查是否需要处理此消息"""
         chat_id = event.unified_msg_origin
@@ -341,6 +346,13 @@ class AngelHeartPlugin(Star):
         try:
             # 1. 检查是否为@消息，区分@自己和@全体成员
             if event.is_at_or_wake_command:
+                # 私聊天然是直接对话场景，不需要经过@自己的判定分支
+                if self._is_private_chat(chat_id):
+                    logger.debug(
+                        f"AngelHeart[{chat_id}]: 检测到私聊唤醒消息，允许进入缓存流程。"
+                    )
+                    return True
+
                 # 预缓存ID以提高性能
                 self_id = str(event.get_self_id())
 

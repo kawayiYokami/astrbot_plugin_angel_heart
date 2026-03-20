@@ -1,9 +1,9 @@
-# AngelHeart - 智能群聊交互插件
+# AngelHeart - 智能群聊/私聊交互插件
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 [![AstrBot Plugin](https://img.shields.io/badge/AstrBot-Plugin-blue)](https://github.com/Soulter/AstrBot)
 
-AngelHeart 是一个专为 [AstrBot](https://github.com/Soulter/AstrBot) 平台设计的智能群聊交互插件。它采用创新的**两级AI协作架构**，实现高质量、低成本的智能对话交互，让AI成为懂分寸、有眼色的聊天伙伴。
+AngelHeart 是一个专为 [AstrBot](https://github.com/Soulter/AstrBot) 平台设计的智能群聊/私聊交互插件。它采用创新的**两级AI协作架构**，实现高质量、低成本的智能对话交互，让AI成为懂分寸、有眼色的聊天伙伴。
 
 ## ✨ 核心特性
 
@@ -30,6 +30,7 @@ AngelHeart 采用创新的4状态智能交互系统，让AI在群聊中的表现
 - **轻量级前端缓存**：实时接收并缓存所有合规消息。
 - **异步处理**：支持高并发场景下的稳定运行。
 - **智能去重**：基于时间戳和内容的智能上下文合并。
+- **私聊上下文接管**：现在私聊也会接管聊天记录重写与上下文构建，不再只覆盖群聊链路。
 
 ### 🔧 灵活配置
 - **中心化配置管理**：通过 `ConfigManager` 统一管理所有配置项。
@@ -38,6 +39,13 @@ AngelHeart 采用创新的4状态智能交互系统，让AI在群聊中的表现
 
 ### 🌟 群聊上下文管理
 AngelHeart 提供了专为群聊场景优化的上下文管理功能，确保AI在群聊环境中能够准确理解对话上下文，提供高质量的交互体验。
+
+### 💬 私聊上下文接管
+除了群聊增强外，AngelHeart 现在也会接管私聊场景下的聊天记录重写与上下文构建：
+
+- **私聊消息入账**：私聊消息会被纳入插件内部总账，参与后续上下文拼装。
+- **直接响应兼容**：私聊仍保持主框架直接回复，不走秘书判定链路。
+- **上下文连续性**：私聊请求发给模型前，也会使用 AngelHeart 的重写链路整理历史消息，保证上下文连续。
 
 #### 原生 AstrBot 框架的限制
 原生 AstrBot 框架在处理群聊上下文时存在以下问题：

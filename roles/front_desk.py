@@ -249,8 +249,15 @@ class FrontDesk:
                         event.stop_event()
                         return
 
-            # 4. 【核心】缓存消息并通知秘书
+            # 4. 【核心】缓存消息
             await self.cache_message(chat_id, event)
+
+            # 私聊由主框架直接响应，这里只负责缓存，不走秘书分析链路
+            if self._is_private_chat(chat_id):
+                logger.debug(
+                    f"AngelHeart[{chat_id}]: 私聊消息已缓存，跳过秘书处理，等待主框架直接响应。"
+                )
+                return
 
             # 5. 检查并补充历史消息，确保至少有7条上下文
             await self._ensure_minimum_context(chat_id, event)
@@ -924,13 +931,39 @@ class FrontDesk:
 
         return decision, recent_dialogue, historical_context, boundary_ts
 
+    def _is_group_chat(self, chat_id: str) -> bool:
+        """根据 unified_msg_origin 判断是否为群聊。"""
+        parts = chat_id.split(":")
+        return len(parts) >= 3 and parts[1] == "GroupMessage"
+
+    def _is_private_chat(self, chat_id: str) -> bool:
+        """根据 unified_msg_origin 判断是否为私聊。"""
+        parts = chat_id.split(":")
+        return len(parts) >= 3 and parts[1] == "FriendMessage"
+
+    def _get_conversation_data_without_decision(self, chat_id: str):
+        """
+        获取对话数据，但不依赖秘书决策。
+
+        用于私聊等直接响应场景，只重写聊天记录，不要求存在秘书分析结果。
+        """
+        historical_context, recent_dialogue, boundary_ts = partition_dialogue_raw(
+            self.context.conversation_ledger, chat_id
+        )
+        return recent_dialogue, historical_context, boundary_ts
+
     def _generate_final_prompt(self, recent_dialogue: List[Dict], decision: Any, alias: str) -> str:
         """生成聚焦指令"""
         return format_final_prompt(recent_dialogue, decision, alias)
 
-    def _mark_processed_if_needed(self, chat_id: str, decision: Any, recent_dialogue: List[Dict]):
-        """如果需要回复，标记消息为已处理"""
-        if decision and decision.should_reply and recent_dialogue:
+    def _mark_processed_if_needed(
+        self,
+        chat_id: str,
+        recent_dialogue: List[Dict],
+        should_mark_processed: bool,
+    ):
+        """在本轮请求会消费这些消息时，标记为已处理。"""
+        if should_mark_processed and recent_dialogue:
             boundary_ts = max(msg.get('timestamp', 0) for msg in recent_dialogue)
             self.context.conversation_ledger.mark_as_processed(chat_id, boundary_ts)
 
@@ -940,16 +973,19 @@ class FrontDesk:
         historical_context: List[Dict],
         recent_dialogue: List[Dict],
         chat_id: str,
-        current_event_id: str
+        current_event_id: str,
+        scene_hint: str | None = None,
     ) -> List[Dict]:
         """使用 MessageProcessor 构建上下文列表"""
-        # 在最顶部添加群聊说明消息（避免某些模型不允许第一条消息是助理）
-        new_contexts = [
-            {
-                "role": "user",
-                "content": [{"type": "text", "text": "这是一个群聊场景。"}]
-            }
-        ]
+        new_contexts = []
+        if scene_hint:
+            # 在最顶部添加场景说明消息，避免某些模型不允许第一条消息是助理
+            new_contexts.append(
+                {
+                    "role": "user",
+                    "content": [{"type": "text", "text": scene_hint}]
+                }
+            )
 
         # 1) 历史消息
         for msg in historical_context:
@@ -970,7 +1006,8 @@ class FrontDesk:
         req: Any,
         contexts: List[Dict],
         final_prompt: str,
-        alias: str
+        alias: str,
+        scene_prompt: str | None = None,
     ):
         """更新请求对象"""
         # 完全覆盖原有的 contexts
@@ -984,8 +1021,12 @@ class FrontDesk:
 
         # 注入系统提示词
         original_system_prompt = getattr(req, "system_prompt", "")
-        new_system_prompt = f"{original_system_prompt}\n\n你正在一个群聊中扮演角色，你的昵称是 '{alias}'。"
-        req.system_prompt = new_system_prompt
+        if scene_prompt:
+            req.system_prompt = (
+                f"{original_system_prompt}\n\n{scene_prompt.format(alias=alias)}"
+            )
+        else:
+            req.system_prompt = original_system_prompt
 
     async def rewrite_prompt_for_llm(self, chat_id: str, event: AstrMessageEvent, req: Any):
         """
@@ -994,31 +1035,50 @@ class FrontDesk:
         """
         logger.debug(f"AngelHeart[{chat_id}]: 开始重构LLM请求体...")
 
-        # 1. 获取对话数据
-        decision, recent_dialogue, historical_context, _ = self._get_conversation_data(chat_id)
-        if not decision:
-            logger.debug(f"AngelHeart[{chat_id}]: 私聊不参与重构。")
-            return
-
-        # 2. 生成聚焦指令
         alias = self.config_manager.alias
-        final_prompt_str = self._generate_final_prompt(recent_dialogue, decision, alias)
         current_event_id = self._get_event_message_id(event)
+        decision = None
+        should_mark_processed = False
+        scene_hint = None
+        scene_prompt = None
 
-        # 3. 标记已处理消息（如果需要）
-        self._mark_processed_if_needed(chat_id, decision, recent_dialogue)
+        if self._is_group_chat(chat_id):
+            # 群聊依赖秘书决策来构造聚焦指令
+            decision, recent_dialogue, historical_context, _ = self._get_conversation_data(chat_id)
+            if not decision:
+                logger.debug(f"AngelHeart[{chat_id}]: 群聊尚无秘书决策，跳过重构。")
+                return
 
-        # 4. 使用 MessageProcessor 构建上下文
+            final_prompt_str = self._generate_final_prompt(recent_dialogue, decision, alias)
+            should_mark_processed = bool(decision and decision.should_reply)
+            scene_hint = "这是一个群聊场景。"
+            scene_prompt = "你正在一个群聊中扮演角色，你的昵称是 '{alias}'。"
+        else:
+            # 私聊直接响应，不依赖秘书决策，但仍需重写聊天记录
+            recent_dialogue, historical_context, _ = self._get_conversation_data_without_decision(chat_id)
+            if not recent_dialogue and not historical_context:
+                logger.debug(f"AngelHeart[{chat_id}]: 私聊暂无可用上下文，跳过重构。")
+                return
+
+            final_prompt_str = self._generate_final_prompt(recent_dialogue, decision, alias)
+            should_mark_processed = True
+            if self._is_private_chat(chat_id):
+                scene_prompt = "你正在一个私聊中扮演角色，你的昵称是 '{alias}'。"
+
+        # 2. 标记已处理消息（如果需要）
+        self._mark_processed_if_needed(chat_id, recent_dialogue, should_mark_processed)
+
+        # 3. 使用 MessageProcessor 构建上下文
         processor = MessageProcessor(alias)
         new_contexts = self._build_contexts_with_processor(
-            processor, historical_context, recent_dialogue, chat_id, current_event_id
+            processor, historical_context, recent_dialogue, chat_id, current_event_id, scene_hint
         )
 
-        # 5. 根据 Provider 的 modalities 配置过滤图片内容
+        # 4. 根据 Provider 的 modalities 配置过滤图片内容
         new_contexts = self.filter_images_for_provider(chat_id, new_contexts)
 
-        # 6. 更新请求对象
-        self._update_request(req, new_contexts, final_prompt_str, alias)
+        # 5. 更新请求对象
+        self._update_request(req, new_contexts, final_prompt_str, alias, scene_prompt)
 
         logger.info(
             f"AngelHeart[{chat_id}]: LLM请求体已重构，采用'完整上下文+聚焦指令'模式。"
