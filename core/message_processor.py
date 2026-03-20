@@ -13,6 +13,7 @@ MessageProcessor - 前台消息处理器
 """
 
 import copy
+from datetime import datetime, timezone, timedelta
 from typing import Any, List, Dict
 
 from .utils import format_message_to_text
@@ -102,19 +103,27 @@ class MessageProcessor:
         # 提取原始的图片组件
         image_components = self._extract_image_components(original_content)
         image_ref_text = self._build_image_refs_text(image_components)
+        time_anchor_blocks = self._build_time_anchor_blocks(msg)
 
         # 构建最终内容
         role = msg.get("role", "user")
         # 强制规则：
         # 1. 助理消息：无条件字符串
         # 2. 用户消息：无图片 -> 字符串，有图片 -> 多模态列表
-        if role == "assistant" or not image_components:
-            final_content = xml_content  # 纯文本字符串
+        if role == "assistant":
+            final_content = xml_content  # 助理消息保持纯文本字符串
             if image_ref_text:
                 final_content = f"{final_content}\n{image_ref_text}"
+        elif not image_components:
+            # 用户纯文本消息也使用文本块列表，方便追加时间锚点块
+            final_content = [{"type": "text", "text": xml_content}]
+            final_content.extend(time_anchor_blocks)
+            if image_ref_text:
+                final_content.append({"type": "text", "text": image_ref_text})
         else:
             # 只有用户消息且包含图片时，返回多模态列表
             final_content = [{"type": "text", "text": xml_content}]
+            final_content.extend(time_anchor_blocks)
             if image_ref_text:
                 final_content.append({"type": "text", "text": image_ref_text})
             final_content.extend(image_components)
@@ -184,3 +193,21 @@ class MessageProcessor:
 
         lines = [f"[Image Ref {idx}] {ref}" for idx, ref in enumerate(refs, start=1)]
         return "\n".join(lines)
+
+    def _build_time_anchor_blocks(self, msg: Dict[str, Any]) -> List[Dict[str, str]]:
+        """
+        构建额外时间锚点文本块，使用消息发送时间（而非当前时间）。
+        格式示例：2026-03-20 17:28 (CST)
+        """
+        cst = timezone(timedelta(hours=8))
+        timestamp = msg.get("timestamp")
+        try:
+            if timestamp is not None:
+                ts = float(timestamp)
+                if ts > 0:
+                    msg_dt = datetime.fromtimestamp(ts, cst).strftime("%Y-%m-%d %H:%M")
+                    return [{"type": "text", "text": f"{msg_dt} (CST)"}]
+        except (TypeError, ValueError, OSError):
+            pass
+
+        return []
