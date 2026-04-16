@@ -81,4 +81,15 @@ def strip_markdown(text: str) -> str:
     # 使用全局的 MarkdownIt 实例以提高性能
     global _md_strip_instance
     # 渲染并返回纯文本
-    return _md_strip_instance.render(text)
+    cleaned_text = _md_strip_instance.render(text)
+
+    # 如果是单行且末尾是句号/句点，去掉最后一个标点
+    if not cleaned_text:
+        return cleaned_text
+
+    if "\n" not in cleaned_text and "\r" not in cleaned_text:
+        stripped = cleaned_text.rstrip()
+        if stripped.endswith(".") or stripped.endswith("。"):
+            cleaned_text = stripped[:-1] + cleaned_text[len(stripped) :]
+
+    return cleaned_text
