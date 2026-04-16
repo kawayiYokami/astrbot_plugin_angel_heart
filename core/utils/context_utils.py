@@ -221,16 +221,25 @@ def format_decision_xml(decision: 'SecretaryDecision') -> str:
     return decision_xml
 
 
-def format_final_prompt(recent_dialogue: List[Dict], decision: 'SecretaryDecision', alias: str = "AngelHeart") -> str:
+def format_final_prompt(
+    recent_dialogue: List[Dict],
+    decision: 'SecretaryDecision',
+    alias: str = "AngelHeart",
+    use_absolute_time: bool = False,
+) -> str:
     """
     为大模型生成最终的用户对话文本（不包含系统决策和 XML 包裹）。
     """
     from .xml_formatter import format_message_to_text
 
     # 将需要回应的新对话格式化为文本字符串
-    dialogue_str = "\n".join([
-        format_message_to_text(msg, alias)
-        for msg in recent_dialogue
-    ])
+    dialogue_str = "\n".join(
+        [
+            format_message_to_text(
+                msg, alias, use_relative_time=not use_absolute_time
+            )
+            for msg in recent_dialogue
+        ]
+    )
 
     return dialogue_str

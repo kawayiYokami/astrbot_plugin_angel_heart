@@ -21,7 +21,7 @@ from astrbot.core.message.components import Image  # 导入 Image 和 Plain 组�
 from typing import Any, List, Dict  # 导入类型提示
 
 # 导入公共工具函数和 ConversationLedger
-from ..core.utils import partition_dialogue_raw, format_final_prompt
+from ..core.utils import partition_dialogue_raw, format_final_prompt, format_decision_xml
 from ..core.image_processor import ImageProcessor
 
 from ..core.fishing_direct_reply import FishingDirectReply
@@ -952,9 +952,33 @@ class FrontDesk:
         )
         return recent_dialogue, historical_context, boundary_ts
 
-    def _generate_final_prompt(self, recent_dialogue: List[Dict], decision: Any, alias: str) -> str:
+    def _generate_final_prompt(
+        self, recent_dialogue: List[Dict], decision: Any, alias: str
+    ) -> str:
         """生成聚焦指令"""
-        return format_final_prompt(recent_dialogue, decision, alias)
+        return format_final_prompt(recent_dialogue, decision, alias, use_absolute_time=True)
+
+    def _build_temporary_decision_context(self, chat_id: str, decision: Any) -> Dict[str, Any] | None:
+        """构建不会持久化的临时建议上下文消息"""
+        if not decision or not getattr(decision, "reply_strategy", None):
+            return None
+
+        return {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "text",
+                    "text": format_decision_xml(decision),
+                }
+            ],
+            "sender_id": "angelheart-secretary",
+            "sender_name": "AngelHeart秘书",
+            "timestamp": time.time(),
+            "is_processed": True,
+            "_no_save": True,
+            "is_temporary_context": True,
+            "chat_id": chat_id,
+        }
 
     def _mark_processed_if_needed(
         self,
@@ -1071,13 +1095,20 @@ class FrontDesk:
         # 3. 使用 MessageProcessor 构建上下文
         processor = MessageProcessor(alias)
         new_contexts = self._build_contexts_with_processor(
-            processor, historical_context, recent_dialogue, chat_id, current_event_id, scene_hint
+            processor, historical_context, [] if self._is_group_chat(chat_id) else recent_dialogue,
+            chat_id, current_event_id, scene_hint
         )
 
-        # 4. 根据 Provider 的 modalities 配置过滤图片内容
+        # 4. 将秘书建议作为临时上下文注入（仅群聊且需要回复时）
+        if self._is_group_chat(chat_id) and decision and decision.should_reply:
+            decision_context = self._build_temporary_decision_context(chat_id, decision)
+            if decision_context:
+                new_contexts.append(decision_context)
+
+        # 5. 根据 Provider 的 modalities 配置过滤图片内容
         new_contexts = self.filter_images_for_provider(chat_id, new_contexts)
 
-        # 5. 更新请求对象
+        # 6. 更新请求对象
         self._update_request(req, new_contexts, final_prompt_str, alias, scene_prompt)
 
         logger.info(

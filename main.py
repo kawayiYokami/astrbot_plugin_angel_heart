@@ -26,7 +26,6 @@ except ImportError:
 
     logger = logging.getLogger(__name__)
 from astrbot.core.message.components import Plain, At, AtAll, Reply
-from astrbot.core.agent.message import TextPart
 
 from .core.config_manager import ConfigManager
 from .roles.front_desk import FrontDesk
@@ -34,7 +33,6 @@ from .roles.secretary import Secretary
 from .core.utils import strip_markdown
 from .core.utils.message_utils import serialize_message_chain
 from .core.angel_heart_context import AngelHeartContext
-from .core.utils.context_utils import format_decision_xml
 
 
 @register("astrbot_plugin_angel_heart", "kawayiYokami", "天使心秘书，让astrbot拥有极其聪明，有分寸的群聊介入，和极其完备的群聊上下文管理", "0.8.11", "https://github.com/kawayiYokami/astrbot_plugin_angel_heart")
@@ -90,10 +88,9 @@ class AngelHeartPlugin(Star):
     async def inject_oneshot_decision_on_llm_request(
         self, event: AstrMessageEvent, req: ProviderRequest
     ):
-        """在LLM请求时，一次性注入由秘书分析得出的决策上下文"""
+        """读取上游注入的 AngelHeart 上下文，供日志与后续钩子使用"""
         chat_id = event.unified_msg_origin
 
-        # 示例：读取 angelheart_context（供其他插件参考）
         if hasattr(event, "angelheart_context"):
             try:
                 context = json.loads(event.angelheart_context)
@@ -119,39 +116,6 @@ class AngelHeartPlugin(Star):
                 logger.warning(
                     f"AngelHeart[{chat_id}]: 处理 angelheart_context 时发生意外错误: {e}"
                 )
-
-        # 1. 检查是否存在未执行的工具调用反馈
-        # (这部分逻辑通常在 AstrBot 框架层面处理，但我们需要在这里确保拟人化反馈)
-        # 注意：这里主要处理 on_llm_request，工具反馈通常在 on_llm_response
-
-        # 2. 从秘书那里获取决策
-        decision = self.secretary.get_decision(chat_id)
-
-        # 2. 检查决策是否存在且有效
-        if not decision or not decision.should_reply:
-            # 如果没有决策或决策是不回复，则不进行任何操作
-            return
-
-        # 3. 严格检查参数合法性
-        topic = getattr(decision, "topic", None)
-        strategy = getattr(decision, "reply_strategy", None)
-
-        if not topic or not strategy:
-            # 如果话题或策略为空，则不进行任何操作，防止污染
-            logger.debug(
-                f"AngelHeart[{chat_id}]: 决策参数不合法 (topic: {topic}, strategy: {strategy})，跳过决策注入。"
-            )
-            return
-
-        # 4. 构建系统决策 XML
-        decision_xml = format_decision_xml(decision)
-
-        # 5. 注入到 extra_user_content_parts（所有模式统一）
-        if not hasattr(req, 'extra_user_content_parts'):
-            req.extra_user_content_parts = []
-
-        req.extra_user_content_parts.append(TextPart(text=decision_xml))
-        logger.debug(f"AngelHeart[{chat_id}]: 已将决策注入到 extra_user_content_parts。")
 
     @filter.on_llm_request(priority=50)  # 在决策注入之后，日志之前执行
     async def delegate_prompt_rewriting(
