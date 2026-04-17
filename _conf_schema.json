@@ -122,6 +122,12 @@
     "hint": "当消息中包含这些词时，插件将进入静默状态。多个词请用 '|' 分隔。",
     "default": "闭嘴"
   },
+  "speak_words": {
+    "type": "string",
+    "description": "[唤醒与交互] 张嘴词",
+    "hint": "当消息中包含这些词时，插件将解除闭嘴状态。多个词请用 '|' 分隔。",
+    "default": ""
+  },
   "silence_duration": {
     "type": "int",
     "description": "[唤醒与交互] 闭嘴时长（秒）",

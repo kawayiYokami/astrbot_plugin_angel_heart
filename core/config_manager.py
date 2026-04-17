@@ -89,6 +89,11 @@ class ConfigManager:
         return self._config.get("slap_words", "")
 
     @property
+    def speak_words(self) -> str:
+        """用于解除闭嘴的关键词，多个词用'|'分隔"""
+        return self._config.get("speak_words", "")
+
+    @property
     def silence_duration(self) -> int:
         """触发闭嘴后的静默时长（秒）"""
         return self._config.get("silence_duration", 600)

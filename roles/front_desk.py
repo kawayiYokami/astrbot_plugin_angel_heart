@@ -220,34 +220,49 @@ class FrontDesk:
                 return
 
             # 2. 闭嘴状态检查
-            if (
-                chat_id in self.context.silenced_until
-                and current_time < self.context.silenced_until[chat_id]
-            ):
-                remaining = self.context.silenced_until[chat_id] - current_time
-                logger.info(
-                    f"AngelHeart[{chat_id}]: 处于闭嘴状态 (剩余 {remaining:.1f} 秒)，事件已终止。"
-                )
-                event.stop_event()
-                return
+            muted = chat_id in self.context.silenced_until and current_time < self.context.silenced_until[chat_id]
+            unmuted_now = False
+            if muted:
+                speak_words_str = self.config_manager.speak_words
+                if speak_words_str:
+                    speak_words = [
+                        word.strip() for word in speak_words_str.split("|") if word.strip()
+                    ]
+                    for word in speak_words:
+                        if word in message_content:
+                            self.context.silenced_until.pop(chat_id, None)
+                            logger.info(
+                                f"AngelHeart[{chat_id}]: 检测到张嘴词 '{word}'，解除闭嘴模式。"
+                            )
+                            unmuted_now = True
+                            muted = False
+                            break
+                if muted:
+                    remaining = self.context.silenced_until[chat_id] - current_time
+                    logger.info(
+                        f"AngelHeart[{chat_id}]: 处于闭嘴状态 (剩余 {remaining:.1f} 秒)，事件已终止。"
+                    )
+                    event.stop_event()
+                    return
 
             # 3. 掌嘴词检测
-            slap_words_str = self.config_manager.slap_words
-            if slap_words_str:
-                slap_words = [
-                    word.strip() for word in slap_words_str.split("|") if word.strip()
-                ]
-                for word in slap_words:
-                    if word in message_content:
-                        silence_duration = self.config_manager.silence_duration
-                        self.context.silenced_until[chat_id] = (
-                            current_time + silence_duration
-                        )
-                        logger.info(
-                            f"AngelHeart[{chat_id}]: 检测到掌嘴词 '{word}'，启动闭嘴模式 {silence_duration} 秒，事件已终止。"
-                        )
-                        event.stop_event()
-                        return
+            if not unmuted_now:
+                slap_words_str = self.config_manager.slap_words
+                if slap_words_str:
+                    slap_words = [
+                        word.strip() for word in slap_words_str.split("|") if word.strip()
+                    ]
+                    for word in slap_words:
+                        if word in message_content:
+                            silence_duration = self.config_manager.silence_duration
+                            self.context.silenced_until[chat_id] = (
+                                current_time + silence_duration
+                            )
+                            logger.info(
+                                f"AngelHeart[{chat_id}]: 检测到掌嘴词 '{word}'，启动闭嘴模式 {silence_duration} 秒，事件已终止。"
+                            )
+                            event.stop_event()
+                            return
 
             # 4. 【核心】缓存消息
             await self.cache_message(chat_id, event)
