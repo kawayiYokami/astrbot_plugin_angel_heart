@@ -99,6 +99,20 @@ class AngelHeartContext:
         llm_timeout = max(0.0, float(self.config_manager.llm_timeout))
         return min(llm_timeout, 300.0)
 
+    def _get_plain_chat_id(self, chat_id: str) -> str:
+        """从 unified_msg_origin 中提取纯净的聊天 ID。"""
+        parts = chat_id.split(":")
+        return parts[-1] if parts else ""
+
+    def _is_patience_timer_allowed(self, chat_id: str) -> bool:
+        """检查安抚机制是否允许在当前会话生效。"""
+        if not self.config_manager.whitelist_enabled:
+            return True
+
+        plain_chat_id = self._get_plain_chat_id(chat_id)
+        whitelist = {str(cid) for cid in self.config_manager.chat_ids}
+        return plain_chat_id in whitelist
+
     # ========== 门牌管理 ==========
 
     async def is_chat_processing(self, chat_id: str) -> bool:
@@ -416,6 +430,9 @@ class AngelHeartContext:
             # 定期发送安抚语
             for i, word in enumerate(comfort_words):
                 await asyncio.sleep(interval)
+                if not self._is_patience_timer_allowed(chat_id):
+                    logger.debug(f"AngelHeart[{chat_id}]: 安抚白名单条件不满足，停止发送后续安抚语")
+                    return
                 logger.debug(f"AngelHeart[{chat_id}]: 安抚来访者 - 第{i+1}次 ({(i+1)*interval}s)")
                 chain = MessageChain([Plain(word.strip())])
                 await self.astr_context.send_message(chat_id, chain)
@@ -428,6 +445,10 @@ class AngelHeartContext:
         """启动或重置指定来访者的安抚机制"""
         # 先停止之前的安抚
         await self.cancel_patience_timer(chat_id)
+
+        if not self._is_patience_timer_allowed(chat_id):
+            logger.debug(f"AngelHeart[{chat_id}]: 当前会话不满足安抚白名单条件，跳过安抚启动")
+            return
 
         # 开始新的安抚
         self.patience_timers[chat_id] = asyncio.create_task(
