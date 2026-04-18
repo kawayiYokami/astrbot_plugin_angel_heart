@@ -973,6 +973,10 @@ class FrontDesk:
         """生成聚焦指令"""
         return format_final_prompt(recent_dialogue, decision, alias, use_absolute_time=True)
 
+    def _is_valid_final_prompt(self, prompt: str) -> bool:
+        """检查重建后的当前提示词是否有有效内容。"""
+        return isinstance(prompt, str) and bool(prompt.strip())
+
     def _build_temporary_decision_context(self, chat_id: str, decision: Any) -> Dict[str, Any] | None:
         """构建不会持久化的临时建议上下文消息"""
         if not decision or not getattr(decision, "reply_strategy", None):
@@ -1052,11 +1056,10 @@ class FrontDesk:
         # 完全覆盖原有的 contexts
         req.contexts = contexts
 
-        # 聚焦指令并赋值给 req.prompt
-        req.prompt = final_prompt
-
-        # 清空 image_urls
-        req.image_urls = []  # 图片已在 contexts 中
+        # 只在当前提示词有效时覆盖 req.prompt；否则保留原始当前轮输入。
+        if self._is_valid_final_prompt(final_prompt):
+            req.prompt = final_prompt
+            req.image_urls = []  # 图片已在 contexts 中
 
         # 注入系统提示词
         original_system_prompt = getattr(req, "system_prompt", "")
@@ -1125,6 +1128,11 @@ class FrontDesk:
 
         # 6. 更新请求对象
         self._update_request(req, new_contexts, final_prompt_str, alias, scene_prompt)
+
+        if not self._is_valid_final_prompt(final_prompt_str):
+            logger.warning(
+                f"AngelHeart[{chat_id}]: 重建后的当前提示词为空，本次仅重建上文，保留原始 req.prompt。"
+            )
 
         logger.info(
             f"AngelHeart[{chat_id}]: LLM请求体已重构，采用'完整上下文+聚焦指令'模式。"
