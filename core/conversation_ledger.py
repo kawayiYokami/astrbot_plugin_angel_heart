@@ -3,6 +3,7 @@ import threading
 import sqlite3
 import aiohttp
 import io
+import base64
 from PIL import Image
 from pathlib import Path
 from typing import List, Dict, Tuple
@@ -105,64 +106,97 @@ class ConversationLedger:
             logger.warning(f"dHash计算失败: {e}")
             return ""
 
-    async def _download_and_compute_dhash(self, url: str) -> str:
-        """下载图片并计算 dHash"""
+    async def _load_image_bytes(self, url: str) -> bytes:
+        """从本地文件、网络地址或 data URL 读取图片原始字节。"""
         try:
-            # 1. 处理本地文件
             if url.startswith("file:///"):
                 import os
-                path = url[8:]  # 移除 'file:///'
+                path = url[8:]
 
-                # 安全检查：验证路径
                 if '..' in path or path.startswith('/etc') or path.startswith('/sys'):
                     logger.warning(f"拒绝访问受限路径: {path}")
-                    return ""
+                    return b""
 
-                # 处理 Windows 路径 (file:///C:/path -> C:/path)
                 if os.name == 'nt' and len(path) > 2 and path[1] == ':':
-                    pass # Windows 绝对路径
-                elif os.name == 'nt' and path.startswith('/'): # file:///d:/path -> /d:/path -> d:/path
+                    pass
+                elif os.name == 'nt' and path.startswith('/'):
                     path = path[1:]
 
-                if os.path.exists(path):
-                    # 限制文件大小（例如 10MB）
-                    if os.path.getsize(path) > 10 * 1024 * 1024:
-                        logger.warning(f"文件过大，拒绝处理: {path}")
-                        return ""
-
-                    with open(path, "rb") as f:
-                        data = f.read()
-                    return self._compute_dhash(data)
-                else:
+                if not os.path.exists(path):
                     logger.warning(f"本地文件不存在: {path}")
-                    return ""
+                    return b""
 
-            # 2. 处理网络文件
-            elif url.startswith("http"):
+                if os.path.getsize(path) > 10 * 1024 * 1024:
+                    logger.warning(f"文件过大，拒绝处理: {path}")
+                    return b""
+
+                with open(path, "rb") as f:
+                    return f.read()
+
+            if url.startswith("http"):
                 async with aiohttp.ClientSession() as session:
                     async with session.get(url, timeout=10) as resp:
                         if resp.status == 200:
-                            data = await resp.read()
-                            return self._compute_dhash(data)
-                        else:
-                            logger.warning(f"下载图片失败 status={resp.status}: {url}")
-                            return ""
+                            return await resp.read()
+                        logger.warning(f"下载图片失败 status={resp.status}: {url}")
+                        return b""
 
-            # 3. 处理 Base64 数据
-            elif url.startswith("data:image"):
-                import base64
-                # data:image/jpeg;base64,xxxxxx
+            if url.startswith("data:image"):
                 try:
-                    header, encoded = url.split(",", 1)
-                    data = base64.b64decode(encoded)
-                    return self._compute_dhash(data)
+                    _, encoded = url.split(",", 1)
+                    return base64.b64decode(encoded)
                 except Exception as e:
                     logger.warning(f"Base64解码失败: {e}")
-                    return ""
+                    return b""
 
-            else:
-                 logger.warning(f"不支持的URL协议: {url[:20]}...")
-                 return ""
+            logger.warning(f"不支持的URL协议: {url[:20]}...")
+            return b""
+
+        except Exception as e:
+            logger.warning(f"读取图片异常: {e}, URL: {url}")
+            return b""
+
+    def _build_caption_image_data_url(
+        self,
+        image_data: bytes,
+        max_side: int = 960,
+        quality: int = 75,
+    ) -> str:
+        """将图片压缩为最长边不超过 max_side 的 webp data URL。"""
+        try:
+            img = Image.open(io.BytesIO(image_data))
+
+            if img.mode not in ("RGB", "L"):
+                img = img.convert("RGB")
+            elif img.mode == "L":
+                img = img.convert("RGB")
+
+            width, height = img.size
+            longest_side = max(width, height)
+            if longest_side > max_side:
+                scale = max_side / float(longest_side)
+                resized = (
+                    max(1, int(round(width * scale))),
+                    max(1, int(round(height * scale))),
+                )
+                img = img.resize(resized, Image.Resampling.LANCZOS)
+
+            output = io.BytesIO()
+            img.save(output, format="WEBP", quality=quality, method=6)
+            encoded = base64.b64encode(output.getvalue()).decode("utf-8")
+            return f"data:image/webp;base64,{encoded}"
+
+        except Exception as e:
+            logger.warning(f"构建转述压缩图失败: {e}")
+            return ""
+
+    async def _download_and_compute_dhash(self, url: str) -> str:
+        """下载图片并计算 dHash"""
+        try:
+            data = await self._load_image_bytes(url)
+            if not data:
+                return ""
+            return self._compute_dhash(data)
 
         except Exception as e:
             logger.warning(f"下载/dHash计算异常: {e}, URL: {url}")
@@ -458,9 +492,23 @@ class ConversationLedger:
                     if not final_caption:
                         # 3. 缓存未命中，调用 LLM
                         logger.debug(f"AngelHeart[{chat_id}]: 缓存未命中(dHash: {img_dhash})，调用LLM转述URL: {target_url[:50]}...")
+                        caption_input_url = target_url
+                        raw_image_data = await self._load_image_bytes(target_url)
+                        if raw_image_data:
+                            compressed_data_url = self._build_caption_image_data_url(raw_image_data)
+                            if compressed_data_url:
+                                caption_input_url = compressed_data_url
+                                logger.debug(
+                                    f"AngelHeart[{chat_id}]: 转述图片已压缩为 WEBP(quality=75, max_side=960)"
+                                )
+                            else:
+                                logger.warning(
+                                    f"AngelHeart[{chat_id}]: 压缩图片失败，回退使用原始URL进行转述"
+                                )
+
                         llm_resp = await caption_provider.text_chat(
                             prompt=img_cap_prompt,
-                            image_urls=[target_url],
+                            image_urls=[caption_input_url],
                         )
 
                         if llm_resp and llm_resp.completion_text:
