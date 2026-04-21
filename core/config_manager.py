@@ -44,6 +44,11 @@ class ConfigManager:
         return self._config.get("analyzer_model", "")
 
     @property
+    def image_caption_provider_id(self) -> str:
+        """用于图片转述的模型提供商ID"""
+        return self._config.get("image_caption_provider_id", "")
+
+    @property
     def reply_strategy_guide(self) -> str:
         """回复策略指导文本"""
         return self._config.get("reply_strategy_guide", "")
@@ -277,6 +282,7 @@ class ConfigManager:
                 "cache_expiry": self.cache_expiry,
                 "max_conversation_tokens": self.max_conversation_tokens,
                 "alias": self.alias,
+                "image_caption_provider_id": self.image_caption_provider_id,
                 "analysis_on_mention_only": self.analysis_on_mention_only,
                 "force_reply_when_summoned": self.force_reply_when_summoned,
                 "comfort_words": self.comfort_words,

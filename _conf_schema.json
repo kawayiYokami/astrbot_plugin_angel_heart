@@ -6,6 +6,13 @@
     "_special": "select_provider",
     "default": ""
   },
+  "image_caption_provider_id": {
+    "type": "string",
+    "description": "[基础配置] 图片转述模型",
+    "hint": "AngelHeart 专用的图片转述模型提供商。请禁用 AstrBot 上游的图转文模型（provider_settings.default_image_caption_provider_id 留空），避免重复转述。",
+    "_special": "select_provider",
+    "default": ""
+  },
   "is_reasoning_model": {
     "type": "bool",
     "description": "[基础配置] 是否是思维模型",

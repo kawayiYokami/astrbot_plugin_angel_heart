@@ -17,7 +17,7 @@ except ImportError:
 
     logger = logging.getLogger(__name__)
 from astrbot.api.event import AstrMessageEvent
-from astrbot.core.message.components import Image  # 导入 Image 和 Plain 组件
+from astrbot.core.message.components import Image, Plain
 from typing import Any, List, Dict  # 导入类型提示
 
 # 导入公共工具函数和 ConversationLedger
@@ -104,7 +104,13 @@ class FrontDesk:
         """
         # 1. 获取消息概要作为主要正文
         outline = event.get_message_outline()
-        text_content = outline if outline and outline.strip() else ""
+        text_parts = []
+        for component in event.get_messages():
+            if isinstance(component, Plain) and component.text:
+                text_parts.append(component.text)
+        text_content = "".join(text_parts).strip()
+        if not text_content:
+            text_content = outline if outline and outline.strip() else ""
 
         # 2. 获取 MessageChain 用于图片处理
         message_chain = event.get_messages()
@@ -471,10 +477,7 @@ class FrontDesk:
 
             # 图片转述处理
             try:
-                cfg = self.astr_context.get_config(umo=event.unified_msg_origin)[
-                    "provider_settings"
-                ]
-                caption_provider_id = cfg.get("default_image_caption_provider_id", "")
+                caption_provider_id = self._config_manager.image_caption_provider_id
             except Exception as e:
                 logger.warning(f"AngelHeart[{chat_id}]: 无法读取图片转述配置: {e}")
                 caption_provider_id = ""
@@ -1010,6 +1013,22 @@ class FrontDesk:
             boundary_ts = max(msg.get('timestamp', 0) for msg in recent_dialogue)
             self.context.conversation_ledger.mark_as_processed(chat_id, boundary_ts)
 
+    async def _ensure_image_captions_for_request(self, chat_id: str) -> int:
+        """在真正组请求前，按当前配置补齐待回答消息的图片转述。"""
+        caption_provider_id = self._config_manager.image_caption_provider_id
+        if not caption_provider_id:
+            return 0
+
+        try:
+            return await self.context.conversation_ledger.process_image_captions_if_needed(
+                chat_id=chat_id,
+                caption_provider_id=caption_provider_id,
+                astr_context=self.astr_context,
+            )
+        except Exception as e:
+            logger.warning(f"AngelHeart[{chat_id}]: 预处理图片转述失败: {e}")
+            return 0
+
     def _build_contexts_with_processor(
         self,
         processor: 'MessageProcessor',
@@ -1083,6 +1102,12 @@ class FrontDesk:
         should_mark_processed = False
         scene_hint = None
         scene_prompt = None
+
+        caption_count = await self._ensure_image_captions_for_request(chat_id)
+        if caption_count > 0:
+            logger.info(
+                f"AngelHeart[{chat_id}]: 组请求前已补齐 {caption_count} 条图片转述"
+            )
 
         if self._is_group_chat(chat_id):
             # 群聊依赖秘书决策来构造聚焦指令

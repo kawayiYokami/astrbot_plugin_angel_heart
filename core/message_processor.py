@@ -92,7 +92,7 @@ class MessageProcessor:
         # 使用 ConversationLedger 中已生成的图片转述
         image_caption = processed_msg.get("image_caption")
         if image_caption:
-            content_list = self._apply_image_caption(content_list, image_caption)
+            content_list = self._remove_image_components(content_list)
 
         # 更新消息内容为处理后的列表
         processed_msg["content"] = content_list
@@ -142,16 +142,9 @@ class MessageProcessor:
         else:
             return [{"type": "text", "text": str(content)}]
 
-    def _apply_image_caption(self, content_list: List[Dict[str, Any]], image_caption: str) -> List[Dict[str, Any]]:
-        """使用 ConversationLedger 中已生成的 image_caption，移除图片组件，添加转述文本"""
-        caption_text = f"<图片转述>{image_caption}</图片转述>"
-        # 移除所有图片组件
-        filtered_list = [
-            item for item in content_list if item.get("type") != "image_url"
-        ]
-        # 添加转述文本
-        filtered_list.append({"type": "text", "text": caption_text})
-        return filtered_list
+    def _remove_image_components(self, content_list: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """移除图片组件，仅保留原有文本内容。"""
+        return [item for item in content_list if item.get("type") != "image_url"]
 
     def _extract_image_components(self, original_content: Any) -> List[Dict[str, Any]]:
         """从原始内容中提取图片组件"""

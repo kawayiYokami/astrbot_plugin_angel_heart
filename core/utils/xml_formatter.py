@@ -7,6 +7,57 @@ from .time_utils import format_relative_time, format_absolute_time
 from .content_utils import convert_content_to_string
 
 
+def build_image_attachment_text(msg: dict) -> str:
+    """按统一格式构建图片附件文本块。"""
+    image_caption = msg.get("image_caption", "")
+    if not isinstance(image_caption, str) or not image_caption.strip():
+        return ""
+
+    refs = []
+    stored_refs = msg.get("image_refs", [])
+    if isinstance(stored_refs, list):
+        refs.extend(
+            ref for ref in stored_refs if isinstance(ref, str) and ref.strip()
+        )
+
+    content = msg.get("content", [])
+    if isinstance(content, list):
+        for item in content:
+            if not isinstance(item, dict) or item.get("type") != "image_url":
+                continue
+            ref = (
+                item.get("local_file_path")
+                or item.get("original_file_url")
+                or item.get("original_url")
+            )
+            if not ref:
+                image_url = item.get("image_url", {})
+                if isinstance(image_url, dict):
+                    url = image_url.get("url", "")
+                    if isinstance(url, str) and url and not url.startswith("data:"):
+                        ref = url
+            if isinstance(ref, str) and ref.strip():
+                refs.append(ref)
+
+    deduped_refs = []
+    seen = set()
+    for ref in refs:
+        if ref not in seen:
+            deduped_refs.append(ref)
+            seen.add(ref)
+
+    path_text = "\n".join(deduped_refs) if deduped_refs else "未知"
+    caption_text = image_caption.strip()
+    return (
+        "<图片附件>\n"
+        "#图片路径#：\n"
+        f"{path_text}\n"
+        "#图片描述#：\n"
+        f"{caption_text}\n"
+        "</图片附件>"
+    )
+
+
 def format_message_to_text(
     msg: dict,
     alias: str = "AngelHeart",
@@ -28,6 +79,13 @@ def format_message_to_text(
     role = msg.get("role")
     content = msg.get("content", "")
     text_content = convert_content_to_string(content)
+    image_attachment_text = build_image_attachment_text(msg)
+    if image_attachment_text:
+        text_content = (
+            f"{text_content}\n\n{image_attachment_text}"
+            if text_content
+            else image_attachment_text
+        )
 
     formatted_body = ""
 

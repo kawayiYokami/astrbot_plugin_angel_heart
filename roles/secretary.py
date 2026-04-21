@@ -365,8 +365,7 @@ class Secretary:
 
             # 图片转述处理
             try:
-                cfg = self.context.get_config(umo=event.unified_msg_origin)["provider_settings"]
-                caption_provider_id = cfg.get("default_image_caption_provider_id", "")
+                caption_provider_id = self.config_manager.image_caption_provider_id
             except Exception as e:
                 logger.warning(f"AngelHeart[{chat_id}]: 无法读取图片转述配置: {e}")
                 caption_provider_id = ""

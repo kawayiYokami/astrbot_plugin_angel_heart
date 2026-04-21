@@ -390,6 +390,9 @@ class ConversationLedger:
             for message in ledger["messages"]:
                 if abs(message.get("timestamp", 0) - message_timestamp) < 0.001:  # 处理浮点数精度
                     message["image_caption"] = caption
+                    image_refs = self._extract_image_refs_from_content(message.get("content"))
+                    if image_refs:
+                        message["image_refs"] = image_refs
 
                     # 转述成功后，清空图片URL避免重复转述
                     if isinstance(message.get("content"), list):
@@ -403,6 +406,33 @@ class ConversationLedger:
                     logger.debug(f"AngelHeart[{chat_id}]: 已为消息添加图片转述: {caption[:50]}...")
                     return True
             return False
+
+    def _extract_image_refs_from_content(self, content) -> List[str]:
+        """从消息 content 中提取可用于展示的图片引用路径。"""
+        if not isinstance(content, list):
+            return []
+
+        refs: List[str] = []
+        for item in content:
+            if not isinstance(item, dict) or item.get("type") != "image_url":
+                continue
+
+            ref = (
+                item.get("local_file_path")
+                or item.get("original_file_url")
+                or item.get("original_url")
+            )
+            if not ref:
+                image_url = item.get("image_url", {})
+                if isinstance(image_url, dict):
+                    url = image_url.get("url", "")
+                    if isinstance(url, str) and url and not url.startswith("data:"):
+                        ref = url
+
+            if isinstance(ref, str) and ref:
+                refs.append(ref)
+
+        return refs
 
     async def generate_captions_for_chat(self, chat_id: str, caption_provider_id: str, astr_context=None) -> int:
         """
@@ -428,8 +458,7 @@ class ConversationLedger:
 
         # 获取配置
         try:
-            cfg = astr_context.get_config(umo=chat_id)["provider_settings"]
-            img_cap_prompt = cfg.get("image_caption_prompt", "请准确描述图片内容")
+            img_cap_prompt = "这是一张群聊图片，根据情景准确描述该图片"
         except Exception as e:
             logger.error(f"AngelHeart[{chat_id}]: 获取配置失败: {e}")
             return 0
