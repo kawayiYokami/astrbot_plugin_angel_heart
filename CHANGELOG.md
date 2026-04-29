@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.8.28 - 2026-04-30
+- 提高秘书 JSON 解析鲁棒性：`should_reply` 现在是唯一关键字段，其余字段类型错误或缺失时会自动回退默认值，不再因辅助字段异常导致整条决策失败。
+- 对 `entities`、`facts`、`keywords` 新增字符串数组归一化处理，兼容单字符串、空值、混杂脏数据等异常输出。
+- 新增可直接运行的手动测试脚本 `tests/manual_test_llm_analyzer_json_robustness.py`，覆盖多组刁钻和弱智输出案例，用于脱离上游环境验证秘书解析稳定性。
+
 ## 0.8.27 - 2026-04-30
 - 新增配置项 `block_unapproved_wake_non_command`，可阻断未通过 AngelHeart 批准的非命令唤醒消息，禁用这类消息对上游与其他插件的后续唤醒效果。
 - 上游 command/skill 事件现在会在入口层直接跳过 AngelHeart，不进入聊天记录。
