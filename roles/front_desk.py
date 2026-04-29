@@ -689,36 +689,142 @@ class FrontDesk:
         self, chat_id: str, needed_count: int, event: AstrMessageEvent
     ) -> List[Dict]:
         """
-        从QQ API获取历史消息并转换为天使之心格式
+        优先从 QQ API 获取历史消息；若失败或为空，则回退到 AstrBot 官方会话历史。
         """
         try:
-            # 解析群号
-            group_id = self._extract_group_id(chat_id)
+            converted_messages = await self._fetch_qq_history(chat_id, needed_count, event)
+            if converted_messages:
+                return converted_messages
 
-            # 获取bot实例
-            bot = self._get_bot_instance(event)
-            if not bot:
-                logger.error(f"AngelHeart[{chat_id}]: 无法获取bot实例")
-                return []
-
-            # 直接调用QQ API获取历史消息
-            raw_messages = await self._get_qq_history_direct(
-                bot, group_id, needed_count
+            logger.info(
+                f"AngelHeart[{chat_id}]: QQ 历史获取为空或失败，回退到 AstrBot 官方会话历史"
             )
-
-            # 转换格式
-            converted_messages = []
-            for raw_msg in raw_messages:
-                msg = self._convert_raw_qq_message_to_angelheart_format(raw_msg)
-                if msg:
-                    converted_messages.append(msg)
-            return converted_messages
+            return await self._fetch_astrbot_conversation_history(chat_id, needed_count)
 
         except Exception as e:
             logger.error(
                 f"AngelHeart[{chat_id}]: 获取QQ API历史失败: {e}", exc_info=True
             )
             return []
+
+    async def _fetch_qq_history(
+        self, chat_id: str, needed_count: int, event: AstrMessageEvent
+    ) -> List[Dict]:
+        """从 QQ API 获取历史消息并转换为 AngelHeart 格式。"""
+        # 解析群号
+        group_id = self._extract_group_id(chat_id)
+
+        # 获取bot实例
+        bot = self._get_bot_instance(event)
+        if not bot:
+            logger.error(f"AngelHeart[{chat_id}]: 无法获取bot实例")
+            return []
+
+        raw_messages = await self._get_qq_history_direct(bot, group_id, needed_count)
+
+        converted_messages = []
+        for raw_msg in raw_messages:
+            msg = self._convert_raw_qq_message_to_angelheart_format(raw_msg)
+            if msg:
+                converted_messages.append(msg)
+        return converted_messages
+
+    async def _fetch_astrbot_conversation_history(
+        self, chat_id: str, needed_count: int
+    ) -> List[Dict]:
+        """从 AstrBot 官方 conversation history 回退补充历史消息。"""
+        try:
+            conv_mgr = getattr(self.astr_context, "conversation_manager", None)
+            if not conv_mgr:
+                logger.warning(f"AngelHeart[{chat_id}]: AstrBot conversation_manager 不可用")
+                return []
+
+            conversation_id = await conv_mgr.get_curr_conversation_id(chat_id)
+            if not conversation_id:
+                logger.info(f"AngelHeart[{chat_id}]: 当前会话没有官方 conversation id")
+                return []
+
+            conversation = await conv_mgr.get_conversation(chat_id, conversation_id)
+            if not conversation or not getattr(conversation, "history", None):
+                logger.info(f"AngelHeart[{chat_id}]: 官方 conversation history 为空")
+                return []
+
+            try:
+                history_records = json.loads(conversation.history)
+            except Exception as e:
+                logger.warning(f"AngelHeart[{chat_id}]: 解析官方 conversation history 失败: {e}")
+                return []
+
+            if not isinstance(history_records, list) or not history_records:
+                return []
+
+            fallback_messages = self._convert_astrbot_history_to_angelheart_format(
+                history_records,
+                needed_count,
+            )
+            logger.info(
+                f"AngelHeart[{chat_id}]: 已从 AstrBot 官方会话历史回退补充 {len(fallback_messages)} 条消息"
+            )
+            return fallback_messages
+        except Exception as e:
+            logger.error(
+                f"AngelHeart[{chat_id}]: 回退 AstrBot 官方会话历史失败: {e}",
+                exc_info=True,
+            )
+            return []
+
+    def _convert_astrbot_history_to_angelheart_format(
+        self, history_records: List[Dict], needed_count: int
+    ) -> List[Dict]:
+        """将 AstrBot 官方 conversation history 转为 AngelHeart 内部消息格式。"""
+        converted_messages = []
+        base_timestamp = time.time() - max(len(history_records), needed_count, 1)
+
+        for index, record in enumerate(history_records[-needed_count:]):
+            if not isinstance(record, dict):
+                continue
+
+            role = record.get("role")
+            if role not in ("user", "assistant"):
+                continue
+
+            content = self._extract_text_from_astrbot_history_record(record)
+            if not content:
+                continue
+
+            converted_messages.append(
+                {
+                    "role": role,
+                    "content": content,
+                    "sender_id": "assistant" if role == "assistant" else "history_user",
+                    "sender_name": "assistant" if role == "assistant" else "user",
+                    "timestamp": base_timestamp + index,
+                    "is_processed": True,
+                    "source": "astrbot_conversation",
+                }
+            )
+
+        return converted_messages
+
+    def _extract_text_from_astrbot_history_record(self, record: Dict) -> str:
+        """从 AstrBot 官方 history record 中提取可用文本。"""
+        content = record.get("content", "")
+        if isinstance(content, str):
+            return content.strip()
+        if isinstance(content, list):
+            text_parts = []
+            for item in content:
+                if isinstance(item, dict):
+                    if item.get("type") == "text":
+                        text = item.get("text") or item.get("content") or ""
+                        if isinstance(text, str) and text.strip():
+                            text_parts.append(text.strip())
+                    elif isinstance(item.get("text"), str) and item.get("text").strip():
+                        text_parts.append(item.get("text").strip())
+                elif isinstance(item, str) and item.strip():
+                    text_parts.append(item.strip())
+            return " ".join(text_parts).strip()
+        return ""
 
     async def _get_qq_history_direct(
         self, bot, group_id: str, count: int
