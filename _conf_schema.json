@@ -117,6 +117,12 @@
     "hint": "启用后，只要消息命中人格名称或昵称，AI都会直接回复，不受秘书“不回复”判断影响。",
     "default": true
   },
+  "block_unapproved_wake_non_command": {
+    "type": "bool",
+    "description": "[唤醒与交互] 未通过天使之心的非命令消息禁止被发出",
+    "hint": "启用后，命中上游唤醒但未通过天使之心批准的非命令消息将被直接拦截，这会禁用其他插件和上游对这类消息的唤醒效果。",
+    "default": false
+  },
   "alias": {
     "type": "string",
     "description": "[唤醒与交互] AI助手昵称",

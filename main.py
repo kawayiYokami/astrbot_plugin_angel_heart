@@ -18,6 +18,8 @@ from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.provider import ProviderRequest, LLMResponse
 from astrbot.core.star.register import register_on_llm_response
 from astrbot.core.star.star_tools import StarTools
+from astrbot.core.star.filter.command import CommandFilter
+from astrbot.core.star.filter.command_group import CommandGroupFilter
 
 try:
     from astrbot.api import logger
@@ -303,11 +305,63 @@ class AngelHeartPlugin(Star):
         parts = unified_id.split(":")
         return len(parts) >= 3 and parts[1] == "FriendMessage"
 
+    def _is_upstream_command_event(self, event: AstrMessageEvent) -> bool:
+        """判断当前事件是否已命中上游 command/skill 处理器。"""
+        try:
+            activated_handlers = event.get_extra("activated_handlers", []) or []
+            for handler in activated_handlers:
+                for event_filter in getattr(handler, "event_filters", []) or []:
+                    if isinstance(event_filter, (CommandFilter, CommandGroupFilter)):
+                        return True
+            return False
+        except Exception as e:
+            logger.warning(
+                f"AngelHeart[{event.unified_msg_origin}]: 判断上游指令事件失败: {e}"
+            )
+            return False
+
+    def _is_blocked_by_provider_wake_prefix(self, event: AstrMessageEvent) -> bool:
+        """判断当前事件是否会被上游 LLM 额外聊天唤醒前缀拦截。"""
+        try:
+            if not event.is_at_or_wake_command:
+                return False
+
+            chat_id = event.unified_msg_origin
+            astrbot_conf = self.context.get_config(chat_id)
+            provider_settings = astrbot_conf.get("provider_settings", {}) if astrbot_conf else {}
+            provider_wake_prefix = (provider_settings.get("wake_prefix", "") or "").strip()
+            if not provider_wake_prefix:
+                return False
+
+            message_str = (getattr(event, "message_str", "") or "").strip()
+            return not message_str.startswith(provider_wake_prefix)
+        except Exception as e:
+            logger.warning(
+                f"AngelHeart[{event.unified_msg_origin}]: 判断额外聊天唤醒前缀拦截失败: {e}"
+            )
+            return False
+
     def _should_process(self, event: AstrMessageEvent) -> bool:
         """检查是否需要处理此消息"""
         chat_id = event.unified_msg_origin
 
         try:
+            if self._is_upstream_command_event(event):
+                logger.debug(
+                    f"AngelHeart[{chat_id}]: 检测到上游 command/skill 事件，已跳过。"
+                )
+                return False
+
+            blocked_by_provider_wake_prefix = self._is_blocked_by_provider_wake_prefix(event)
+            event.set_extra(
+                "angelheart_blocked_by_provider_wake_prefix",
+                blocked_by_provider_wake_prefix,
+            )
+            if blocked_by_provider_wake_prefix:
+                logger.debug(
+                    f"AngelHeart[{chat_id}]: 未命中上游额外聊天唤醒前缀，保留聊天记录但跳过分析。"
+                )
+
             # 1. 检查是否为@消息，区分@自己和@全体成员
             if event.is_at_or_wake_command:
                 # 私聊天然是直接对话场景，不需要经过@自己的判定分支
@@ -341,22 +395,21 @@ class AngelHeartPlugin(Star):
                     # 异常时保守处理，视为非@自己消息
                     return False
 
-                # 如果是@自己或引用自己，应该处理（返回True）
+                # 如果是@全体成员，不应该处理（返回False）
+                if has_at_all:
+                    logger.debug(f"AngelHeart[{chat_id}]: 检测到@全体成员消息，已忽略")
+                    return False
+
+                # @自己 / 引用自己 / 普通唤醒非命令消息，统一放行给后续规则处理
                 if is_at_self:
                     logger.debug(
                         f"AngelHeart[{chat_id}]: 检测到@自己的消息，准备处理..."
                     )
-                    return True
-                # 如果是@全体成员，不应该处理（返回False）
-                elif has_at_all:
-                    logger.debug(f"AngelHeart[{chat_id}]: 检测到@全体成员消息，已忽略")
-                    return False
-                # 如果是指令（非@），不应该处理（返回False）
                 else:
                     logger.debug(
-                        f"AngelHeart[{chat_id}]: 检测到指令或@他人消息，已忽略"
+                        f"AngelHeart[{chat_id}]: 检测到普通唤醒非命令消息，交给后续规则处理。"
                     )
-                    return False
+                return True
 
             if event.get_sender_id() == event.get_self_id():
                 logger.debug(f"AngelHeart[{chat_id}]: 消息由自己发出, 已忽略")

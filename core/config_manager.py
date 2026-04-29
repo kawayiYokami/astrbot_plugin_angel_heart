@@ -89,6 +89,11 @@ class ConfigManager:
         return self._config.get("force_reply_when_summoned", True)
 
     @property
+    def block_unapproved_wake_non_command(self) -> bool:
+        """未通过天使之心批准的非命令唤醒消息是否直接阻断"""
+        return self._config.get("block_unapproved_wake_non_command", False)
+
+    @property
     def slap_words(self) -> str:
         """用于触发闭嘴的关键词，多个词用'|'分隔"""
         return self._config.get("slap_words", "")
@@ -285,6 +290,7 @@ class ConfigManager:
                 "image_caption_provider_id": self.image_caption_provider_id,
                 "analysis_on_mention_only": self.analysis_on_mention_only,
                 "force_reply_when_summoned": self.force_reply_when_summoned,
+                "block_unapproved_wake_non_command": self.block_unapproved_wake_non_command,
                 "comfort_words": self.comfort_words,
                 "slap_words": self.slap_words,
                 "silence_duration": self.silence_duration,

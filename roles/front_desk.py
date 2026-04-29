@@ -273,6 +273,17 @@ class FrontDesk:
             # 4. 【核心】缓存消息
             await self.cache_message(chat_id, event)
 
+            if event.get_extra("angelheart_blocked_by_provider_wake_prefix", False):
+                logger.debug(
+                    f"AngelHeart[{chat_id}]: 事件未命中额外聊天唤醒前缀，已缓存但跳过秘书分析。"
+                )
+                if self.config_manager.block_unapproved_wake_non_command:
+                    logger.debug(
+                        f"AngelHeart[{chat_id}]: 已启用未批准非命令消息阻断，停止后续主 LLM 处理。"
+                    )
+                    event.stop_event()
+                return
+
             # 私聊由主框架直接响应，这里只负责缓存，不走秘书分析链路
             if self._is_private_chat(chat_id):
                 logger.debug(
@@ -417,6 +428,14 @@ class FrontDesk:
                 # 决策需要回复，执行回复
                 await self._execute_secretary_decision(decision, event, chat_id)
             else:
+                if (
+                    event.is_at_or_wake_command
+                    and self.context.config_manager.block_unapproved_wake_non_command
+                ):
+                    logger.debug(
+                        f"AngelHeart[{chat_id}]: 上游唤醒聊天事件未获批准，已停止后续主 LLM 处理。"
+                    )
+                    event.stop_event()
                 # 决策不需要回复，立即释放门锁（设置较短的“不回复”冷却）
                 no_reply_cd = self.context.config_manager.no_reply_cooldown
                 await self.context.release_chat_processing(chat_id, set_cooldown=True, duration=no_reply_cd)
