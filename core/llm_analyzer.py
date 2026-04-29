@@ -295,9 +295,18 @@ class LLMAnalyzer:
     ) -> SecretaryDecision:
         """解析并验证来自AI的响应文本，构建SecretaryDecision对象"""
 
-        # 定义SecretaryDecision的字段要求
-        required_fields = ["should_reply", "reply_strategy", "topic", "reply_target", "entities", "facts", "keywords"]
-        optional_fields = ["is_questioned", "is_interesting"]
+        # 仅将 should_reply 视为关键字段；其余字段缺失或类型错误时统一回退默认值
+        required_fields = ["should_reply"]
+        optional_fields = [
+            "reply_strategy",
+            "topic",
+            "reply_target",
+            "entities",
+            "facts",
+            "keywords",
+            "is_questioned",
+            "is_interesting",
+        ]
 
         # 使用JsonParser提取JSON数据
         try:
@@ -372,15 +381,50 @@ class LLMAnalyzer:
         else:
             is_interesting = False
 
-        # 提取其他字段
-        reply_strategy = str(raw.get("reply_strategy") or "未知策略")
-        topic = str(raw.get("topic") or "未知话题")
-        reply_target = str(raw.get("reply_target") or "")
+        def _normalize_text(value, default: str = "") -> str:
+            if value is None:
+                return default
+            if isinstance(value, str):
+                text = value.strip()
+                return text if text else default
+            try:
+                text = str(value).strip()
+                return text if text else default
+            except Exception:
+                return default
+
+        def _normalize_string_list(value) -> list[str]:
+            if value is None:
+                return []
+            if isinstance(value, str):
+                text = value.strip()
+                return [text] if text else []
+            if isinstance(value, list):
+                result = []
+                for item in value:
+                    if item is None:
+                        continue
+                    if isinstance(item, str):
+                        text = item.strip()
+                    else:
+                        try:
+                            text = str(item).strip()
+                        except Exception:
+                            continue
+                    if text:
+                        result.append(text)
+                return result
+            return []
+
+        # 提取其他字段；异常或类型错误时回退默认值
+        reply_strategy = _normalize_text(raw.get("reply_strategy"), "继续观察")
+        topic = _normalize_text(raw.get("topic"), "未知话题")
+        reply_target = _normalize_text(raw.get("reply_target"), "")
 
         # 提取新增的RAG字段
-        entities = raw.get("entities", [])
-        facts = raw.get("facts", [])
-        keywords = raw.get("keywords", [])
+        entities = _normalize_string_list(raw.get("entities"))
+        facts = _normalize_string_list(raw.get("facts"))
+        keywords = _normalize_string_list(raw.get("keywords"))
 
         # 创建决策对象
         decision = SecretaryDecision(
