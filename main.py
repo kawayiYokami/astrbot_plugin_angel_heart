@@ -126,9 +126,18 @@ class AngelHeartPlugin(Star):
         """将 Prompt 重写任务委托给 FrontDesk 处理"""
         chat_id = event.unified_msg_origin
 
-        # 如果未启用群聊上下文增强，则跳过此方法（使用旧的 system_prompt 注入方式）
-        if not self.config_manager.group_chat_enhancement:
-            return
+        if self._is_private_chat(chat_id):
+            if not self.config_manager.takeover_private_chat_context:
+                logger.debug(
+                    f"AngelHeart[{chat_id}]: 私聊上下文接管未启用，跳过请求体重写。"
+                )
+                return
+        else:
+            if not self.config_manager.group_chat_enhancement:
+                logger.debug(
+                    f"AngelHeart[{chat_id}]: 群聊上下文接管未启用，跳过请求体重写。"
+                )
+                return
 
         await self.front_desk.rewrite_prompt_for_llm(chat_id, event, req)
 

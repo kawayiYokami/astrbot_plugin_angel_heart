@@ -165,9 +165,15 @@
   },
   "group_chat_enhancement": {
     "type": "bool",
-    "description": "[权限与过滤] 群聊上下文增强",
-    "hint": "完全接管群聊上下文支持服务，请关闭原生的群聊上下文。",
+    "description": "[权限与过滤] 接管群聊上下文",
+    "hint": "启用后，群聊消息发送给主模型前会由 AngelHeart 重建上下文。请关闭原生的群聊上下文。",
     "default": true
+  },
+  "takeover_private_chat_context": {
+    "type": "bool",
+    "description": "[权限与过滤] 接管私聊上下文",
+    "hint": "启用后，私聊消息发送给主模型前也会由 AngelHeart 重建上下文。默认关闭。",
+    "default": false
   },
 
   "ai_self_identity": {

@@ -114,6 +114,11 @@ class ConfigManager:
         return self._config.get("group_chat_enhancement", True)
 
     @property
+    def takeover_private_chat_context(self) -> bool:
+        """是否接管私聊上下文重写"""
+        return self._config.get("takeover_private_chat_context", False)
+
+    @property
     def is_reasoning_model(self) -> bool:
         """是否是思维模型（如果是，则直接输出json）"""
         return self._config.get("is_reasoning_model", False)
