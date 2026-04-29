@@ -15,8 +15,8 @@
   },
   "is_reasoning_model": {
     "type": "bool",
-    "description": "[基础配置] 是否是思维模型",
-    "hint": "供应商是否是思维模型，非思维模型会引导推理。",
+    "description": "[基础配置] 强制思考",
+    "hint": "对非思考模型也要求强制输出思考内容，可以提高准确率，但是降低成功率。",
     "default": false
   },
   "waiting_time": {
