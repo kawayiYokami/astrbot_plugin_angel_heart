@@ -6,7 +6,6 @@
 - LiwcAnalyzer: LIWC 词频统计（情绪/代词/认知）
 - BehaviorBaseline: 长期行为基线计算
 - BehaviorProfileManager: 全局管理器，接入消息流
-- get_soul_offset(): soul_state 相对基线偏移（等 soul_state 重构时接入）
 """
 from .analyzer import MessageCleaner, LiwcAnalyzer, LiwcResult
 from .baseline import BehaviorBaseline

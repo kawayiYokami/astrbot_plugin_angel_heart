@@ -626,8 +626,11 @@ class AngelHeartPlugin(Star):
                     msg_text, user_id=user_id, scope=scope,
                     has_sticker=has_sticker,
                 )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(
+                f"AngelHeart[{getattr(event, 'unified_msg_origin', 'unknown')}]: 行为画像喂入失败: {type(e).__name__}: {e}",
+                exc_info=True,
+            )
 
     def _extract_sent_message_content(self, event: AstrMessageEvent) -> str:
         """从事件中提取发送的消息内容"""
