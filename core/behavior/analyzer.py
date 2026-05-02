@@ -16,18 +16,21 @@ from .liwc_dict import (
 # ============================================================
 
 class MessageCleaner:
-    """过滤代码块、转发、引用"""
+    """过滤代码块、转发、引用，清洗消息文本"""
 
     CODE_BLOCK_RE = re.compile(r"```[\s\S]*?```")
     QUOTE_RE = re.compile(r"^>", re.MULTILINE)
 
     def is_code_block(self, text: str) -> bool:
+        """检测文本是否包含 markdown 代码块 (```...```)"""
         return bool(self.CODE_BLOCK_RE.search(text))
 
     def is_forward_or_quote(self, text: str) -> bool:
+        """检测文本是否以引用符 (>) 开头，用于判断转发/引用消息"""
         return bool(self.QUOTE_RE.search(text))
 
     def should_skip(self, text: str) -> bool:
+        """判断消息是否应跳过分析（过短/纯代码/纯引用）"""
         stripped = text.strip()
         if len(stripped) < 3:
             return True
@@ -38,7 +41,7 @@ class MessageCleaner:
         return False
 
     def clean(self, text: str) -> str:
-        """移除代码块，返回可分析文本"""
+        """移除代码块和引用前缀，返回可分析的纯文本"""
         text = self.CODE_BLOCK_RE.sub("", text)
         text = self.QUOTE_RE.sub("", text)
         return text.strip()
@@ -49,11 +52,12 @@ class MessageCleaner:
 # ============================================================
 
 class SimpleTokenizer:
-    """按标点拆分，对长 token 做子串级词典匹配"""
+    """按标点拆分中文文本，支持子串级词典匹配"""
 
     SPLIT_RE = re.compile(r"[，。！？、；：\s,\.!\?;:]+")
 
     def tokenize(self, text: str) -> list[str]:
+        """按标点和空格将文本拆分为词级单元列表"""
         if not text or not text.strip():
             return []
         raw = self.SPLIT_RE.split(text)
@@ -61,6 +65,7 @@ class SimpleTokenizer:
 
     @staticmethod
     def token_contains(token: str, word: str) -> bool:
+        """检查词典词是否作为子串出现在 token 中"""
         return word in token
 
 
@@ -126,6 +131,7 @@ class LiwcAnalyzer:
         self.tokenizer = SimpleTokenizer()
 
     def analyze(self, text: str) -> LiwcResult:
+        """分析文本，返回六类词汇的计数和比例"""
         tokens = self.tokenizer.tokenize(text)
         result = LiwcResult()
         result.total_word_count = len(tokens)
