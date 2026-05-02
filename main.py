@@ -35,6 +35,7 @@ from .roles.secretary import Secretary
 from .core.utils import strip_markdown
 from .core.utils.message_utils import serialize_message_chain
 from .core.angel_heart_context import AngelHeartContext
+from .core.behavior import BehaviorProfileManager
 
 
 @register("astrbot_plugin_angel_heart", "kawayiYokami", "天使心秘书，让astrbot拥有极其聪明，有分寸的群聊介入，和极其完备的群聊上下文管理", "0.8.11", "https://github.com/kawayiYokami/astrbot_plugin_angel_heart")
@@ -66,6 +67,9 @@ class AngelHeartPlugin(Star):
         # -- 工具修饰冷却记录 --
         self._tool_decoration_last_sent = {}  # {chat_id: timestamp}
 
+        # -- 行为画像管理器 --
+        self.behavior_profile = BehaviorProfileManager(min_messages=50)
+
         logger.info("💖 AngelHeart智能回复员初始化完成 (事件扣押机制 V2 已启用)")
 
     # --- 核心事件处理 ---
@@ -80,8 +84,10 @@ class AngelHeartPlugin(Star):
 
         # 使用 _should_process 方法来判断是否需要处理此消息
         if not self._should_process(event):
-            # 如果 _should_process 返回 False，直接返回，不进行任何处理
             return
+
+        # 喂入行为画像
+        self._feed_behavior_profile(event)
 
         # 如果是需要处理的消息，则委托给前台缓存
         await self.front_desk.handle_event(event)
@@ -595,6 +601,33 @@ class AngelHeartPlugin(Star):
     def _prepare_whitelist(self) -> set:
         """预处理白名单，将其转换为 set 以获得 O(1) 的查找性能。"""
         return {str(cid) for cid in self.config_manager.chat_ids}
+
+    def _feed_behavior_profile(self, event: AstrMessageEvent) -> None:
+        """从事件中提取消息文本和贴图信息，喂入行为画像管理器"""
+        try:
+            user_id = event.get_sender_id()
+            chat_id = event.unified_msg_origin
+            scope = "private" if "FriendMessage" in str(chat_id) else "group"
+
+            msg_text = event.get_message_str() if hasattr(event, 'get_message_str') else ""
+
+            # 检测 QQ 表情包/GIF/图片
+            has_sticker = False
+            if hasattr(event, 'message_obj') and event.message_obj:
+                chain = getattr(event.message_obj, 'message', [])
+                for item in chain:
+                    item_type = getattr(item, 'type', '') if hasattr(item, 'type') else ''
+                    if item_type in ('image', 'image_url'):
+                        has_sticker = True
+                        break
+
+            if msg_text or has_sticker:
+                self.behavior_profile.feed(
+                    msg_text, user_id=user_id, scope=scope,
+                    has_sticker=has_sticker,
+                )
+        except Exception:
+            pass
 
     def _extract_sent_message_content(self, event: AstrMessageEvent) -> str:
         """从事件中提取发送的消息内容"""
