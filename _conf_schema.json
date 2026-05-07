@@ -15,9 +15,9 @@
   },
   "is_reasoning_model": {
     "type": "bool",
-    "description": "[基础配置] 强制思考",
-    "hint": "对非思考模型也要求强制输出思考内容，可以提高准确率，但是降低成功率。",
-    "default": false
+    "description": "[基础配置] 只输出 JSON",
+    "hint": "默认开启。如果是带思维链的模型，请不要关闭。关闭后会要求模型先输出分析过程，再输出 JSON。",
+    "default": true
   },
   "waiting_time": {
     "type": "float",
