@@ -190,17 +190,33 @@ class ConversationLedger:
             logger.warning(f"构建转述压缩图失败: {e}")
             return ""
 
-    async def _download_and_compute_dhash(self, url: str) -> str:
-        """下载图片并计算 dHash"""
-        try:
-            data = await self._load_image_bytes(url)
-            if not data:
-                return ""
-            return self._compute_dhash(data)
-
-        except Exception as e:
-            logger.warning(f"下载/dHash计算异常: {e}, URL: {url}")
+    def _build_original_image_data_url(self, image_data: bytes) -> str:
+        """将原始图片字节包装成 data URL，避免把外链继续传给转述模型。"""
+        if not image_data:
             return ""
+
+        try:
+            img = Image.open(io.BytesIO(image_data))
+            image_format = (img.format or "PNG").lower()
+            if image_format == "jpg":
+                image_format = "jpeg"
+            encoded = base64.b64encode(image_data).decode("utf-8")
+            return f"data:image/{image_format};base64,{encoded}"
+        except Exception as e:
+            logger.warning(f"构建原始图片 data URL 失败: {e}")
+            return ""
+
+    def _apply_broken_image_caption(
+        self,
+        chat_id: str,
+        message_timestamp: float,
+    ) -> bool:
+        """图片不可用时写入统一降级转述，避免上下文出现空洞。"""
+        return self.add_caption_to_message(
+            chat_id,
+            message_timestamp,
+            self.BROKEN_IMAGE_CAPTION,
+        )
 
     def _get_or_create_ledger(self, chat_id: str) -> Dict:
         """获取或创建指定会话的账本。"""
@@ -504,9 +520,27 @@ class ConversationLedger:
                     target_url = image_urls[0]
                     final_caption = ""
                     img_dhash = ""
+                    raw_image_data = b""
 
-                    # 1. 下载并计算 dHash
-                    img_dhash = await self._download_and_compute_dhash(target_url)
+                    # 1. 下载图片并计算 dHash
+                    raw_image_data = await self._load_image_bytes(target_url)
+
+                    if not raw_image_data:
+                        logger.warning(
+                            f"AngelHeart[{chat_id}]: 图片下载失败或内容为空，跳过转述: {target_url[:100]}..."
+                        )
+                        if not self._apply_broken_image_caption(
+                            chat_id,
+                            message["timestamp"],
+                        ):
+                            logger.warning(
+                                f"AngelHeart[{chat_id}]: 无法为坏图写入降级转述"
+                            )
+                        else:
+                            processed_count += 1
+                        continue
+
+                    img_dhash = self._compute_dhash(raw_image_data)
 
                     # 2. 查询 SQLite dHash 缓存（在锁保护下执行）
                     if img_dhash:
@@ -521,19 +555,32 @@ class ConversationLedger:
                     if not final_caption:
                         # 3. 缓存未命中，调用 LLM
                         logger.debug(f"AngelHeart[{chat_id}]: 缓存未命中(dHash: {img_dhash})，调用LLM转述URL: {target_url[:50]}...")
-                        caption_input_url = target_url
-                        raw_image_data = await self._load_image_bytes(target_url)
-                        if raw_image_data:
-                            compressed_data_url = self._build_caption_image_data_url(raw_image_data)
-                            if compressed_data_url:
-                                caption_input_url = compressed_data_url
+                        caption_input_url = self._build_caption_image_data_url(raw_image_data)
+                        if caption_input_url:
+                            logger.debug(
+                                f"AngelHeart[{chat_id}]: 转述图片已压缩为 WEBP(quality=75, max_side=960)"
+                            )
+                        else:
+                            caption_input_url = self._build_original_image_data_url(raw_image_data)
+                            if caption_input_url:
                                 logger.debug(
-                                    f"AngelHeart[{chat_id}]: 转述图片已压缩为 WEBP(quality=75, max_side=960)"
+                                    f"AngelHeart[{chat_id}]: 压缩图片失败，回退使用原始 data URL 进行转述"
+                                )
+
+                        if not caption_input_url:
+                            logger.warning(
+                                f"AngelHeart[{chat_id}]: 无法构建可用的图片 data URL，写入降级转述"
+                            )
+                            if not self._apply_broken_image_caption(
+                                chat_id,
+                                message["timestamp"],
+                            ):
+                                logger.warning(
+                                    f"AngelHeart[{chat_id}]: 无法为不可编码图片写入降级转述"
                                 )
                             else:
-                                logger.warning(
-                                    f"AngelHeart[{chat_id}]: 压缩图片失败，回退使用原始URL进行转述"
-                                )
+                                processed_count += 1
+                            continue
 
                         llm_resp = await caption_provider.text_chat(
                             prompt=img_cap_prompt,
@@ -559,6 +606,15 @@ class ConversationLedger:
                                 logger.warning(f"AngelHeart[{chat_id}]: 图片dHash为空，无法写入缓存")
                         else:
                             logger.warning(f"AngelHeart[{chat_id}]: 图片转述返回空结果")
+                            if not self._apply_broken_image_caption(
+                                chat_id,
+                                message["timestamp"],
+                            ):
+                                logger.warning(
+                                    f"AngelHeart[{chat_id}]: 无法为空转述结果写入降级转述"
+                                )
+                            else:
+                                processed_count += 1
 
                     # 5. 将最终的转述结果（来自缓存或LLM）添加到消息中
                     if final_caption:
@@ -758,3 +814,4 @@ class ConversationLedger:
         tokens = chinese_chars * 0.6 + english_chars * 0.3
 
         return int(tokens) + (1 if tokens % 1 > 0 else 0)
+    BROKEN_IMAGE_CAPTION = "图裂了，图片无法打开，可能是网络问题或者格式不支持"
