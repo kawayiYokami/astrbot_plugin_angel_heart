@@ -270,12 +270,8 @@ class AngelHeartPlugin(Star):
         self.secretary.llm_analyzer.reload_config(self.config_manager)
         self._whitelist_cache = self._prepare_whitelist()
 
-        # 更新 ConversationLedger 的缓存过期时间
-        # 注意：这里我们不能直接修改 ConversationLedger 的 cache_expiry
-        # 因为它是初始化时设置的。我们可以考虑重新创建实例或添加一个更新方法
-        # 为了简单，我们暂时只记录日志，实际更新需要更复杂的逻辑
         logger.info(
-            f"AngelHeart: 配置已更新。等待时间: {self.config_manager.waiting_time}秒, 缓存过期时间: {self.config_manager.cache_expiry}秒"
+            f"AngelHeart: 配置已更新。等待时间: {self.config_manager.waiting_time}秒"
         )
 
     def _get_tool_decoration(self, tool_name: str) -> str:
