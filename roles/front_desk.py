@@ -37,6 +37,9 @@ class FrontDesk:
     前台角色 - 专注的消息接收与缓存员
     """
 
+    ASTRBOT_HISTORY_MESSAGE_LIMIT = 7
+    ASTRBOT_HISTORY_TEXT_TOKEN_LIMIT = 10000
+
     def __init__(self, config_manager, angel_context):
         """
         初始化前台角色。
@@ -686,6 +689,12 @@ class FrontDesk:
         优先从 QQ API 获取历史消息；若失败或为空，则回退到 AstrBot 官方会话历史。
         """
         try:
+            if not self._is_group_chat(chat_id):
+                logger.debug(
+                    f"AngelHeart[{chat_id}]: 非群聊会话，直接从 AstrBot 官方会话历史补充"
+                )
+                return await self._fetch_astrbot_conversation_history(chat_id, needed_count)
+
             converted_messages = await self._fetch_qq_history(chat_id, needed_count, event)
             if converted_messages:
                 return converted_messages
@@ -771,10 +780,11 @@ class FrontDesk:
         self, history_records: List[Dict], needed_count: int
     ) -> List[Dict]:
         """将 AstrBot 官方 conversation history 转为 AngelHeart 内部消息格式。"""
-        converted_messages = []
-        base_timestamp = time.time() - max(len(history_records), needed_count, 1)
+        selected_records = []
+        used_tokens = 0
+        message_limit = min(needed_count, self.ASTRBOT_HISTORY_MESSAGE_LIMIT)
 
-        for index, record in enumerate(history_records[-needed_count:]):
+        for record in reversed(history_records):
             if not isinstance(record, dict):
                 continue
 
@@ -782,10 +792,29 @@ class FrontDesk:
             if role not in ("user", "assistant"):
                 continue
 
+            if record.get("tool_calls"):
+                continue
+
             content = self._extract_text_from_astrbot_history_record(record)
             if not content:
                 continue
 
+            content_tokens = self._estimate_text_tokens(content)
+            if used_tokens + content_tokens > self.ASTRBOT_HISTORY_TEXT_TOKEN_LIMIT:
+                break
+
+            selected_records.append((role, content))
+            used_tokens += content_tokens
+
+            if len(selected_records) >= message_limit:
+                break
+
+        selected_records.reverse()
+
+        converted_messages = []
+        base_timestamp = time.time() - max(len(selected_records), 1)
+
+        for index, (role, content) in enumerate(selected_records):
             converted_messages.append(
                 {
                     "role": role,
@@ -799,6 +828,14 @@ class FrontDesk:
             )
 
         return converted_messages
+
+    def _estimate_text_tokens(self, text: str) -> int:
+        """粗略估算文本 token 数，与总账压缩估算保持同一量级。"""
+        if not isinstance(text, str) or not text:
+            return 0
+        chinese_chars = sum(1 for char in text if "\u4e00" <= char <= "\u9fff")
+        other_chars = len(text) - chinese_chars
+        return int(chinese_chars * 0.6 + other_chars * 0.3)
 
     def _extract_text_from_astrbot_history_record(self, record: Dict) -> str:
         """从 AstrBot 官方 history record 中提取可用文本。"""
@@ -1241,6 +1278,9 @@ class FrontDesk:
             scene_prompt = "你正在一个群聊中扮演角色，你的昵称是 '{alias}'。"
         else:
             # 私聊直接响应，不依赖秘书决策，但仍需重写聊天记录
+            if self._is_private_chat(chat_id):
+                await self._ensure_minimum_context(chat_id, event)
+
             recent_dialogue, historical_context, _ = self._get_conversation_data_without_decision(chat_id)
             if not recent_dialogue and not historical_context:
                 logger.debug(f"AngelHeart[{chat_id}]: 私聊暂无可用上下文，跳过重构。")
