@@ -6,7 +6,7 @@ import io
 import base64
 from PIL import Image
 from pathlib import Path
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Optional
 from . import utils
 
 # 条件导入：当缺少astrbot依赖时使用Mock
@@ -40,6 +40,9 @@ class ConversationLedger:
 
         # 缓存 bisect 模块
         self._bisect = bisect
+
+        # 每个会话的最后压缩时间戳 {chat_id: timestamp}
+        self._last_compression_time: Dict[str, float] = {}
 
         # 初始化 SQLite 数据库用于图片转述缓存
         db_path = data_dir / "caption_cache.db"
@@ -258,13 +261,11 @@ class ConversationLedger:
                 # 保留最新的PER_CHAT_LIMIT条消息
                 ledger["messages"] = ledger["messages"][-self.PER_CHAT_LIMIT:]
 
-        # 2. 估算当前Token并判断是否需要清理
-        current_tokens = self._estimate_tokens(chat_id)
-        max_tokens = self.config_manager.max_conversation_tokens
+        # 2. 判断是否需要压缩
+        should_compress = should_prune or self._should_compress(chat_id)
 
-        # 如果上游指令要求清理，或者Token超限，则执行清理
-        if should_prune or (max_tokens > 0 and current_tokens > max_tokens):
-            self._prune_to_essentials(chat_id)
+        if should_compress:
+            self._compress_context(chat_id)
 
         # 3. 检查并限制总消息数量
         self._enforce_total_message_limit()
@@ -709,9 +710,188 @@ class ConversationLedger:
 
         return 0
 
+    def _should_compress(self, chat_id: str) -> bool:
+        """
+        判断指定会话是否需要进行上下文压缩。
+
+        触发条件（满足任一即触发）：
+        1. 当前Token数达到最大上限的82%
+        2. 距离上次压缩超过遗忘时间上限（默认1天）
+
+        Args:
+            chat_id: 会话ID
+
+        Returns:
+            bool: 是否需要压缩
+        """
+        max_tokens = self.config_manager.max_conversation_tokens
+        if max_tokens <= 0:
+            # 禁用了Token限制，仅检查时间条件
+            return self._is_forgetting_timeout(chat_id)
+
+        # 条件1：Token达到82%阈值
+        current_tokens = self._estimate_tokens(chat_id)
+        threshold = int(max_tokens * 0.82)
+        if current_tokens >= threshold:
+            return True
+
+        # 条件2：遗忘时间超限
+        return self._is_forgetting_timeout(chat_id)
+
+    def _is_forgetting_timeout(self, chat_id: str) -> bool:
+        """
+        检查是否超过遗忘时间上限。
+
+        Args:
+            chat_id: 会话ID
+
+        Returns:
+            bool: 是否超时需要强制压缩
+        """
+        forgetting_timeout = self.config_manager.context_forgetting_timeout
+        if forgetting_timeout <= 0:
+            return False
+
+        last_time = self._last_compression_time.get(chat_id, 0.0)
+        if last_time == 0.0:
+            # 从未压缩过，检查会话中最早消息的时间
+            ledger = self._get_or_create_ledger(chat_id)
+            with self._lock:
+                messages = ledger["messages"]
+                if not messages:
+                    return False
+                earliest_ts = messages[0].get("timestamp", 0)
+                # 如果最早消息距今超过遗忘时间，需要压缩
+                return (time.time() - earliest_ts) > forgetting_timeout
+        else:
+            return (time.time() - last_time) > forgetting_timeout
+
+    def _compress_context(self, chat_id: str):
+        """
+        执行分级上下文压缩算法。
+
+        算法步骤：
+        1. 从最后一条消息往前保留10K Token的消息正文（非工具消息）
+        2. 剩余消息中，工具调用+工具结果只保留10K Token，超出部分成批删除
+        3. 超出保留范围的普通消息全部丢弃
+
+        这确保了最近的对话上下文始终可用，同时工具调用历史也有一定保留。
+        """
+        ledger = self._get_or_create_ledger(chat_id)
+        with self._lock:
+            messages = ledger["messages"]
+            if not messages:
+                return
+
+            # 获取保留Token预算
+            content_budget = self.config_manager.context_content_retain_tokens
+            tool_budget = self.config_manager.context_tool_retain_tokens
+
+            # === 第一步：从末尾往前保留 content_budget Token 的正文消息 ===
+            retained_content_msgs = []
+            content_tokens_used = 0
+
+            # 从最新消息往前遍历
+            for msg in reversed(messages):
+                is_tool = msg.get("role") == "tool"
+                has_tool_calls = bool(msg.get("tool_calls"))
+
+                if is_tool or has_tool_calls:
+                    # 工具消息暂时跳过，后续单独处理
+                    continue
+
+                msg_tokens = self._count_message_tokens(msg)
+                if content_tokens_used + msg_tokens <= content_budget:
+                    retained_content_msgs.append(msg)
+                    content_tokens_used += msg_tokens
+                else:
+                    # 预算用尽，停止保留正文消息
+                    break
+
+            # 恢复时间顺序
+            retained_content_msgs.reverse()
+
+            # === 第二步：从末尾往前保留 tool_budget Token 的工具消息 ===
+            retained_tool_msgs = []
+            tool_tokens_used = 0
+
+            for msg in reversed(messages):
+                is_tool = msg.get("role") == "tool"
+                has_tool_calls = bool(msg.get("tool_calls"))
+
+                if not is_tool and not has_tool_calls:
+                    continue
+
+                msg_tokens = self._count_message_tokens(msg)
+                if tool_tokens_used + msg_tokens <= tool_budget:
+                    retained_tool_msgs.append(msg)
+                    tool_tokens_used += msg_tokens
+                else:
+                    break
+
+            # 恢复时间顺序
+            retained_tool_msgs.reverse()
+
+            # === 第三步：合并并按时间排序 ===
+            all_retained = retained_content_msgs + retained_tool_msgs
+            all_retained.sort(key=lambda m: m.get("timestamp", 0))
+
+            # 确保至少保留 MIN_RETAIN_COUNT 条消息
+            if len(all_retained) < self.MIN_RETAIN_COUNT and len(messages) >= self.MIN_RETAIN_COUNT:
+                # 如果压缩后消息太少，回退到保留最新的 MIN_RETAIN_COUNT 条
+                all_retained = messages[-self.MIN_RETAIN_COUNT:]
+            elif len(all_retained) == 0 and messages:
+                # 极端情况：至少保留最后一条
+                all_retained = messages[-1:]
+
+            original_count = len(messages)
+            ledger["messages"] = all_retained
+
+            # 更新压缩时间戳
+            self._last_compression_time[chat_id] = time.time()
+
+            logger.info(
+                f"AngelHeart[{chat_id}]: 上下文压缩完成 "
+                f"({original_count} -> {len(all_retained)} 条消息, "
+                f"正文保留 {content_tokens_used} tokens, "
+                f"工具保留 {tool_tokens_used} tokens)"
+            )
+
+    def _count_message_tokens(self, msg: Dict) -> int:
+        """
+        估算单条消息的Token数量。
+
+        Args:
+            msg: 消息字典
+
+        Returns:
+            int: 估算的Token数量
+        """
+        total = 0
+        content = msg.get("content", "")
+
+        if isinstance(content, str):
+            total += self._count_tokens_in_text(content)
+        elif isinstance(content, list):
+            for item in content:
+                if isinstance(item, dict):
+                    item_type = item.get("type", "")
+                    if item_type == "text":
+                        total += self._count_tokens_in_text(item.get("text", ""))
+                    elif item_type == "image_url":
+                        total += 85
+
+        # 计算其他字符串字段
+        for key, value in msg.items():
+            if key not in ["content", "timestamp", "is_processed"] and isinstance(value, str):
+                total += self._count_tokens_in_text(value)
+
+        return total
+
     def _prune_to_essentials(self, chat_id: str):
         """
-        精简会话消息，仅保留最新的7条非工具消息
+        精简会话消息，仅保留最新的7条非工具消息。
+        这是一个兜底的极端清理方法，当 _compress_context 不足以控制内存时使用。
 
         Args:
             chat_id: 会话ID
@@ -741,6 +921,9 @@ class ConversationLedger:
                 # 4. 用这批"精华消息"完全替换内存中该会话的整个消息列表
                 ledger["messages"] = essential_messages
                 logger.info(f"AngelHeart[{chat_id}]: 已精简会话消息，保留最新的7条非工具消息")
+
+            # 更新压缩时间戳
+            self._last_compression_time[chat_id] = time.time()
 
     def _estimate_tokens(self, chat_id: str) -> int:
         """
