@@ -30,11 +30,15 @@ except ImportError:
 from astrbot.core.message.components import Plain, At, AtAll, Reply
 
 from .core.config_manager import ConfigManager
+from .core.config_migration import run_migration
 from .roles.front_desk import FrontDesk
 from .roles.secretary import Secretary
 from .core.utils import strip_markdown
 from .core.utils.message_utils import serialize_message_chain
 from .core.angel_heart_context import AngelHeartContext
+
+# 在框架加载 schema 之前执行配置迁移
+run_migration()
 
 
 @register("astrbot_plugin_angel_heart", "kawayiYokami", "天使心秘书，让astrbot拥有极其聪明，有分寸的群聊介入，和极其完备的群聊上下文管理", "0.8.11", "https://github.com/kawayiYokami/astrbot_plugin_angel_heart")
