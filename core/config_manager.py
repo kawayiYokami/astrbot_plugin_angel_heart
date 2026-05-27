@@ -249,6 +249,26 @@ class ConfigManager:
         return self._config.get("max_conversation_tokens", 100000)
 
     @property
+    def context_compression_threshold(self) -> float:
+        """上下文压缩触发阈值（占 max_conversation_tokens 的比例）"""
+        return self._config.get("context_compression_threshold", 0.82)
+
+    @property
+    def context_content_retain_tokens(self) -> int:
+        """压缩时保留的正文消息Token预算"""
+        return self._config.get("context_content_retain_tokens", 10000)
+
+    @property
+    def context_tool_retain_tokens(self) -> int:
+        """压缩时保留的工具调用消息Token预算"""
+        return self._config.get("context_tool_retain_tokens", 10000)
+
+    @property
+    def context_forgetting_timeout(self) -> int:
+        """遗忘时间上限（秒），超过此时间未压缩则强制压缩。0为禁用。默认86400（1天）"""
+        return self._config.get("context_forgetting_timeout", 86400)
+
+    @property
     def tool_decoration_enabled(self) -> bool:
         """是否启用工具修饰"""
         return self._config.get("tool_decoration_enabled", False)
@@ -291,6 +311,9 @@ class ConfigManager:
                 "waiting_time": self.waiting_time,
                 "cache_expiry": self.cache_expiry,
                 "max_conversation_tokens": self.max_conversation_tokens,
+                "context_content_retain_tokens": self.context_content_retain_tokens,
+                "context_tool_retain_tokens": self.context_tool_retain_tokens,
+                "context_forgetting_timeout": self.context_forgetting_timeout,
                 "alias": self.alias,
                 "image_caption_provider_id": self.image_caption_provider_id,
                 "analysis_on_mention_only": self.analysis_on_mention_only,

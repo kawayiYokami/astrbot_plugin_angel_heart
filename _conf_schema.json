@@ -217,8 +217,26 @@
   "max_conversation_tokens": {
     "type": "int",
     "description": "[基础配置] 最大对话Token限制",
-    "hint": "当单个会话的估算Token数超过此限制时，将触发清理，仅保留最新的7条非工具消息。设置为0则禁用此功能。",
+    "hint": "当单个会话的估算Token数超过此限制的82%时，将触发渐进式压缩。设置为0则禁用此功能。",
     "default": 100000
+  },
+  "context_content_retain_tokens": {
+    "type": "int",
+    "description": "[上下文压缩] 正文保留Token预算",
+    "hint": "压缩时从最新消息往前保留的正文消息Token数量。",
+    "default": 10000
+  },
+  "context_tool_retain_tokens": {
+    "type": "int",
+    "description": "[上下文压缩] 工具消息保留Token预算",
+    "hint": "压缩时从最新消息往前保留的工具调用+结果消息Token数量。",
+    "default": 10000
+  },
+  "context_forgetting_timeout": {
+    "type": "int",
+    "description": "[上下文压缩] 遗忘时间上限（秒）",
+    "hint": "超过此时间未进行压缩则强制压缩，防止上下文无限膨胀。设置为0则禁用。默认86400秒（1天）。",
+    "default": 86400
   },
   "tool_decoration_enabled": {
     "type": "bool",
