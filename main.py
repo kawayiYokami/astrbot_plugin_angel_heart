@@ -130,6 +130,12 @@ class AngelHeartPlugin(Star):
         """将 Prompt 重写任务委托给 FrontDesk 处理"""
         chat_id = event.unified_msg_origin
 
+        # 白名单检查：如果启用了白名单，非白名单会话不接管上下文
+        if self.config_manager.whitelist_enabled:
+            plain_chat_id = self._get_plain_chat_id(chat_id)
+            if plain_chat_id not in self._whitelist_cache:
+                return
+
         if self._is_private_chat(chat_id):
             if not self.config_manager.takeover_private_chat_context:
                 logger.debug(

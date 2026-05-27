@@ -97,14 +97,14 @@ class StatusChecker:
                     return AngelHeartStatus.NOT_PRESENT
 
                 # 7.1 检查复读行为
-                if self._detect_echo_chamber(chat_id):
+                if self.config_manager.leave_echo_reply and self._detect_echo_chamber(chat_id):
                     logger.debug(
                         f"AngelHeart[{chat_id}]: 检测到复读行为，进入混脸熟状态"
                     )
                     return AngelHeartStatus.GETTING_FAMILIAR
 
                 # 7.2 检查密集发言
-                if self._detect_dense_conversation(chat_id):
+                if self.config_manager.leave_dense_reply and self._detect_dense_conversation(chat_id):
                     logger.debug(
                         f"AngelHeart[{chat_id}]: 检测到密集发言，进入混脸熟状态"
                     )

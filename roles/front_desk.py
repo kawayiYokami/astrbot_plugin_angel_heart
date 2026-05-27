@@ -303,36 +303,40 @@ class FrontDesk:
             event.stop_event()
 
     async def _check_and_handle_timeout(self, chat_id: str, current_time: float):
-        """检查并处理观测中状态超时"""
+        """检查并处理观测中/混脸熟状态超时"""
         try:
             # 检查当前状态
             current_status = self.context.get_chat_status(chat_id)
-            if current_status != AngelHeartStatus.OBSERVATION:
+            if current_status not in (AngelHeartStatus.OBSERVATION, AngelHeartStatus.GETTING_FAMILIAR):
                 return
 
-            # 获取观测开始时间和超时配置
+            # 获取状态开始时间
             status_start_time = (
                 self.context.status_transition_manager.get_status_start_time(chat_id)
             )
             if status_start_time == 0:
                 logger.warning(
-                    f"AngelHeart[{chat_id}]: 观测状态缺少开始时间，跳过超时检查"
+                    f"AngelHeart[{chat_id}]: 状态缺少开始时间，跳过超时检查"
                 )
                 return
 
-            observation_timeout = self.config_manager.observation_timeout
+            # 根据状态选择超时时间
+            if current_status == AngelHeartStatus.OBSERVATION:
+                timeout = self.config_manager.observation_timeout
+            else:
+                timeout = self.config_manager.familiarity_timeout
 
             # 检查是否超时
-            if current_time - status_start_time >= observation_timeout:
+            if current_time - status_start_time >= timeout:
                 logger.info(
-                    f"AngelHeart[{chat_id}]: 观测中状态超时({observation_timeout}秒)，降级到不在场"
+                    f"AngelHeart[{chat_id}]: {current_status.value}状态超时({timeout}秒)，降级到不在场"
                 )
 
                 # 执行状态降级
                 await self.context.transition_to_status(
                     chat_id,
                     AngelHeartStatus.NOT_PRESENT,
-                    f"观测超时({observation_timeout}秒)自动降级",
+                    f"{current_status.value}超时({timeout}秒)自动降级",
                 )
 
                 # 清理相关资源
