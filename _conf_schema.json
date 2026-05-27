@@ -258,13 +258,13 @@
         "type": "int",
         "description": "久等间隔（秒）",
         "hint": "耐心计时器各阶段之间的时间间隔。",
-        "default": 60
+        "default": 6000
       },
       "comfort_words": {
         "type": "string",
         "description": "安心词",
         "hint": "耐心计时器各阶段发送的安慰话语。多个词请用 '|' 分隔。",
-        "default": "要给"
+        "default": ""
       }
     }
   },
