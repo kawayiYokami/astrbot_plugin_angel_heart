@@ -297,10 +297,6 @@ class Secretary:
     def waiting_time(self):
         return self.config_manager.waiting_time
 
-    @property
-    def cache_expiry(self):
-        return self.config_manager.cache_expiry
-
     def _handle_analysis_error(self, error: Exception, context: str, chat_id: str) -> SecretaryDecision:
         """
         统一处理分析错误

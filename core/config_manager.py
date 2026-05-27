@@ -59,10 +59,6 @@ class ConfigManager:
         return self._get_grouped("timing", "no_reply_cooldown", 3.0)
 
     @property
-    def cache_expiry(self) -> int:
-        return self._get_grouped("timing", "cache_expiry", 3600)
-
-    @property
     def observation_timeout(self) -> int:
         return self._get_grouped("timing", "observation_timeout", 60)
 

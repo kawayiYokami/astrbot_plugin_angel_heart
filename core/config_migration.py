@@ -20,7 +20,6 @@ _MIGRATION_MAP = {
     "waiting_time": ("timing", "waiting_time"),
     "llm_timeout": ("timing", "llm_timeout"),
     "no_reply_cooldown": ("timing", "no_reply_cooldown"),
-    "cache_expiry": ("timing", "cache_expiry"),
     "observation_timeout": ("timing", "observation_timeout"),
     # leave_reply
     "leave_echo_reply": ("leave_reply", "leave_echo_reply"),
