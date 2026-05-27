@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.8.33 - 2026-05-27
+- **新增渐进式上下文压缩算法**：替换原来的"只保留7条"策略，改为按 Token 预算从最新消息往前保留正文(10K)和工具消息(10K)，支持遗忘时间上限(默认1天)强制压缩。
+- **配置 schema 重构为分组结构**：采用 `type: object` 嵌套分组（timing、leave_reply、wake_interaction、access_control、personality、context_compression、comfort、tool_decoration、debug），WebUI 展示更清晰。
+- **新增配置自动迁移**：升级时自动将旧的扁平配置迁移到新的分组结构，用户配置值不丢失。
+- **修复离场应答开关失效**：`leave_echo_reply` 和 `leave_dense_reply` 之前未作为开关使用，关闭后复读/密集检测仍会触发。现已修复。
+- **修复混脸熟超时未生效**：`familiarity_timeout` 参数之前从未被任何代码读取，混脸熟状态永远不会超时降级。现已接入超时检查逻辑。
+- **修复上下文接管不尊重白名单**：`delegate_prompt_rewriting` 现在会检查白名单，启用白名单时只接管白名单内的会话。
+
 ## 0.8.32 - 2026-05-27
 - 私聊重写 LLM 请求体时也会在上下文不足时从 AstrBot 官方 conversation history 回退补充历史，避免只看到当前一条消息。
 - 非群聊补历史现在直接使用 AstrBot 官方 conversation history，不再尝试 QQ 群历史接口。
