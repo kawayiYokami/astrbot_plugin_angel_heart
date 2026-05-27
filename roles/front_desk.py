@@ -436,7 +436,11 @@ class FrontDesk:
                         f"AngelHeart[{chat_id}]: 上游唤醒聊天事件未获批准，已停止后续主 LLM 处理。"
                     )
                     event.stop_event()
-                # 决策不需要回复，立即释放门锁（设置较短的“不回复”冷却）
+                # 决策不需要回复，记录原因并立即释放门锁（设置较短的“不回复”冷却）
+                if decision:
+                    logger.info(f"AngelHeart[{chat_id}]: 决策为'不参与'。原因: {decision.reply_strategy}")
+                else:
+                    logger.warning(f"AngelHeart[{chat_id}]: 分析失败，无决策结果")
                 no_reply_cd = self.context.config_manager.no_reply_cooldown
                 await self.context.release_chat_processing(chat_id, set_cooldown=True, duration=no_reply_cd)
             # 注意：需要回复的情况，门锁释放由 main.py 的 strip_markdown_on_decorating_result 方法统一处理
