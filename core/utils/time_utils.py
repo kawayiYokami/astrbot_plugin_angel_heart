@@ -114,7 +114,7 @@ def format_absolute_time(timestamp: float) -> str:
         timestamp (float): Unix 时间戳。
 
     Returns:
-        str: 形如 " (YYYY-MM-DD HH:MM)"，时间无效时返回空字符串。
+        str: 形如 " (YYYY-MM-DD HH:MM)"，按系统当地时区格式化；时间无效时返回空字符串。
     """
     if not timestamp:
         return ""
@@ -127,9 +127,8 @@ def format_absolute_time(timestamp: float) -> str:
     if timestamp <= 0:
         return ""
 
-    cst = timezone(timedelta(hours=8))
     try:
-        msg_dt = datetime.fromtimestamp(timestamp, cst)
+        msg_dt = datetime.fromtimestamp(timestamp).astimezone()
         return f" ({msg_dt.strftime('%Y-%m-%d %H:%M')})"
     except (OverflowError, OSError, ValueError):
         return ""

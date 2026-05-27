@@ -13,7 +13,7 @@ MessageProcessor - 前台消息处理器
 """
 
 import copy
-from datetime import datetime, timezone, timedelta
+from datetime import datetime
 from typing import Any, List, Dict
 
 from .utils import format_message_to_text
@@ -190,16 +190,15 @@ class MessageProcessor:
     def _build_time_anchor_blocks(self, msg: Dict[str, Any]) -> List[Dict[str, str]]:
         """
         构建额外时间锚点文本块，使用消息发送时间（而非当前时间）。
-        格式示例：2026-03-20 17:28 (CST)
+        格式示例：2026-03-20 17:28
         """
-        cst = timezone(timedelta(hours=8))
         timestamp = msg.get("timestamp")
         try:
             if timestamp is not None:
                 ts = float(timestamp)
                 if ts > 0:
-                    msg_dt = datetime.fromtimestamp(ts, cst).strftime("%Y-%m-%d %H:%M")
-                    return [{"type": "text", "text": f"{msg_dt} (CST)"}]
+                    msg_dt = datetime.fromtimestamp(ts).astimezone().strftime("%Y-%m-%d %H:%M")
+                    return [{"type": "text", "text": msg_dt}]
         except (TypeError, ValueError, OSError):
             pass
 

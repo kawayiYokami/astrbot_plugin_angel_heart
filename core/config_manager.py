@@ -64,7 +64,7 @@ class ConfigManager:
 
     @property
     def observation_timeout(self) -> int:
-        return self._get_grouped("timing", "observation_timeout", 600)
+        return self._get_grouped("timing", "observation_timeout", 60)
 
     # ========== leave_reply ==========
 
@@ -97,10 +97,6 @@ class ConfigManager:
         return self._get_grouped("leave_reply", "min_participant_count", 5)
 
     @property
-    def familiarity_timeout(self) -> int:
-        return self._get_grouped("leave_reply", "familiarity_timeout", 600)
-
-    @property
     def familiarity_cooldown_duration(self) -> int:
         return self._get_grouped("leave_reply", "familiarity_cooldown_duration", 1800)
 
@@ -128,7 +124,7 @@ class ConfigManager:
 
     @property
     def speak_words(self) -> str:
-        return self._get_grouped("wake_interaction", "speak_words", "")
+        return self._get_grouped("wake_interaction", "speak_words", "张嘴")
 
     @property
     def silence_duration(self) -> int:
@@ -201,11 +197,11 @@ class ConfigManager:
 
     @property
     def patience_interval(self) -> int:
-        return self._get_grouped("comfort", "patience_interval", 10)
+        return self._get_grouped("comfort", "patience_interval", 60)
 
     @property
     def comfort_words(self) -> str:
-        return self._get_grouped("comfort", "comfort_words", "嗯嗯|我在|别急")
+        return self._get_grouped("comfort", "comfort_words", "要给")
 
     # ========== tool_decoration ==========
 

@@ -19,7 +19,7 @@ class AngelHeartStatus(Enum):
     NOT_PRESENT = "不在场"  # 初始状态，无消息缓存
     SUMMONED = "被呼唤"  # 检测到唤醒词或@消息
     GETTING_FAMILIAR = "混脸熟"  # 连续互动阶段，可直接回复
-    OBSERVATION = "观测中"  # 观测中等待，10分钟自动降级
+    OBSERVATION = "观测中"  # 观测中等待，1分钟自动降级
 
 
 class StatusChecker:

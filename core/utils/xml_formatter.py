@@ -62,7 +62,7 @@ def format_message_to_text(
     msg: dict,
     alias: str = "AngelHeart",
     wrapper_tag: str = None,
-    use_relative_time: bool = True,
+    use_relative_time: bool = False,
 ) -> str:
     """
     将消息转换为文本格式，并可选地使用 XML 标签包裹。
@@ -71,7 +71,7 @@ def format_message_to_text(
         msg (dict): 消息字典。
         alias (str): AI 的昵称。
         wrapper_tag (str): 可选的 XML 包裹标签（如 "已回应消息"）。
-        use_relative_time (bool): 是否使用相对时间，False 则使用绝对时间。
+        use_relative_time (bool): 是否使用相对时间，False 则使用当地绝对时间。
 
     Returns:
         str: 格式化后的字符串。
@@ -109,7 +109,7 @@ def format_message_to_text(
                 time_tag = format_absolute_time(timestamp)
 
             # 恢复旧格式：
-            # [群友: 昵称 (ID: ...)] (相对时间)
+            # [群友: 昵称 (ID: ...)] (当地时间)
             # [内容: 类型]
             # 实际内容
 

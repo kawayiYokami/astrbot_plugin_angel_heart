@@ -54,6 +54,23 @@ class MockConfigManager:
         return self._overrides.get("context_forgetting_timeout", 86400)
 
 
+class MockProvider:
+    """模拟 AstrBot Provider"""
+
+    def __init__(self, max_context_tokens):
+        self.provider_config = {"max_context_tokens": max_context_tokens}
+
+
+class MockAstrContext:
+    """模拟 AstrBot Context"""
+
+    def __init__(self, max_context_tokens):
+        self.provider = MockProvider(max_context_tokens)
+
+    def get_using_provider(self, chat_id: str):
+        return self.provider
+
+
 def make_message(role: str, content: str, timestamp: float,
                  is_processed: bool = False, tool_calls=None,
                  sender_name: str = "") -> Dict:
@@ -101,11 +118,11 @@ def temp_dir():
     shutil.rmtree(d, ignore_errors=True)
 
 
-def _create_ledger(temp_dir, **config_kwargs):
+def _create_ledger(temp_dir, astr_context=None, **config_kwargs):
     """辅助函数：创建 ledger 并注册清理"""
     from core.conversation_ledger import ConversationLedger
     config = MockConfigManager(**config_kwargs)
-    return ConversationLedger(config, temp_dir)
+    return ConversationLedger(config, temp_dir, astr_context=astr_context)
 
 
 @pytest.fixture
@@ -131,6 +148,42 @@ def ledger_large_budget(temp_dir):
 
 class TestCompressionTrigger:
     """测试压缩触发条件"""
+
+    def test_effective_limit_uses_smaller_provider_limit(self, temp_dir):
+        """模型上下文更小时，使用模型上限触发压缩"""
+        ledger = _create_ledger(
+            temp_dir,
+            astr_context=MockAstrContext(max_context_tokens=1000),
+            max_conversation_tokens=5000,
+            context_forgetting_timeout=0,
+        )
+
+        assert ledger._get_effective_max_conversation_tokens("test") == 1000
+        ledger.db_conn.close()
+
+    def test_effective_limit_uses_smaller_plugin_limit(self, temp_dir):
+        """插件侧上限更小时，使用插件上限触发压缩"""
+        ledger = _create_ledger(
+            temp_dir,
+            astr_context=MockAstrContext(max_context_tokens=1000000),
+            max_conversation_tokens=100000,
+            context_forgetting_timeout=0,
+        )
+
+        assert ledger._get_effective_max_conversation_tokens("test") == 100000
+        ledger.db_conn.close()
+
+    def test_zero_plugin_limit_falls_back_to_provider_limit(self, temp_dir):
+        """插件配置为0时，不限制插件侧上限，改用模型上限"""
+        ledger = _create_ledger(
+            temp_dir,
+            astr_context=MockAstrContext(max_context_tokens=2048),
+            max_conversation_tokens=0,
+            context_forgetting_timeout=0,
+        )
+
+        assert ledger._get_effective_max_conversation_tokens("test") == 2048
+        ledger.db_conn.close()
 
     def test_no_compression_below_threshold(self, temp_dir):
         """Token数低于82%阈值时不触发压缩"""

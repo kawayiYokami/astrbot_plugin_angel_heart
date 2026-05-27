@@ -41,7 +41,8 @@ class AngelHeartContext:
         # 核心资源：对话总账
         self.conversation_ledger = ConversationLedger(
             config_manager=config_manager,
-            data_dir=data_dir
+            data_dir=data_dir,
+            astr_context=astr_context
         )
 
         # 门牌管理

@@ -22,7 +22,7 @@ class ConversationLedger:
     对话总账 - 插件内部权威的、唯一的对话记录中心。
     管理所有对话的完整历史，并以线程安全的方式处理状态。
     """
-    def __init__(self, config_manager, data_dir: Path):
+    def __init__(self, config_manager, data_dir: Path, astr_context=None):
         import bisect
         self._lock = threading.Lock()
         # 专用于数据库操作的锁，保护并发访问 SQLite
@@ -30,6 +30,7 @@ class ConversationLedger:
         # 每个 chat_id 对应一个独立的账本
         self._ledgers: Dict[str, Dict] = {}
         self.config_manager = config_manager
+        self.astr_context = astr_context
 
         # 每个会话的最大消息数量
         self.PER_CHAT_LIMIT = 1000
@@ -239,7 +240,7 @@ class ConversationLedger:
         Args:
             chat_id: 会话ID
             message: 消息字典
-            should_prune: 是否强制执行清理，默认为False
+            should_prune: 兼容旧参数，当前不再因离场状态强制压缩
         """
         # 1. 添加新消息
         ledger = self._get_or_create_ledger(chat_id)
@@ -262,9 +263,7 @@ class ConversationLedger:
                 ledger["messages"] = ledger["messages"][-self.PER_CHAT_LIMIT:]
 
         # 2. 判断是否需要压缩
-        should_compress = should_prune or self._should_compress(chat_id)
-
-        if should_compress:
+        if self._should_compress(chat_id):
             self._compress_context(chat_id)
 
         # 3. 检查并限制总消息数量
@@ -715,7 +714,7 @@ class ConversationLedger:
         判断指定会话是否需要进行上下文压缩。
 
         触发条件（满足任一即触发）：
-        1. 当前Token数达到最大上限的82%
+        1. 当前Token数达到有效上限的配置阈值
         2. 距离上次压缩超过遗忘时间上限（默认1天）
 
         Args:
@@ -724,19 +723,74 @@ class ConversationLedger:
         Returns:
             bool: 是否需要压缩
         """
-        max_tokens = self.config_manager.max_conversation_tokens
+        max_tokens = self._get_effective_max_conversation_tokens(chat_id)
         if max_tokens <= 0:
             # 禁用了Token限制，仅检查时间条件
             return self._is_forgetting_timeout(chat_id)
 
-        # 条件1：Token达到82%阈值
+        # 条件1：Token达到配置阈值
         current_tokens = self._estimate_tokens(chat_id)
-        threshold = int(max_tokens * 0.82)
+        threshold_ratio = self.config_manager.context_compression_threshold
+        threshold = int(max_tokens * threshold_ratio)
         if current_tokens >= threshold:
             return True
 
         # 条件2：遗忘时间超限
         return self._is_forgetting_timeout(chat_id)
+
+    def _get_effective_max_conversation_tokens(self, chat_id: str) -> int:
+        """
+        获取当前会话的有效上下文上限。
+
+        优先读取会话绑定模型的 max_context_tokens，并与插件配置的
+        max_conversation_tokens 取较小正数。插件配置为 0 时表示不设置
+        插件侧上限，仅使用模型上限；两者都不可用时禁用 Token 触发。
+        """
+        configured_limit = self.config_manager.max_conversation_tokens
+        provider_limit = self._get_provider_max_context_tokens(chat_id)
+
+        limits = [
+            int(limit)
+            for limit in (configured_limit, provider_limit)
+            if isinstance(limit, (int, float)) and limit > 0
+        ]
+        if not limits:
+            return 0
+
+        effective_limit = min(limits)
+        if provider_limit and configured_limit and provider_limit > 0 and configured_limit > 0:
+            logger.debug(
+                f"AngelHeart[{chat_id}]: 上下文上限取较小值 "
+                f"(插件={configured_limit}, 模型={provider_limit}, 生效={effective_limit})"
+            )
+        return effective_limit
+
+    def _get_provider_max_context_tokens(self, chat_id: str) -> int:
+        """读取当前会话绑定模型的上下文上限，读取失败或未配置时返回 0。"""
+        if not self.astr_context:
+            return 0
+
+        try:
+            provider = self.astr_context.get_using_provider(chat_id)
+            if not provider:
+                return 0
+
+            provider_config = getattr(provider, "provider_config", {}) or {}
+            if not isinstance(provider_config, dict):
+                return 0
+
+            value = provider_config.get("max_context_tokens", 0)
+            if isinstance(value, str):
+                value = value.strip()
+                if not value:
+                    return 0
+                return int(value)
+            if isinstance(value, (int, float)):
+                return int(value)
+        except Exception as e:
+            logger.debug(f"AngelHeart[{chat_id}]: 读取模型上下文上限失败: {e}")
+
+        return 0
 
     def _is_forgetting_timeout(self, chat_id: str) -> bool:
         """
