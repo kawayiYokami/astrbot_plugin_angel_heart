@@ -30,7 +30,6 @@ _MIGRATION_MAP = {
     "dense_conversation_threshold": ("leave_reply", "dense_conversation_threshold"),
     "dense_conversation_window": ("leave_reply", "dense_conversation_window"),
     "min_participant_count": ("leave_reply", "min_participant_count"),
-    "familiarity_timeout": ("leave_reply", "familiarity_timeout"),
     "familiarity_cooldown_duration": ("leave_reply", "familiarity_cooldown_duration"),
     # wake_interaction
     "analysis_on_mention_only": ("wake_interaction", "analysis_on_mention_only"),
@@ -63,6 +62,16 @@ _MIGRATION_MAP = {
     # debug
     "debug_mode": ("debug", "debug_mode"),
     "strip_markdown_enabled": ("debug", "strip_markdown_enabled"),
+}
+
+_DEPRECATED_FLAT_KEYS = {
+    "familiarity_timeout",
+}
+
+_DEPRECATED_GROUPED_KEYS = {
+    "leave_reply": {
+        "familiarity_timeout",
+    },
 }
 
 
@@ -113,11 +122,18 @@ def run_migration():
 
     # 检查是否需要迁移（如果已经有 object 分组且没有旧扁平 key，说明已迁移）
     needs_migration = any(key in config for key in _MIGRATION_MAP)
-    if not needs_migration:
+    has_deprecated_keys = any(key in config for key in _DEPRECATED_FLAT_KEYS)
+    has_deprecated_grouped_keys = any(
+        isinstance(config.get(group_name), dict)
+        and any(sub_key in config[group_name] for sub_key in sub_keys)
+        for group_name, sub_keys in _DEPRECATED_GROUPED_KEYS.items()
+    )
+    if not needs_migration and not has_deprecated_keys and not has_deprecated_grouped_keys:
         return
 
     # 执行迁移
     migrated_count = 0
+    removed_count = 0
     for old_key, (group_name, sub_key) in _MIGRATION_MAP.items():
         if old_key not in config:
             continue
@@ -138,10 +154,27 @@ def run_migration():
         # 删除旧的扁平 key
         del config[old_key]
 
-    if migrated_count > 0:
+    for old_key in _DEPRECATED_FLAT_KEYS:
+        if old_key in config:
+            del config[old_key]
+            removed_count += 1
+
+    for group_name, sub_keys in _DEPRECATED_GROUPED_KEYS.items():
+        group_config = config.get(group_name)
+        if not isinstance(group_config, dict):
+            continue
+        for sub_key in sub_keys:
+            if sub_key in group_config:
+                del group_config[sub_key]
+                removed_count += 1
+
+    if migrated_count > 0 or removed_count > 0:
         try:
             with open(config_path, "w", encoding="utf-8-sig") as f:
                 json.dump(config, f, indent=2, ensure_ascii=False)
-            logger.info(f"AngelHeart: 配置迁移完成，{migrated_count} 项已迁移到分组结构")
+            logger.info(
+                f"AngelHeart: 配置迁移完成，{migrated_count} 项已迁移到分组结构，"
+                f"{removed_count} 项废弃配置已删除"
+            )
         except OSError as e:
             logger.warning(f"AngelHeart: 配置迁移写入失败: {e}")

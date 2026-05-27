@@ -53,7 +53,7 @@
         "type": "int",
         "description": "观测中超时时间（秒）",
         "hint": "多长时间无活动自动降级。",
-        "default": 600
+        "default": 60
       }
     }
   },
@@ -105,12 +105,6 @@
         "hint": "至少多少不同的人参与才算密集。",
         "default": 5
       },
-      "familiarity_timeout": {
-        "type": "int",
-        "description": "离场应答超时时间（秒）",
-        "hint": "多长时间无活动自动降级。",
-        "default": 600
-      },
       "familiarity_cooldown_duration": {
         "type": "int",
         "description": "离场应答冷却时间（秒）",
@@ -159,7 +153,7 @@
         "type": "string",
         "description": "张嘴词",
         "hint": "当消息中包含这些词时，插件将解除闭嘴状态。多个词请用 '|' 分隔。",
-        "default": ""
+        "default": "张嘴"
       },
       "silence_duration": {
         "type": "int",
@@ -230,8 +224,8 @@
     "items": {
       "max_conversation_tokens": {
         "type": "int",
-        "description": "最大对话Token限制",
-        "hint": "当单个会话的估算Token数超过此限制的82%时，将触发渐进式压缩。设置为0则禁用。",
+        "description": "插件侧上下文Token上限",
+        "hint": "实际压缩上限会取此值与当前会话绑定模型 max_context_tokens 的较小正数，适合让直连模型保持大上下文、群聊由插件使用较小上下文。设置为0表示不设置插件侧上限，仅使用模型上限；若模型也未配置上限，则禁用Token触发。",
         "default": 100000
       },
       "content_retain_tokens": {
@@ -264,13 +258,13 @@
         "type": "int",
         "description": "久等间隔（秒）",
         "hint": "耐心计时器各阶段之间的时间间隔。",
-        "default": 10
+        "default": 60
       },
       "comfort_words": {
         "type": "string",
         "description": "安心词",
         "hint": "耐心计时器各阶段发送的安慰话语。多个词请用 '|' 分隔。",
-        "default": "嗯...让我再想想... ( ´•ω•)？|这个问题有点复杂... (；´Д｀)|唔...信息量有点大... (°Д°≡°Д°)"
+        "default": "要给"
       }
     }
   },

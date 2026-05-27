@@ -225,7 +225,7 @@ def format_final_prompt(
     recent_dialogue: List[Dict],
     decision: 'SecretaryDecision',
     alias: str = "AngelHeart",
-    use_absolute_time: bool = False,
+    use_absolute_time: bool = True,
 ) -> str:
     """
     为大模型生成最终的用户对话文本（不包含系统决策和 XML 包裹）。

@@ -199,11 +199,8 @@ class FrontDesk:
                 else time.time()
             ),
         }
-        # 7. 检查AI是否不在场
-        is_not_present = self.context.is_not_present(chat_id)
-
-        # 8. 将消息添加到 Ledger，传递状态信息
-        self.context.conversation_ledger.add_message(chat_id, new_message, should_prune=is_not_present)
+        # 7. 将消息添加到 Ledger。上下文清理由压缩策略统一控制，不再因离场状态触发。
+        self.context.conversation_ledger.add_message(chat_id, new_message)
 
     async def handle_event(self, event: AstrMessageEvent):
         """
@@ -652,21 +649,14 @@ class FrontDesk:
                 for msg in supplement_messages:
                     msg["is_processed"] = True
 
-                # 保留最新的消息（刚收到的），清空其他记录避免重复
-                if current_messages:
-                    # 按时间戳排序，找到最新的消息
-                    sorted_current = sorted(
-                        current_messages, key=lambda m: m.get("timestamp", 0)
-                    )
-                    latest_message = sorted_current[-1]
+                # 合并历史消息和当前内存消息；按时间戳去重，避免补历史时清空已有上下文。
+                messages_by_timestamp = {}
+                for msg in supplement_messages + current_messages:
+                    messages_by_timestamp[msg.get("timestamp", 0)] = msg
 
-                    # 合并历史消息和最新消息
-                    all_messages = supplement_messages + [latest_message]
-                else:
-                    # 如果没有当前消息（不太可能），只使用历史消息
-                    all_messages = supplement_messages
-
-                all_messages.sort(key=lambda m: m.get("timestamp", 0))
+                all_messages = sorted(
+                    messages_by_timestamp.values(), key=lambda m: m.get("timestamp", 0)
+                )
 
                 # 使用公共方法更新消息列表
                 ledger.set_messages(chat_id, all_messages)
