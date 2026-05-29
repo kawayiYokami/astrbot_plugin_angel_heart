@@ -176,6 +176,10 @@ class StatusChecker:
             if not latest_user_message:
                 return False
 
+            # @自己的消息无条件视为被呼唤
+            if latest_user_message.get("is_at_self", False):
+                return True
+
             message_content = self._extract_message_content(latest_user_message)
             return self._detect_wake_word(chat_id, message_content)
         except Exception as e:

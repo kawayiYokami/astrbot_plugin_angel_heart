@@ -17,7 +17,7 @@ except ImportError:
 
     logger = logging.getLogger(__name__)
 from astrbot.api.event import AstrMessageEvent
-from astrbot.core.message.components import Image, Plain
+from astrbot.core.message.components import At, Image, Plain, Reply
 from typing import Any, List, Dict  # 导入类型提示
 
 # 导入公共工具函数和 ConversationLedger
@@ -111,6 +111,11 @@ class FrontDesk:
         for component in event.get_messages():
             if isinstance(component, Plain) and component.text:
                 text_parts.append(component.text)
+            elif isinstance(component, At):
+                # @消息的显示名也是消息内容的一部分，人类看到的就是 "@昵称"
+                name = getattr(component, "name", None) or getattr(component, "display", None) or ""
+                if name:
+                    text_parts.append(f"@{name}")
         text_content = "".join(text_parts).strip()
         if not text_content:
             text_content = outline if outline and outline.strip() else ""
@@ -189,6 +194,18 @@ class FrontDesk:
 
         # 6. 构建完整的消息字典
         source_event_id = self._get_event_message_id(event)
+
+        # 检测是否为@自己的消息
+        is_at_self = False
+        try:
+            self_id = str(event.get_self_id())
+            for component in event.get_messages():
+                if isinstance(component, At) and str(component.qq) == self_id:
+                    is_at_self = True
+                    break
+        except Exception:
+            pass
+
         new_message = {
             "role": "user",
             "content": content_list,  # 标准多模态列表
@@ -196,6 +213,7 @@ class FrontDesk:
             "sender_name": event.get_sender_name(),
             # 事件消息ID：用于后续“补历史”阶段精确过滤当前这条消息
             "source_event_id": source_event_id,
+            "is_at_self": is_at_self,
             "timestamp": (
                 event.get_timestamp()
                 if hasattr(event, "get_timestamp") and event.get_timestamp()
