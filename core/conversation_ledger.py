@@ -483,17 +483,40 @@ class ConversationLedger:
         processed_count = 0
 
         with self._lock:
+            # 确定最近 7 条消息的时间戳边界
+            all_messages = ledger["messages"]
+            recent_7 = all_messages[-7:] if len(all_messages) > 7 else all_messages
+            recent_cutoff_ts = recent_7[0].get("timestamp", 0) if recent_7 else 0
+
             # 查找所有包含图片且未转述的消息
             messages_needing_caption = []
-            for message in ledger["messages"]:
-                if (message.get("role") == "user" and  # 只转述用户消息
+            expired_messages = []
+            for message in all_messages:
+                if (message.get("role") == "user" and
                     isinstance(message.get("content"), list) and
-                    not message.get("image_caption")):  # 还没有转述
+                    not message.get("image_caption")):
 
-                    # 检查是否包含图片
                     has_image = any(item.get("type") == "image_url" for item in message["content"])
                     if has_image:
-                        messages_needing_caption.append(message)
+                        if message.get("timestamp", 0) >= recent_cutoff_ts:
+                            messages_needing_caption.append(message)
+                        else:
+                            expired_messages.append(message)
+
+            # 不在最近 7 条消息范围内的图片直接标记过期
+            for msg in expired_messages:
+                msg["image_caption"] = self.EXPIRED_IMAGE_CAPTION
+                if isinstance(msg.get("content"), list):
+                    msg["content"] = [
+                        item for item in msg["content"]
+                        if item.get("type") != "image_url"
+                    ]
+                processed_count += 1
+
+            if expired_messages:
+                logger.info(
+                    f"AngelHeart[{chat_id}]: {len(expired_messages)} 条不在最近7条范围内的图片消息已标记过期"
+                )
 
             logger.info(f"AngelHeart[{chat_id}]: 找到 {len(messages_needing_caption)} 条需要转述图片的消息")
 
@@ -1052,3 +1075,4 @@ class ConversationLedger:
 
         return int(tokens) + (1 if tokens % 1 > 0 else 0)
     BROKEN_IMAGE_CAPTION = "图裂了，图片无法打开，可能是网络问题或者格式不支持"
+    EXPIRED_IMAGE_CAPTION = "因为时间问题，图片缓存内容已经丢失"
