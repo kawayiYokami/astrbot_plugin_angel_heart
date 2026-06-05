@@ -52,7 +52,7 @@ class AngelHeartPlugin(Star):
         self._whitelist_cache = self._prepare_whitelist()
 
         # -- 获取插件数据目录 --
-        plugin_data_dir = StarTools.get_data_dir()
+        plugin_data_dir = StarTools.get_data_dir("astrbot_plugin_angel_heart")
 
         # -- 创建 AngelHeartContext 全局上下文（包含 ConversationLedger）--
         self.angel_context = AngelHeartContext(self.config_manager, self.context, plugin_data_dir)
