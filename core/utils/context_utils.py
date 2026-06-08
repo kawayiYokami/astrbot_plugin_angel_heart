@@ -2,7 +2,9 @@
 AngelHeart 插件 - 上下文处理相关工具函数
 """
 
+import copy
 import json
+import re
 from typing import List, Dict, TYPE_CHECKING, Union, Tuple
 
 if TYPE_CHECKING:
@@ -15,6 +17,9 @@ try:
 except ImportError:
     import logging
     logger = logging.getLogger(__name__)
+
+
+_GENERIC_IMAGE_PLACEHOLDER_RE = re.compile(r"(?:\s*\[图片\]\s*)+")
 
 
 def json_serialize_context(chat_records: List[Dict], decision: Union["SecretaryDecision", Dict], needs_search: bool = False) -> str:
@@ -232,14 +237,98 @@ def format_final_prompt(
     """
     from .xml_formatter import format_message_to_text
 
+    marked_dialogue = _with_current_round_image_markers(recent_dialogue)
+
     # 将需要回应的新对话格式化为文本字符串
     dialogue_str = "\n".join(
         [
             format_message_to_text(
                 msg, alias, use_relative_time=not use_absolute_time
             )
-            for msg in recent_dialogue
+            for msg in marked_dialogue
         ]
     )
 
     return dialogue_str
+
+
+def _with_current_round_image_markers(messages: List[Dict]) -> List[Dict]:
+    """为当前轮 prompt 注入跨消息递增的图片锚点。"""
+    marked_messages = []
+    image_index = 1
+
+    for msg in messages:
+        image_count = _count_prompt_images(msg)
+        if image_count <= 0:
+            marked_messages.append(msg)
+            continue
+
+        markers = [f"[图片{i}]" for i in range(image_index, image_index + image_count)]
+        image_index += image_count
+        marked_messages.append(_append_image_markers(msg, markers))
+
+    return marked_messages
+
+
+def _count_prompt_images(msg: Dict) -> int:
+    """统计当前 prompt 中需要编号的图片数量。"""
+    content = msg.get("content")
+    if isinstance(content, list):
+        count = sum(
+            1
+            for item in content
+            if isinstance(item, dict) and item.get("type") == "image_url"
+        )
+        if count:
+            return count
+
+    image_refs = msg.get("image_refs")
+    if isinstance(image_refs, list):
+        return sum(1 for ref in image_refs if isinstance(ref, str) and ref.strip())
+
+    return 0
+
+
+def _append_image_markers(msg: Dict, markers: List[str]) -> Dict:
+    """返回一条带图片编号文本锚点的消息副本。"""
+    marked_msg = copy.deepcopy(msg)
+    marker_text = " ".join(markers)
+    content = marked_msg.get("content")
+
+    if isinstance(content, list):
+        text_items = [
+            item
+            for item in content
+            if isinstance(item, dict) and item.get("type") == "text"
+        ]
+        for item in text_items:
+            item["text"] = _strip_generic_image_placeholders(item.get("text", ""))
+
+        non_empty_text_items = [
+            item for item in text_items if str(item.get("text", "")).strip()
+        ]
+        if non_empty_text_items:
+            last_text_item = non_empty_text_items[-1]
+            text = str(last_text_item.get("text", "")).rstrip()
+            last_text_item["text"] = f"{text} {marker_text}".strip()
+        else:
+            insert_at = 0
+            for idx, item in enumerate(content):
+                if isinstance(item, dict) and item.get("type") == "image_url":
+                    insert_at = idx
+                    break
+            else:
+                insert_at = len(content)
+            content.insert(insert_at, {"type": "text", "text": marker_text})
+        return marked_msg
+
+    text = _strip_generic_image_placeholders(str(content or ""))
+    marked_msg["content"] = f"{text} {marker_text}".strip() if text else marker_text
+    return marked_msg
+
+
+def _strip_generic_image_placeholders(text: str) -> str:
+    """移除平台 outline 中不带编号的 [图片] 占位。"""
+    if not text:
+        return ""
+    return _GENERIC_IMAGE_PLACEHOLDER_RE.sub(" ", str(text)).strip()

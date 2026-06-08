@@ -696,8 +696,8 @@ class ConversationLedger:
                 try:
                     current_provider = astr_context.get_using_provider(chat_id)
                     if current_provider:
-                        modalities = current_provider.provider_config.get("modalities", ["text"])
-                        if "image" in modalities:
+                        modalities = current_provider.provider_config.get("modalities", None)
+                        if not modalities or not isinstance(modalities, list) or "image" in modalities:
                             logger.debug(f"AngelHeart[{chat_id}]: 当前Provider支持图片，无需转述")
                             return False
                 except Exception:
