@@ -67,9 +67,6 @@ class AngelHeartPlugin(Star):
         # 建立必要的相互引用
         self.front_desk.secretary = self.secretary
 
-        # -- 工具修饰冷却记录 --
-        self._tool_decoration_last_sent = {}  # {chat_id: timestamp}
-
         logger.info("💖 AngelHeart智能回复员初始化完成 (事件扣押机制 V2 已启用)")
 
     # --- 核心事件处理 ---
@@ -173,23 +170,11 @@ class AngelHeartPlugin(Star):
                 else:
                     tool_results_list = [tool_results]
 
-                # 收集工具调用信息，用于生成用户提示
-                tool_names = []
-
                 # 存储每轮工具调用
                 for tool_result in tool_results_list:
                     # 1. 存储助手的工具调用消息（保持完整的toolcall结构）
                     tool_calls_info = tool_result.tool_calls_info
 
-                    # 提取工具名称
-                    if tool_calls_info.tool_calls:
-                        for tool_call in tool_calls_info.tool_calls:
-                            # tool_call 是对象，不是字典，直接访问属性
-                            if hasattr(tool_call, 'function') and tool_call.function:
-                                tool_name = tool_call.function.name if hasattr(tool_call.function, 'name') else '未知工具'
-                                tool_names.append(tool_name)
-
-                    # --- 新增：拟人化反馈逻辑 ---
                     assistant_tool_msg = {
                         "role": tool_calls_info.role,  # "assistant"
                         "content": tool_calls_info.content,  # 可能为None
@@ -224,41 +209,6 @@ class AngelHeartPlugin(Star):
 
                 logger.info(f"AngelHeart[{chat_id}]: 已记录结构化工具调用和结果")
 
-                # 工具修饰消息发送（带冷却机制）
-                if self.config_manager.tool_decoration_enabled and tool_names:
-                    # 检查冷却时间
-                    current_time = time.time()
-                    last_sent_time = self._tool_decoration_last_sent.get(chat_id, 0)
-                    cooldown = self.config_manager.tool_decoration_cooldown
-                    time_since_last_sent = current_time - last_sent_time
-
-                    if time_since_last_sent < cooldown:
-                        # 还在冷却期，跳过发送
-                        logger.debug(f"AngelHeart[{chat_id}]: 工具修饰消息在冷却中（距上次 {time_since_last_sent:.1f}s < {cooldown}s），跳过")
-                    else:
-                        # 可以发送，为每个工具查找修饰语
-                        decorations = []
-                        for tool_name in tool_names:
-                            decoration = self._get_tool_decoration(tool_name)
-                            if decoration:  # 只添加非空的修饰语
-                                decorations.append(decoration)
-
-                        # 只有当有修饰语时才发送消息
-                        if decorations:
-                            import random
-                            # 多个工具时，随机选择一个修饰语
-                            selected_decoration = random.choice(decorations)
-
-                            try:
-                                from astrbot.api.event import MessageChain
-                                message_chain = MessageChain().message(selected_decoration)
-                                await self.context.send_message(event.unified_msg_origin, message_chain)
-                                # 更新最后发送时间
-                                self._tool_decoration_last_sent[chat_id] = current_time
-                                logger.info(f"AngelHeart[{chat_id}]: 已发送工具修饰消息: {selected_decoration}")
-                            except Exception as e:
-                                logger.error(f"AngelHeart[{chat_id}]: 发送工具修饰消息失败: {e}")
-
     # --- 内部方法 ---
     def reload_config(self, new_config: dict):
         """重新加载配置"""
@@ -273,42 +223,6 @@ class AngelHeartPlugin(Star):
         logger.info(
             f"AngelHeart: 配置已更新。等待时间: {self.config_manager.waiting_time}秒"
         )
-
-    def _get_tool_decoration(self, tool_name: str) -> str:
-        """
-        根据工具名获取修饰语（支持模糊匹配）
-
-        Args:
-            tool_name: 工具名称，如 "web_search", "get_news" 等
-
-        Returns:
-            str: 随机选择的修饰语，如果未匹配到则返回空字符串
-
-        匹配规则：
-            - 从配置字典中从上往下遍历
-            - 只要工具名包含配置的关键词，就匹配成功
-            - 返回第一个匹配项的随机修饰语
-
-        示例：
-            配置: {"search": "我搜索一下|我搜一下"}
-            工具名: "web_search" -> 匹配成功，返回 "我搜索一下" 或 "我搜一下"
-            工具名: "get_news" -> 不匹配，返回 ""
-        """
-        import random
-
-        decorations_config = self.config_manager.tool_decorations
-
-        # 从上往下遍历配置，第一个匹配的就返回
-        for keyword, decoration_str in decorations_config.items():
-            # 检查工具名是否包含关键词（不区分大小写）
-            if keyword.lower() in tool_name.lower():
-                # 分割修饰语并随机选择一个
-                options = [opt.strip() for opt in decoration_str.split('|') if opt.strip()]
-                if options:
-                    return random.choice(options)
-
-        # 未匹配到任何配置
-        return ""
 
     def _get_plain_chat_id(self, unified_id: str) -> str:
         """从 unified_msg_origin 中提取纯净的聊天ID (QQ号)"""

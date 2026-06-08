@@ -166,18 +166,6 @@ angel_context.proactive_manager.register_custom_trigger("my_trigger", custom_tri
 - [`behavior_rules.md`](prompts/modules/behavior_rules.md)：行为规则
 - [`decision_logic.md`](prompts/modules/decision_logic.md)：决策逻辑
 
-### 工具修饰
-
-通过配置 `tool_decorations` 为工具调用添加拟人化提示：
-
-```json
-{
-  "search": "我搜索一下|我查查|让我搜搜",
-  "memory": "嗯让我想想|稍等",
-  "python": "让我算算|计算中...|稍等我写个代码"
-}
-```
-
 ## 调试与监控
 
 ### 日志系统
