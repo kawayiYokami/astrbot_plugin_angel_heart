@@ -249,6 +249,8 @@ class ConversationLedger:
             # 这样可以避免覆盖外部预设的 is_processed 值（如 tool_call 消息）
             if "is_processed" not in message:
                 message["is_processed"] = False
+            if "chat_id" not in message:
+                message["chat_id"] = chat_id
 
             # 使用 bisect.insort 在排序位置插入，避免全量排序
             self._bisect.insort(

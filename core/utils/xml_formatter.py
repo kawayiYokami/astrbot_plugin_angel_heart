@@ -108,17 +108,19 @@ def format_message_to_text(
             else:
                 time_tag = format_absolute_time(timestamp)
 
-            # 恢复旧格式：
-            # [群友: 昵称 (ID: ...)] (当地时间)
-            # [内容: 类型]
-            # 实际内容
-
-
-            header = f"[群友: {sender_name} (ID: {sender_id})]{time_tag}"
+            chat_id = str(msg.get("chat_id", "") or "")
+            if ":GroupMessage:" in chat_id:
+                header = f"[群友: {sender_name} (ID: {sender_id})]{time_tag}"
+            else:
+                header = f"[{sender_name} (ID: {sender_id})]{time_tag}"
             formatted_body = f"{header}: {text_content}"
         else:
             # 历史记录回退
-            formatted_body = f"[群友(历史记录)]\n[内容: 文本]\n{text_content}"
+            chat_id = str(msg.get("chat_id", "") or "")
+            if ":GroupMessage:" in chat_id:
+                formatted_body = f"[群友(历史记录)]\n[内容: 文本]\n{text_content}"
+            else:
+                formatted_body = f"[历史记录]\n[内容: 文本]\n{text_content}"
 
     # 2. Assistant (助理) 消息处理
     elif role == "assistant":
