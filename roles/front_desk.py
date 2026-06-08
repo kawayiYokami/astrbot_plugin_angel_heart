@@ -1028,7 +1028,13 @@ class FrontDesk:
 
             # 检查 provider 的 modalities 配置
             provider_config = provider.provider_config
-            modalities = provider_config.get("modalities", ["text"])
+            modalities = provider_config.get("modalities", None)
+
+            if not modalities or not isinstance(modalities, list):
+                logger.debug(
+                    f"AngelHeart[{chat_id}]: Provider {provider_config.get('id', 'unknown')} 未声明 modalities，按兼容策略保留图片"
+                )
+                return contexts
 
             # 如果支持图片，直接返回
             if "image" in modalities:
@@ -1191,13 +1197,40 @@ class FrontDesk:
             boundary_ts = max(msg.get('timestamp', 0) for msg in recent_dialogue)
             self.context.conversation_ledger.mark_as_processed(chat_id, boundary_ts)
 
-    async def _ensure_image_captions_for_request(self, chat_id: str) -> int:
+    def _provider_supports_images(self, chat_id: str) -> bool:
+        """判断当前会话使用的主模型是否支持图片输入。"""
+        try:
+            provider = self.astr_context.get_using_provider(chat_id)
+            if not provider:
+                return False
+            provider_config = getattr(provider, "provider_config", {}) or {}
+            modalities = provider_config.get("modalities", None)
+            if not modalities or not isinstance(modalities, list):
+                return True
+            return "image" in modalities
+        except Exception as e:
+            logger.debug(f"AngelHeart[{chat_id}]: 判断 Provider 图片能力失败: {e}")
+            return False
+
+    def _should_preserve_current_image_urls(self, chat_id: str) -> bool:
+        """主模型支持图片时，当前事件图片保持 AstrBot 原生传递。"""
+        return self._provider_supports_images(chat_id)
+
+    async def _ensure_image_captions_for_request(
+        self, chat_id: str, force_caption: bool = False
+    ) -> int:
         """在真正组请求前，按当前配置补齐待回答消息的图片转述。"""
         caption_provider_id = self._config_manager.image_caption_provider_id
         if not caption_provider_id:
             return 0
 
         try:
+            if force_caption:
+                return await self.context.conversation_ledger.generate_captions_for_chat(
+                    chat_id=chat_id,
+                    caption_provider_id=caption_provider_id,
+                    astr_context=self.astr_context,
+                )
             return await self.context.conversation_ledger.process_image_captions_if_needed(
                 chat_id=chat_id,
                 caption_provider_id=caption_provider_id,
@@ -1241,6 +1274,54 @@ class FrontDesk:
 
         return new_contexts
 
+    def _collect_non_current_image_urls(
+        self, recent_dialogue: List[Dict], current_event_id: str
+    ) -> List[str]:
+        """收集阻塞聚合中非当前事件的图片，当前事件图片继续走 req.image_urls。"""
+        if not current_event_id:
+            return []
+
+        image_urls = []
+        seen = set()
+        for msg in recent_dialogue:
+            if str(msg.get("source_event_id", "") or "") == current_event_id:
+                continue
+            content = msg.get("content")
+            if not isinstance(content, list):
+                continue
+            for item in content:
+                if not isinstance(item, dict) or item.get("type") != "image_url":
+                    continue
+                image_url = item.get("image_url", {})
+                url = image_url.get("url", "") if isinstance(image_url, dict) else ""
+                if isinstance(url, str) and url and url not in seen:
+                    image_urls.append(url)
+                    seen.add(url)
+
+        return image_urls
+
+    def _append_extra_image_urls_to_request(self, req: Any, image_urls: List[str]):
+        """把非当前事件的 ledger 图片追加为当前请求的额外多模态块。"""
+        if not image_urls:
+            return
+
+        try:
+            from astrbot.core.agent.message import ImageURLPart
+        except Exception as e:
+            logger.warning(f"AngelHeart: 无法导入 ImageURLPart，跳过聚合图片追加: {e}")
+            return
+
+        if not hasattr(req, "extra_user_content_parts") or req.extra_user_content_parts is None:
+            req.extra_user_content_parts = []
+
+        for url in image_urls:
+            try:
+                req.extra_user_content_parts.append(
+                    ImageURLPart(image_url={"url": url})
+                )
+            except Exception as e:
+                logger.warning(f"AngelHeart: 追加聚合图片失败: {e}")
+
     def _update_request(
         self,
         req: Any,
@@ -1248,6 +1329,8 @@ class FrontDesk:
         final_prompt: str,
         alias: str,
         scene_prompt: str | None = None,
+        preserve_current_image_urls: bool = False,
+        extra_image_urls: List[str] | None = None,
     ):
         """更新请求对象"""
         # 完全覆盖原有的 contexts
@@ -1256,7 +1339,10 @@ class FrontDesk:
         # 只在当前提示词有效时覆盖 req.prompt；否则保留原始当前轮输入。
         if self._is_valid_final_prompt(final_prompt):
             req.prompt = final_prompt
-            req.image_urls = []  # 图片已在 contexts 中
+            if preserve_current_image_urls:
+                self._append_extra_image_urls_to_request(req, extra_image_urls or [])
+            else:
+                req.image_urls = []
 
         # 注入系统提示词
         original_system_prompt = getattr(req, "system_prompt", "")
@@ -1280,8 +1366,12 @@ class FrontDesk:
         should_mark_processed = False
         scene_hint = None
         scene_prompt = None
+        preserve_current_image_urls = self._should_preserve_current_image_urls(chat_id)
 
-        caption_count = await self._ensure_image_captions_for_request(chat_id)
+        caption_count = await self._ensure_image_captions_for_request(
+            chat_id,
+            force_caption=not preserve_current_image_urls,
+        )
         if caption_count > 0:
             logger.info(
                 f"AngelHeart[{chat_id}]: 组请求前已补齐 {caption_count} 条图片转述"
@@ -1322,6 +1412,11 @@ class FrontDesk:
             processor, historical_context, [] if self._is_group_chat(chat_id) else recent_dialogue,
             chat_id, current_event_id, scene_hint
         )
+        extra_image_urls = (
+            self._collect_non_current_image_urls(recent_dialogue, current_event_id)
+            if preserve_current_image_urls
+            else []
+        )
 
         # 4. 将秘书建议作为临时上下文注入（仅群聊且需要回复时）
         if self._is_group_chat(chat_id) and decision and decision.should_reply:
@@ -1333,7 +1428,15 @@ class FrontDesk:
         new_contexts = self.filter_images_for_provider(chat_id, new_contexts)
 
         # 6. 更新请求对象
-        self._update_request(req, new_contexts, final_prompt_str, alias, scene_prompt)
+        self._update_request(
+            req,
+            new_contexts,
+            final_prompt_str,
+            alias,
+            scene_prompt,
+            preserve_current_image_urls=preserve_current_image_urls,
+            extra_image_urls=extra_image_urls,
+        )
 
         if not self._is_valid_final_prompt(final_prompt_str):
             logger.warning(
