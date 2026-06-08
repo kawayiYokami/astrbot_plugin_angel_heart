@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.8.35 - 2026-06-08
+- 修复私聊上下文渲染仍使用“群友”前缀的问题：私聊消息现在显示为 `[昵称 (ID: 账号)]`，群聊消息仍保持 `[群友: 昵称 (ID: 账号)]`。
+
 ## 0.8.33 - 2026-05-27
 - **新增渐进式上下文压缩算法**：替换原来的"只保留7条"策略，改为按 Token 预算从最新消息往前保留正文(10K)和工具消息(10K)，支持遗忘时间上限(默认1天)强制压缩。
 - **配置 schema 重构为分组结构**：采用 `type: object` 嵌套分组（timing、leave_reply、wake_interaction、access_control、personality、context_compression、comfort、tool_decoration、debug），WebUI 展示更清晰。
