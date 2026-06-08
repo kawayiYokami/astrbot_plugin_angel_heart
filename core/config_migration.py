@@ -54,10 +54,6 @@ _MIGRATION_MAP = {
     # comfort
     "patience_interval": ("comfort", "patience_interval"),
     "comfort_words": ("comfort", "comfort_words"),
-    # tool_decoration
-    "tool_decoration_enabled": ("tool_decoration", "tool_decoration_enabled"),
-    "tool_decoration_cooldown": ("tool_decoration", "tool_decoration_cooldown"),
-    "tool_decorations": ("tool_decoration", "tool_decorations"),
     # debug
     "debug_mode": ("debug", "debug_mode"),
     "strip_markdown_enabled": ("debug", "strip_markdown_enabled"),
@@ -65,11 +61,19 @@ _MIGRATION_MAP = {
 
 _DEPRECATED_FLAT_KEYS = {
     "familiarity_timeout",
+    "tool_decoration_enabled",
+    "tool_decoration_cooldown",
+    "tool_decorations",
 }
 
 _DEPRECATED_GROUPED_KEYS = {
     "leave_reply": {
         "familiarity_timeout",
+    },
+    "tool_decoration": {
+        "tool_decoration_enabled",
+        "tool_decoration_cooldown",
+        "tool_decorations",
     },
 }
 
@@ -166,6 +170,8 @@ def run_migration():
             if sub_key in group_config:
                 del group_config[sub_key]
                 removed_count += 1
+        if not group_config:
+            del config[group_name]
 
     if migrated_count > 0 or removed_count > 0:
         try:

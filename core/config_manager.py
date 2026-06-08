@@ -199,29 +199,6 @@ class ConfigManager:
     def comfort_words(self) -> str:
         return self._get_grouped("comfort", "comfort_words", "要给")
 
-    # ========== tool_decoration ==========
-
-    @property
-    def tool_decoration_enabled(self) -> bool:
-        return self._get_grouped("tool_decoration", "tool_decoration_enabled", False)
-
-    @property
-    def tool_decoration_cooldown(self) -> float:
-        return self._get_grouped("tool_decoration", "tool_decoration_cooldown", 7.0)
-
-    @property
-    def tool_decorations(self) -> dict:
-        import json
-        decorations = self._get_grouped("tool_decoration", "tool_decorations", "{}")
-        if isinstance(decorations, dict):
-            return decorations
-        if isinstance(decorations, str):
-            try:
-                return json.loads(decorations)
-            except json.JSONDecodeError:
-                return {}
-        return {}
-
     # ========== debug ==========
 
     @property
