@@ -461,6 +461,12 @@ class AngelHeartPlugin(Star):
         """
         chat_id = event.unified_msg_origin
         try:
+            if self._is_upstream_command_event(event):
+                logger.debug(
+                    f"AngelHeart[{chat_id}]: 检测到是上游指令事件，跳过 Markdown 清洗。"
+                )
+                return
+
             logger.debug(f"AngelHeart[{chat_id}]: 开始清洗消息链中的Markdown格式...")
 
             # 从 event 对象中获取消息链
