@@ -39,6 +39,18 @@ class FrontDesk:
 
     ASTRBOT_HISTORY_MESSAGE_LIMIT = 7
     ASTRBOT_HISTORY_TEXT_TOKEN_LIMIT = 10000
+    BLANK_SENDER_NAME = "空白"
+    INVALID_SENDER_IDS = {
+        "",
+        "0",
+        "unknown",
+        "none",
+        "null",
+        "user",
+        "history_user",
+        "assistant",
+        "tool",
+    }
 
     def __init__(self, config_manager, angel_context):
         """
@@ -72,6 +84,25 @@ class FrontDesk:
         仅返回字符串，不抛异常。
         """
         return str(getattr(event, "angelheart_event_id", "") or "")
+
+    def _normalize_sender_name(self, sender_id: Any, *name_candidates: Any) -> str:
+        """
+        规范化发送者显示名。
+
+        有真实 ID 但显示名为空白时，使用明确标签标记这种真实状态；
+        没有有效 ID 的消息不伪装成正常用户。
+        """
+        for candidate in name_candidates:
+            if candidate is None:
+                continue
+            name = str(candidate).strip()
+            if name:
+                return name
+
+        normalized_sender_id = str(sender_id or "").strip()
+        if normalized_sender_id.lower() not in self.INVALID_SENDER_IDS:
+            return self.BLANK_SENDER_NAME
+        return ""
 
     def _ensure_internal_event_id(self, event: AstrMessageEvent) -> str:
         """
@@ -210,7 +241,10 @@ class FrontDesk:
             "role": "user",
             "content": content_list,  # 标准多模态列表
             "sender_id": event.get_sender_id(),
-            "sender_name": event.get_sender_name(),
+            "sender_name": self._normalize_sender_name(
+                event.get_sender_id(),
+                event.get_sender_name(),
+            ),
             # 事件消息ID：用于后续“补历史”阶段精确过滤当前这条消息
             "source_event_id": source_event_id,
             "is_at_self": is_at_self,
@@ -940,13 +974,19 @@ class FrontDesk:
             # 1. 获取发送者信息（天使之眼的方式）
             sender = raw_msg.get("sender", {})
             sender_id = str(sender.get("user_id", ""))
-            sender_name = sender.get("nickname", "未知用户")
 
             # 2. 判断是否为机器人自己发送的消息
             # 直接对比 sender.user_id 和 self_id
             self_id = str(raw_msg.get("self_id", ""))
             is_self = str(sender_id) == self_id
             role = "assistant" if is_self else "user"
+            sender_name = self._normalize_sender_name(
+                sender_id,
+                sender.get("card"),
+                sender.get("nickname"),
+            )
+            if role == "assistant" and sender_name == self.BLANK_SENDER_NAME:
+                sender_name = "assistant"
 
             # 3. 提取消息内容（只取文本，忽略图片等）
             content = self._extract_text_from_qq_message(raw_msg)
