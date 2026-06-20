@@ -256,11 +256,6 @@ class FrontDesk:
         }
         # 7. 将消息添加到 Ledger。上下文清理由压缩策略统一控制，不再因离场状态触发。
         self.context.conversation_ledger.add_message(chat_id, new_message)
-        logger.debug(
-            f"AngelHeart[{chat_id}]: cache_message 入库 is_at_self={is_at_self}, "
-            f"event_id={source_event_id}, ts={new_message['timestamp']}, "
-            f"sender={new_message['sender_id']}"
-        )
 
     async def handle_event(self, event: AstrMessageEvent):
         """
@@ -489,6 +484,12 @@ class FrontDesk:
                 # 决策需要回复，执行回复
                 await self._execute_secretary_decision(decision, event, chat_id)
             else:
+                try:
+                    _, _, boundary_ts = self.context.conversation_ledger.get_context_snapshot(chat_id)
+                    if boundary_ts > 0:
+                        self.context.conversation_ledger.mark_as_processed(chat_id, boundary_ts)
+                except Exception:
+                    pass
                 if (
                     event.is_at_or_wake_command
                     and self.context.config_manager.block_unapproved_wake_non_command
@@ -621,17 +622,6 @@ class FrontDesk:
             else:
                 logger.info(f"AngelHeart[{chat_id}]: 调试模式已启用，阻止了实际唤醒。")
             # 注意：门锁释放由 main.py 的 strip_markdown_on_decorating_result 方法统一处理
-
-        elif decision:
-            logger.info(
-                f"AngelHeart[{chat_id}]: 决策为'不参与'。原因: {decision.reply_strategy}"
-            )
-            await self.context.clear_decision(chat_id)
-            self.context.conversation_ledger.mark_as_processed(chat_id, boundary_ts)
-        else:
-            logger.warning(f"AngelHeart[{chat_id}]: 分析失败，无决策结果")
-            await self.context.clear_decision(chat_id)
-            self.context.conversation_ledger.mark_as_processed(chat_id, boundary_ts)
 
     async def _notify_secretary(self, event: AstrMessageEvent):
         """
