@@ -158,6 +158,7 @@ class StatusChecker:
             ledger = self.angel_context.conversation_ledger
             all_messages = ledger.get_all_messages(chat_id)
             if not all_messages:
+                logger.debug(f"AngelHeart[{chat_id}]: _has_at_self_since_last_reply: ledger 为空")
                 return False
 
             # 找上次 AI 回复的时间戳作为下界
@@ -169,14 +170,27 @@ class StatusChecker:
                         last_reply_ts = ts
 
             # 扫描下界之后的所有 user 消息
+            scanned = 0
+            hit = False
             for m in all_messages:
                 if m.get("role") != "user":
                     continue
-                if (m.get("timestamp", 0) or 0) <= last_reply_ts:
+                ts = m.get("timestamp", 0) or 0
+                if ts <= last_reply_ts:
                     continue
-                if m.get("is_at_self", False):
-                    return True
-            return False
+                scanned += 1
+                is_at = m.get("is_at_self", False)
+                preview = self._extract_message_content(m)[:40]
+                logger.debug(
+                    f"AngelHeart[{chat_id}]: _has_at_self 扫描 ts={ts} is_at_self={is_at} '{preview}'"
+                )
+                if is_at:
+                    hit = True
+            logger.debug(
+                f"AngelHeart[{chat_id}]: _has_at_self_since_last_reply={hit} "
+                f"(last_reply_ts={last_reply_ts}, 扫描 user 消息数={scanned})"
+            )
+            return hit
         except Exception as e:
             logger.warning(f"AngelHeart[{chat_id}]: 扫描@自己消息失败: {e}")
             return False
@@ -208,18 +222,28 @@ class StatusChecker:
         try:
             # 检查是否处于闭嘴状态
             if self._is_silenced(chat_id):
+                logger.debug(f"AngelHeart[{chat_id}]: _is_summoned=False (闭嘴状态)")
                 return False
 
             # 规则1：扫描上次 AI 回复之后的所有 user 消息，看是否有任何一条@了自己
             if self._has_at_self_since_last_reply(chat_id):
+                logger.debug(f"AngelHeart[{chat_id}]: _is_summoned=True (检测到@自己)")
                 return True
 
             # 规则2：基于最新 user 消息检测唤醒词
             latest_user_message = self._get_latest_user_message(chat_id)
             if not latest_user_message:
+                logger.debug(f"AngelHeart[{chat_id}]: _is_summoned=False (无最新 user 消息)")
                 return False
             message_content = self._extract_message_content(latest_user_message)
-            return self._detect_wake_word(chat_id, message_content)
+            preview = (message_content or "")[:60]
+            wake_hit = self._detect_wake_word(chat_id, message_content)
+            logger.debug(
+                f"AngelHeart[{chat_id}]: _is_summoned={wake_hit} "
+                f"(无@自己, 唤醒词检测最新消息='{preview}', is_at_self={latest_user_message.get('is_at_self', False)}, "
+                f"ts={latest_user_message.get('timestamp', 0)})"
+            )
+            return wake_hit
         except Exception as e:
             logger.debug(f"AngelHeart[{chat_id}]: 检查被呼唤状态失败: {e}")
             return False
