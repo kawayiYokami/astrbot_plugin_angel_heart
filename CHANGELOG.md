@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.8.40 - 2026-06-20
+- 修复群聊上下文接管时 `req.prompt` 未被 AngelHeart 成功接管的问题：此前 `FrontDesk` 在秘书分析完成后过早将本轮消息 `mark_as_processed`，导致后续 `rewrite_prompt_for_llm()` 读取到的 `recent_dialogue` 为空，`final_prompt_str` 退化为空字符串，最终保留上游原始 `req.prompt`。现已移除回复路径中的提前标记，只在真正完成 prompt 重建后再标记；不回复路径继续立即标记，避免遗漏已处理状态。
+
 ## 0.8.39 - 2026-06-20
 - **修复门锁冷却期间@呼唤被覆盖**（commit 99040f4）：`_is_summoned` 改为扫描「上次 AI 回复之后」的全部 user 消息，任意一条 `is_at_self=True` 即视为被呼唤。此前只看 ledger 中时间戳最新的一条 user 消息，门锁冷却期间多消息排队时，红豆的@消息可能被随后到达的非@消息覆盖判断，导致@后不回复。唤醒词检测仍只针对最新一条 user 消息，避免历史唤醒词反复触发。
 - 新增呼唤判定路径的 debug 日志：cache_message 入库时记录 `is_at_self`、`event_id`、`timestamp`、`sender`；`_has_at_self_since_last_reply` 打印 `last_reply_ts`、扫描的 user 消息数量与逐条 `is_at_self`；`_is_summoned` 打印最终判定及命中分支。便于后续复现/定位呼唤未触发问题。
