@@ -148,6 +148,39 @@ class StatusChecker:
             logger.warning(f"AngelHeart[{chat_id}]: 获取最新用户消息失败: {e}")
             return None
 
+    def _has_at_self_since_last_reply(self, chat_id: str) -> bool:
+        """扫描"上次 AI 回复之后"的所有 user 消息，判断是否有任何一条@了自己。
+
+        门锁冷却期间多消息排队时，秘书真正处理的事件未必对应 ledger 中最新一条 user 消息，
+        因此不能只看最新一条；只要本轮对话（上次 AI 回复之后）出现过@自己的消息，就视为被呼唤。
+        """
+        try:
+            ledger = self.angel_context.conversation_ledger
+            all_messages = ledger.get_all_messages(chat_id)
+            if not all_messages:
+                return False
+
+            # 找上次 AI 回复的时间戳作为下界
+            last_reply_ts = 0.0
+            for m in all_messages:
+                if m.get("role") == "assistant":
+                    ts = m.get("timestamp", 0) or 0
+                    if ts > last_reply_ts:
+                        last_reply_ts = ts
+
+            # 扫描下界之后的所有 user 消息
+            for m in all_messages:
+                if m.get("role") != "user":
+                    continue
+                if (m.get("timestamp", 0) or 0) <= last_reply_ts:
+                    continue
+                if m.get("is_at_self", False):
+                    return True
+            return False
+        except Exception as e:
+            logger.warning(f"AngelHeart[{chat_id}]: 扫描@自己消息失败: {e}")
+            return False
+
     def _extract_message_content(self, message: Dict) -> str:
         """提取消息内容"""
         if not message:
@@ -165,21 +198,26 @@ class StatusChecker:
         return str(content)
 
     def _is_summoned(self, chat_id: str) -> bool:
-        """检查是否被呼唤"""
+        """检查是否被呼唤
+
+        判定规则：
+        - @自己：扫描"上次 AI 回复之后"的所有 user 消息，任意一条 is_at_self=True 即视为被呼唤。
+          这样可以避免门锁冷却期间多消息排队时，@消息被后续非@消息覆盖判断的问题。
+        - 唤醒词：仍只检测最新一条 user 消息，避免历史唤醒词反复触发。
+        """
         try:
             # 检查是否处于闭嘴状态
             if self._is_silenced(chat_id):
                 return False
 
-            # 仅基于最新用户消息检测呼唤，避免 assistant 消息反向触发
+            # 规则1：扫描上次 AI 回复之后的所有 user 消息，看是否有任何一条@了自己
+            if self._has_at_self_since_last_reply(chat_id):
+                return True
+
+            # 规则2：基于最新 user 消息检测唤醒词
             latest_user_message = self._get_latest_user_message(chat_id)
             if not latest_user_message:
                 return False
-
-            # @自己的消息无条件视为被呼唤
-            if latest_user_message.get("is_at_self", False):
-                return True
-
             message_content = self._extract_message_content(latest_user_message)
             return self._detect_wake_word(chat_id, message_content)
         except Exception as e:
