@@ -256,6 +256,11 @@ class FrontDesk:
         }
         # 7. 将消息添加到 Ledger。上下文清理由压缩策略统一控制，不再因离场状态触发。
         self.context.conversation_ledger.add_message(chat_id, new_message)
+        logger.debug(
+            f"AngelHeart[{chat_id}]: cache_message 入库 is_at_self={is_at_self}, "
+            f"event_id={source_event_id}, ts={new_message['timestamp']}, "
+            f"sender={new_message['sender_id']}"
+        )
 
     async def handle_event(self, event: AstrMessageEvent):
         """
