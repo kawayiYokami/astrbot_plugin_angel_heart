@@ -155,10 +155,16 @@ class Secretary:
             # 执行分析
             decision = await self.perform_analysis(recent_dialogue, historical_context, chat_id)
 
-            # 根据配置决定是否强制回复
+            # 有正当理由时才强制回复
             if self.config_manager.force_reply_when_summoned:
-                decision.should_reply = True
-                decision.reply_strategy = "被呼唤回复"
+                has_reason = (
+                    decision.is_questioned
+                    or decision.is_interesting
+                    or self.config_manager.reply_even_not_questioned
+                )
+                if has_reason:
+                    decision.should_reply = True
+                    decision.reply_strategy = "被呼唤回复"
 
             return decision
 

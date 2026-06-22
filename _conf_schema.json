@@ -125,6 +125,12 @@
         "hint": "启用后，只要消息命中人格名称或昵称，AI都会直接回复。",
         "default": true
       },
+      "reply_even_not_questioned": {
+        "type": "bool",
+        "description": "非提问和感兴趣也回应",
+        "hint": "关闭时，只有群友有求于AI或话题让AI感兴趣才会回复。开启时，即使只是打招呼或闲聊也会回应。",
+        "default": true
+      },
       "block_unapproved_wake_non_command": {
         "type": "bool",
         "description": "拦截未批准的非命令唤醒",

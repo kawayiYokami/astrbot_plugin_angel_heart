@@ -439,17 +439,19 @@ class LLMAnalyzer:
             keywords=keywords,
         )
 
-        # 代码校验和修正逻辑
-        if (
-            decision.should_reply
-            and not decision.is_questioned
-            and not decision.is_interesting
-        ):
-            logger.warning(
-                "AngelHeart分析器: AI判断有矛盾 - should_reply=true 但没有触发原因，强制设为不回复"
+        # 正向条件：必须有正当理由才能回复
+        if decision.should_reply and self.config_manager:
+            has_reason = (
+                decision.is_questioned
+                or decision.is_interesting
+                or self.config_manager.reply_even_not_questioned
             )
-            decision.should_reply = False
-            decision.reply_strategy = "继续观察"
+            if not has_reason:
+                logger.info(
+                    "AngelHeart分析器: should_reply=true 但无正当理由（非提问、非兴趣、未开启无视条件），设为不回复"
+                )
+                decision.should_reply = False
+                decision.reply_strategy = "继续观察"
 
         return decision
 
