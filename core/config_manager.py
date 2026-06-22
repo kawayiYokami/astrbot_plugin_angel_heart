@@ -107,6 +107,10 @@ class ConfigManager:
         return self._get_grouped("wake_interaction", "force_reply_when_summoned", True)
 
     @property
+    def reply_even_not_questioned(self) -> bool:
+        return self._get_grouped("wake_interaction", "reply_even_not_questioned", True)
+
+    @property
     def block_unapproved_wake_non_command(self) -> bool:
         return self._get_grouped("wake_interaction", "block_unapproved_wake_non_command", False)
 
