@@ -85,6 +85,15 @@ class Secretary:
                 await self.angel_context.status_transition_manager.transition_to_status(
                     chat_id, AngelHeartStatus.SUMMONED, "检测到呼唤"
                 )
+
+            # 纯 @ 空消息：只切状态不回复，等下一句实质消息
+            if not event.message_str.strip():
+                logger.info(f"AngelHeart[{chat_id}]: 纯@呼唤（无实质文本），已切换到被呼唤状态，跳过回复")
+                return SecretaryDecision(
+                    should_reply=False, reply_strategy="纯@呼唤", topic="被呼唤",
+                    entities=[], facts=[], keywords=[]
+                )
+
             return await self._handle_summoned_reply(event, chat_id)
 
         # 根据当前状态选择处理方式
