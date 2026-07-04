@@ -4,11 +4,14 @@ AngelHeart 插件 - 前台角色 (FrontDesk)
 """
 
 import asyncio
+import base64
 import copy
 import json
 import os
 import time
 import uuid
+from pathlib import Path
+from urllib.parse import unquote, urlparse
 
 try:
     from astrbot.api import logger
@@ -17,7 +20,7 @@ except ImportError:
 
     logger = logging.getLogger(__name__)
 from astrbot.api.event import AstrMessageEvent
-from astrbot.core.message.components import At, Image, Plain, Reply
+from astrbot.core.message.components import At, File, Image, Plain, Reply
 from typing import Any, List, Dict  # 导入类型提示
 
 # 导入公共工具函数和 ConversationLedger
@@ -39,6 +42,9 @@ class FrontDesk:
 
     ASTRBOT_HISTORY_MESSAGE_LIMIT = 7
     ASTRBOT_HISTORY_TEXT_TOKEN_LIMIT = 10000
+    SUPPORTED_TEXT_FILE_EXTENSIONS = {".txt", ".md"}
+    MAX_TEXT_FILE_BYTES = 100 * 1024
+    MAX_IMAGE_SOURCE_BYTES = 20 * 1024 * 1024
     BLANK_SENDER_NAME = "空白"
     INVALID_SENDER_IDS = {
         "",
@@ -128,6 +134,145 @@ class FrontDesk:
         except Exception:
             return ""
 
+    def _file_name_from_url(self, url: str) -> str:
+        try:
+            parsed = urlparse(str(url or ""))
+            return Path(unquote(parsed.path)).name
+        except Exception:
+            return ""
+
+    def _normalize_local_file_path(self, path: str) -> str:
+        path = str(path or "")
+        if path.startswith("file://"):
+            path = path[7:]
+            if os.name == "nt" and len(path) > 2 and path[0] == "/" and path[2] == ":":
+                path = path[1:]
+        return path
+
+    def _get_file_component_name(self, component: File) -> str:
+        file_path = self._normalize_local_file_path(getattr(component, "file_", None) or "")
+        file_url = getattr(component, "url", None) or ""
+        return (
+            getattr(component, "name", None)
+            or Path(file_path).name
+            or self._file_name_from_url(file_url)
+            or "未知文件"
+        )
+
+    async def _read_image_component_bytes(self, component: Image) -> tuple[bytes, str]:
+        source_ref = getattr(component, "url", None) or getattr(component, "file", None) or ""
+        try:
+            local_path = await component.convert_to_file_path()
+            local_path = self._normalize_local_file_path(local_path)
+            if local_path and os.path.exists(local_path):
+                size = os.path.getsize(local_path)
+                if size <= self.MAX_IMAGE_SOURCE_BYTES:
+                    return Path(local_path).read_bytes(), source_ref or local_path
+                logger.warning(f"AngelHeart: 图片文件过大，跳过缓存: {local_path}")
+        except Exception as e:
+            logger.debug(f"AngelHeart: convert_to_file_path 读取图片失败: {e}")
+
+        try:
+            base64_data = await component.convert_to_base64()
+            if base64_data:
+                encoded = base64_data.removeprefix("base64://")
+                return base64.b64decode(encoded), source_ref
+        except Exception as e:
+            logger.debug(f"AngelHeart: convert_to_base64 读取图片失败: {e}")
+
+        return b"", source_ref
+
+    async def _build_cached_image_item(self, chat_id: str, component: Image) -> dict | None:
+        raw_bytes, source_ref = await self._read_image_component_bytes(component)
+        if not raw_bytes:
+            return None
+
+        image_cache = self.context.conversation_ledger.image_cache
+        dhash = image_cache.put(chat_id, raw_bytes)
+        if dhash:
+            cache_path = str(image_cache.get_cached_path(chat_id, dhash))
+            return {
+                "type": "image_url",
+                "image_url": {"url": cache_path},
+                "cache_path": cache_path,
+                "cache_dhash": dhash,
+                "local_file_path": cache_path,
+                "original_url": cache_path,
+                "original_file_url": cache_path,
+                "source_url": source_ref,
+            }
+
+        encoded = base64.b64encode(raw_bytes).decode("utf-8")
+        data_url = f"data:image/jpeg;base64,{encoded}"
+        return {
+            "type": "image_url",
+            "image_url": {"url": data_url},
+            "original_url": data_url,
+            "original_file_url": data_url,
+            "source_url": source_ref,
+        }
+
+    async def _resolve_file_component_path(self, component: File) -> str:
+        file_path = self._normalize_local_file_path(getattr(component, "file_", None) or "")
+        if file_path and os.path.exists(file_path):
+            return os.path.abspath(file_path)
+
+        try:
+            resolved = await component.get_file()
+            resolved = self._normalize_local_file_path(resolved)
+            if resolved and os.path.exists(resolved):
+                return os.path.abspath(resolved)
+        except Exception as e:
+            logger.debug(f"AngelHeart: get_file() 获取文件失败: {e}")
+
+        return ""
+
+    async def _build_cached_file_text_item(self, chat_id: str, component: File) -> dict:
+        name = self._get_file_component_name(component)
+        ext = Path(name).suffix.lower()
+        if ext not in self.SUPPORTED_TEXT_FILE_EXTENSIONS:
+            logger.debug(f"AngelHeart[{chat_id}]: 不支持的文件类型 {ext}，已跳过: {name}")
+            return {"type": "text", "text": f"[不支持的文件类型: {name}]"}
+
+        local_path = await self._resolve_file_component_path(component)
+        if not local_path:
+            return {"type": "text", "text": f"[文件已失效: {name}]"}
+
+        try:
+            size = os.path.getsize(local_path)
+        except OSError:
+            return {"type": "text", "text": f"[文件已失效: {name}]"}
+
+        if size > self.MAX_TEXT_FILE_BYTES:
+            logger.debug(f"AngelHeart[{chat_id}]: 文本文件过大({size}bytes)，已跳过: {name}")
+            return {"type": "text", "text": f"[文件过大，不支持: {name}]"}
+
+        cached_path = self.context.conversation_ledger.image_cache.put_text_file(
+            chat_id,
+            local_path,
+            name,
+            max_bytes=self.MAX_TEXT_FILE_BYTES,
+        )
+        if not cached_path:
+            return {"type": "text", "text": f"[文件缓存失败: {name}]"}
+
+        try:
+            content = cached_path.read_text(encoding="utf-8", errors="replace")
+            return {
+                "type": "text",
+                "text": f"[文件: {name}]\n{content}",
+                "cache_path": str(cached_path),
+                "file_name": name,
+            }
+        except Exception as e:
+            logger.debug(f"AngelHeart[{chat_id}]: 读取缓存文件内容失败: {e}")
+            return {
+                "type": "text",
+                "text": f"[文件读取失败: {name}]",
+                "cache_path": str(cached_path),
+                "file_name": name,
+            }
+
     async def cache_message(self, chat_id: str, event: AstrMessageEvent):
         """
         前台职责：使用消息概要作为主要正文，处理图片组件并缓存。
@@ -147,6 +292,10 @@ class FrontDesk:
                 name = getattr(component, "name", None) or getattr(component, "display", None) or ""
                 if name:
                     text_parts.append(f"@{name}")
+            elif isinstance(component, File):
+                file_name = self._get_file_component_name(component)
+                if file_name:
+                    text_parts.append(f"[文件: {file_name}]")
         text_content = "".join(text_parts).strip()
         if not text_content:
             text_content = outline if outline and outline.strip() else ""
@@ -160,64 +309,25 @@ class FrontDesk:
         if text_content:
             content_list.append({"type": "text", "text": text_content})
 
-        # 4. 处理图片组件
+        # 4. 处理图片与文件组件
         for component in message_chain:
             if isinstance(component, Image):
-                # 尝试使用官方方法处理本地文件或可访问的URL
                 try:
-                    # 检查是否是本地文件或可访问的URL
-                    url = component.url or component.file
-                    if url and (
-                        url.startswith("file:///")
-                        or url.startswith("base64://")
-                        or os.path.exists(url or "")
-                    ):
-                        # 对于本地文件，直接使用官方方法
-                        base64_data = await component.convert_to_base64()
-                        if base64_data:
-                            # 转换为 data URL 格式
-                            if base64_data.startswith("base64://"):
-                                image_data = base64_data.replace("base64://", "")
-                            else:
-                                image_data = base64_data
-                            data_url = f"data:image/jpeg;base64,{image_data}"
-                            content_list.append(
-                                {
-                                    "type": "image_url",
-                                    "image_url": {"url": data_url},
-                                    "original_url": url,  # 保存原始URL供转述使用
-                                    "original_file_url": url,  # 兼容下游统一读取字段
-                                }
-                            )
-                        else:
-                            raise Exception("convert_to_base64 返回空值")
+                    item = await self._build_cached_image_item(chat_id, component)
+                    if item:
+                        content_list.append(item)
                     else:
-                        # 对于网络URL，尝试下载，如果失败则跳过
-                        base64_data = await component.convert_to_base64()
-                        if base64_data:
-                            # 转换为 data URL 格式
-                            if base64_data.startswith("base64://"):
-                                image_data = base64_data.replace("base64://", "")
-                            else:
-                                image_data = base64_data
-                            data_url = f"data:image/jpeg;base64,{image_data}"
-                            content_list.append(
-                                {
-                                    "type": "image_url",
-                                    "image_url": {"url": data_url},
-                                    "original_url": url,  # 保存原始URL供转述使用
-                                    "original_file_url": url,  # 兼容下游统一读取字段
-                                }
-                            )
-                        else:
-                            raise Exception("网络图片下载失败")
+                        content_list.append({"type": "text", "text": "[图片处理失败]"})
                 except Exception as e:
-                    # 图片处理失败时，用文本占位符替换，避免传递空或无效URL
                     original_url = component.url or component.file or "未知URL"
-                    logger.debug(
-                        f"AngelHeart[{chat_id}]: 图片处理跳过，URL: {original_url}, 原因: {str(e)[:100]}"
-                    )
-                    # 不添加任何内容，完全跳过图片，保持原有文本消息不变
+                    logger.debug(f"AngelHeart[{chat_id}]: 图片处理跳过，URL: {original_url}, 原因: {str(e)[:100]}")
+
+            elif isinstance(component, File):
+                try:
+                    content_list.append(await self._build_cached_file_text_item(chat_id, component))
+                except Exception as e:
+                    logger.debug(f"AngelHeart[{chat_id}]: File 组件处理异常: {e}")
+                    content_list.append({"type": "text", "text": f"[文件处理异常: {getattr(component, 'name', '')}]"})
 
         # 5. 如果没有内容，创建一个空文本
         if not content_list:
@@ -1312,14 +1422,50 @@ class FrontDesk:
     def _collect_non_current_image_urls(
         self, recent_dialogue: List[Dict], current_event_id: str
     ) -> List[str]:
-        """收集阻塞聚合中非当前事件的图片，当前事件图片继续走 req.image_urls。"""
+        """收集阻塞聚合中非当前事件的图片。"""
+        return self._collect_image_urls_by_event(
+            recent_dialogue,
+            current_event_id,
+            include_current=False,
+        )
+
+    def _collect_current_image_urls(
+        self, recent_dialogue: List[Dict], current_event_id: str
+    ) -> List[str]:
+        """收集当前事件中已落入插件缓存的图片路径，用于替换 req.image_urls。"""
+        return self._collect_image_urls_by_event(
+            recent_dialogue,
+            current_event_id,
+            include_current=True,
+        )
+
+    def _image_item_request_url(self, item: Dict) -> str:
+        for key in ("cache_path", "local_file_path", "original_file_url", "original_url"):
+            url = item.get(key)
+            if isinstance(url, str) and url:
+                return url
+
+        image_url = item.get("image_url", {})
+        if isinstance(image_url, dict):
+            url = image_url.get("url", "")
+            if isinstance(url, str):
+                return url
+        return ""
+
+    def _collect_image_urls_by_event(
+        self,
+        recent_dialogue: List[Dict],
+        current_event_id: str,
+        include_current: bool,
+    ) -> List[str]:
         if not current_event_id:
             return []
 
         image_urls = []
         seen = set()
         for msg in recent_dialogue:
-            if str(msg.get("source_event_id", "") or "") == current_event_id:
+            is_current = str(msg.get("source_event_id", "") or "") == current_event_id
+            if include_current != is_current:
                 continue
             content = msg.get("content")
             if not isinstance(content, list):
@@ -1327,8 +1473,7 @@ class FrontDesk:
             for item in content:
                 if not isinstance(item, dict) or item.get("type") != "image_url":
                     continue
-                image_url = item.get("image_url", {})
-                url = image_url.get("url", "") if isinstance(image_url, dict) else ""
+                url = self._image_item_request_url(item)
                 if isinstance(url, str) and url and url not in seen:
                     image_urls.append(url)
                     seen.add(url)
@@ -1365,6 +1510,7 @@ class FrontDesk:
         alias: str,
         scene_prompt: str | None = None,
         preserve_current_image_urls: bool = False,
+        current_image_urls: List[str] | None = None,
         extra_image_urls: List[str] | None = None,
     ):
         """更新请求对象"""
@@ -1375,6 +1521,8 @@ class FrontDesk:
         if self._is_valid_final_prompt(final_prompt):
             req.prompt = final_prompt
             if preserve_current_image_urls:
+                if current_image_urls:
+                    req.image_urls = current_image_urls
                 self._append_extra_image_urls_to_request(req, extra_image_urls or [])
             else:
                 req.image_urls = []
@@ -1452,6 +1600,11 @@ class FrontDesk:
             if preserve_current_image_urls
             else []
         )
+        current_image_urls = (
+            self._collect_current_image_urls(recent_dialogue, current_event_id)
+            if preserve_current_image_urls
+            else []
+        )
 
         # 4. 将秘书建议作为临时上下文注入（仅群聊且需要回复时）
         if self._is_group_chat(chat_id) and decision and decision.should_reply:
@@ -1470,6 +1623,7 @@ class FrontDesk:
             alias,
             scene_prompt,
             preserve_current_image_urls=preserve_current_image_urls,
+            current_image_urls=current_image_urls,
             extra_image_urls=extra_image_urls,
         )
 
