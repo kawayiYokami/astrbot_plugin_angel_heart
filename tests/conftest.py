@@ -29,6 +29,16 @@ class Image:
     pass
 
 
+class File:
+    def __init__(self, name="", file="", url=""):
+        self.name = name
+        self.file_ = file
+        self.url = url
+
+    async def get_file(self):
+        return self.file_
+
+
 class Plain:
     pass
 
@@ -52,6 +62,7 @@ class ImageURLPart:
 
 astrbot_api_event_module.AstrMessageEvent = AstrMessageEvent
 astrbot_components_module.At = At
+astrbot_components_module.File = File
 astrbot_components_module.Image = Image
 astrbot_components_module.Plain = Plain
 astrbot_components_module.Reply = Reply

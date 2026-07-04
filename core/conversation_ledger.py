@@ -4,9 +4,11 @@ import sqlite3
 import aiohttp
 import io
 import base64
+import os
 from PIL import Image
 from pathlib import Path
 from typing import List, Dict, Tuple, Optional
+from urllib.parse import unquote, urlparse
 from . import utils
 
 # 条件导入：当缺少astrbot依赖时使用Mock
@@ -31,6 +33,12 @@ class ConversationLedger:
         self._ledgers: Dict[str, Dict] = {}
         self.config_manager = config_manager
         self.astr_context = astr_context
+
+        # 图片缓存管理器（插件自有目录，不依赖上游临时文件）
+        from .image_cache import ImageCache
+        self.image_cache = ImageCache(data_dir)
+        # 会话账本是内存态，重启后无法可靠关联旧媒体引用，启动时清空运行期缓存。
+        self.image_cache.clean_all()
 
         # 每个会话的最大消息数量
         self.PER_CHAT_LIMIT = 1000
@@ -61,8 +69,6 @@ class ConversationLedger:
                 )
             """)
             # 新的 内容哈希 缓存表 (dHash)
-            # 重新建表以确保 Schema 匹配 dHash 格式
-            self.db_cursor.execute("DROP TABLE IF EXISTS image_content_cache")
             self.db_cursor.execute("""
                 CREATE TABLE IF NOT EXISTS image_content_cache (
                     dhash TEXT PRIMARY KEY,
@@ -113,17 +119,18 @@ class ConversationLedger:
     async def _load_image_bytes(self, url: str) -> bytes:
         """从本地文件、网络地址或 data URL 读取图片原始字节。"""
         try:
-            if url.startswith("file:///"):
-                import os
-                path = url[8:]
+            if not url:
+                return b""
+
+            if url.startswith("file://"):
+                parsed = urlparse(url)
+                path = unquote(parsed.path or "")
 
                 if '..' in path or path.startswith('/etc') or path.startswith('/sys'):
                     logger.warning(f"拒绝访问受限路径: {path}")
                     return b""
 
-                if os.name == 'nt' and len(path) > 2 and path[1] == ':':
-                    pass
-                elif os.name == 'nt' and path.startswith('/'):
+                if os.name == 'nt' and len(path) > 2 and path[0] == '/' and path[2] == ':':
                     path = path[1:]
 
                 if not os.path.exists(path):
@@ -153,7 +160,16 @@ class ConversationLedger:
                     logger.warning(f"Base64解码失败: {e}")
                     return b""
 
-            logger.warning(f"不支持的URL协议: {url[:20]}...")
+            # 上游 PreProcessStage 会归一化图片到本地临时路径，把 url 覆写成裸路径
+            p = Path(url)
+            if p.exists():
+                if p.stat().st_size > 10 * 1024 * 1024:
+                    logger.warning(f"文件过大，拒绝处理: {url}")
+                    return b""
+                with open(url, "rb") as f:
+                    return f.read()
+
+            logger.warning(f"不支持的URL协议: {url[:60]}...")
             return b""
 
         except Exception as e:
@@ -244,6 +260,7 @@ class ConversationLedger:
         """
         # 1. 添加新消息
         ledger = self._get_or_create_ledger(chat_id)
+        should_cleanup_cache = False
         with self._lock:
             # 添加一个字段标记消息是否已处理，如果未设置则默认为False
             # 这样可以避免覆盖外部预设的 is_processed 值（如 tool_call 消息）
@@ -261,8 +278,13 @@ class ConversationLedger:
 
             # 限制每个会话的消息数量
             if len(ledger["messages"]) > self.PER_CHAT_LIMIT:
+                excess = len(ledger["messages"]) - self.PER_CHAT_LIMIT
                 # 保留最新的PER_CHAT_LIMIT条消息
                 ledger["messages"] = ledger["messages"][-self.PER_CHAT_LIMIT:]
+                should_cleanup_cache = True
+
+        if should_cleanup_cache:
+            self._cleanup_unreferenced_media_cache(chat_id)
 
         # 2. 判断是否需要压缩
         if self._should_compress(chat_id):
@@ -282,6 +304,7 @@ class ConversationLedger:
             消息列表
         """
         ledger = self._get_or_create_ledger(chat_id)
+        should_cleanup_cache = False
         with self._lock:
             return ledger["messages"].copy()  # 返回副本避免外部修改
 
@@ -328,11 +351,91 @@ class ConversationLedger:
                 # 在完成所有标记后，更新“高水位标记”
                 ledger["last_processed_timestamp"] = boundary_timestamp
 
+    def _cleanup_cache_for_message(self, chat_id: str, msg: dict):
+        """兼容旧调用：按当前账本引用清理未使用的媒体缓存。"""
+        self._cleanup_unreferenced_media_cache(chat_id)
+
+    def _normalize_managed_cache_path(self, path: str | Path) -> str:
+        try:
+            if self.image_cache.is_managed_path(path):
+                return str(Path(path).resolve(strict=False))
+        except Exception:
+            pass
+        return ""
+
+    def _extract_managed_cache_paths_from_message(self, msg: dict) -> set[str]:
+        paths: set[str] = set()
+
+        def add_path(value):
+            if isinstance(value, str) and value:
+                normalized = self._normalize_managed_cache_path(value)
+                if normalized:
+                    paths.add(normalized)
+
+        content = msg.get("content", [])
+        if isinstance(content, list):
+            for item in content:
+                if not isinstance(item, dict):
+                    continue
+                add_path(item.get("cache_path"))
+                add_path(item.get("local_file_path"))
+                add_path(item.get("original_file_url"))
+                add_path(item.get("original_url"))
+                image_url = item.get("image_url", {})
+                if isinstance(image_url, dict):
+                    add_path(image_url.get("url"))
+                cache_dhash = item.get("cache_dhash")
+                item_chat_id = msg.get("chat_id")
+                if cache_dhash and item_chat_id:
+                    add_path(str(self.image_cache.get_cached_path(item_chat_id, cache_dhash)))
+
+        image_refs = msg.get("image_refs", [])
+        if isinstance(image_refs, list):
+            for ref in image_refs:
+                add_path(ref)
+
+        return paths
+
+    def _collect_referenced_cache_paths(self, chat_id: str = "") -> set[str]:
+        """从当前账本收集仍被引用的插件媒体缓存路径。"""
+        with self._lock:
+            if chat_id:
+                ledger = self._ledgers.get(chat_id)
+                messages = list(ledger["messages"]) if ledger else []
+            else:
+                messages = [
+                    msg
+                    for ledger in self._ledgers.values()
+                    for msg in ledger["messages"]
+                ]
+
+        referenced_paths: set[str] = set()
+        for msg in messages:
+            referenced_paths.update(self._extract_managed_cache_paths_from_message(msg))
+        return referenced_paths
+
+    def _cleanup_unreferenced_media_cache(self, chat_id: str = ""):
+        """扫描插件媒体缓存，删除不在当前账本引用集合里的文件。"""
+        referenced_paths = self._collect_referenced_cache_paths(chat_id)
+        for path in self.image_cache.iter_managed_files(chat_id):
+            normalized = self._normalize_managed_cache_path(path)
+            if normalized and normalized not in referenced_paths:
+                self.image_cache.remove_managed_path(path)
+
+    def _cleanup_removed_messages(
+        self,
+        chat_id: str,
+        removed_messages: List[Dict],
+        retained_messages: List[Dict] | None = None,
+    ):
+        """兼容旧调用：清理账本未引用的媒体缓存。"""
+        self._cleanup_unreferenced_media_cache(chat_id)
 
     def _enforce_total_message_limit(self):
         """强制执行总消息数量限制。
         如果超过限制，从最旧的消息开始删除。
         """
+        affected_chat_ids = []
         with self._lock:
             # 计算当前总消息数
             total_messages = 0
@@ -389,6 +492,10 @@ class ConversationLedger:
                                 new_messages.append(msg)
 
                         ledger_data["messages"] = new_messages
+                        affected_chat_ids.append(chat_id)
+
+        for chat_id in affected_chat_ids:
+            self._cleanup_unreferenced_media_cache(chat_id)
 
     def add_caption_to_message(self, chat_id: str, message_timestamp: float, caption: str) -> bool:
         """
@@ -436,7 +543,8 @@ class ConversationLedger:
                 continue
 
             ref = (
-                item.get("local_file_path")
+                item.get("cache_path")
+                or item.get("local_file_path")
                 or item.get("original_file_url")
                 or item.get("original_url")
             )
@@ -451,6 +559,21 @@ class ConversationLedger:
                 refs.append(ref)
 
         return refs
+
+    def _get_image_item_read_ref(self, item: dict) -> str:
+        """提取图片读取引用，优先使用插件缓存路径。"""
+        for key in ("cache_path", "local_file_path", "original_file_url", "original_url"):
+            ref = item.get(key)
+            if isinstance(ref, str) and ref:
+                return ref
+
+        image_url = item.get("image_url", {})
+        if isinstance(image_url, dict):
+            ref = image_url.get("url", "")
+            if isinstance(ref, str):
+                return ref
+
+        return ""
 
     async def generate_captions_for_chat(self, chat_id: str, caption_provider_id: str, astr_context=None) -> int:
         """
@@ -507,6 +630,9 @@ class ConversationLedger:
 
             # 不在最近 7 条消息范围内的图片直接标记过期
             for msg in expired_messages:
+                image_refs = self._extract_image_refs_from_content(msg.get("content"))
+                if image_refs:
+                    msg["image_refs"] = image_refs
                 msg["image_caption"] = self.EXPIRED_IMAGE_CAPTION
                 if isinstance(msg.get("content"), list):
                     msg["content"] = [
@@ -529,16 +655,10 @@ class ConversationLedger:
                 image_urls = []
                 for item in message["content"]:
                     if item.get("type") == "image_url":
-                        # 优先使用原始URL
-                        original_url = item.get("original_url")
-                        if original_url and original_url != "[IMAGE_PLACEHOLDER]":
-                            image_urls.append(original_url)
-                            logger.debug(f"AngelHeart[{chat_id}]: 使用原始URL进行转述: {original_url[:100]}...")
-                        else:
-                            # 回退到base64数据URL
-                            image_url = item.get("image_url", {}).get("url", "")
-                            if image_url and not image_url.startswith("data:"):
-                                image_urls.append(image_url)
+                        read_ref = self._get_image_item_read_ref(item)
+                        if read_ref and read_ref != "[IMAGE_PLACEHOLDER]":
+                            image_urls.append(read_ref)
+                            logger.debug(f"AngelHeart[{chat_id}]: 使用图片缓存引用进行转述: {read_ref[:100]}...")
 
                 if image_urls:
                     # 我们只处理第一张图片的URL作为缓存键
@@ -857,6 +977,7 @@ class ConversationLedger:
         这确保了最近的对话上下文始终可用，同时工具调用历史也有一定保留。
         """
         ledger = self._get_or_create_ledger(chat_id)
+        should_cleanup_cache = False
         with self._lock:
             messages = ledger["messages"]
             if not messages:
@@ -925,6 +1046,7 @@ class ConversationLedger:
 
             original_count = len(messages)
             ledger["messages"] = all_retained
+            should_cleanup_cache = True
 
             # 更新压缩时间戳
             self._last_compression_time[chat_id] = time.time()
@@ -935,6 +1057,9 @@ class ConversationLedger:
                 f"正文保留 {content_tokens_used} tokens, "
                 f"工具保留 {tool_tokens_used} tokens)"
             )
+
+        if should_cleanup_cache:
+            self._cleanup_unreferenced_media_cache(chat_id)
 
     def _count_message_tokens(self, msg: Dict) -> int:
         """
@@ -999,10 +1124,14 @@ class ConversationLedger:
 
                 # 4. 用这批"精华消息"完全替换内存中该会话的整个消息列表
                 ledger["messages"] = essential_messages
+                should_cleanup_cache = True
                 logger.info(f"AngelHeart[{chat_id}]: 已精简会话消息，保留最新的7条非工具消息")
 
             # 更新压缩时间戳
             self._last_compression_time[chat_id] = time.time()
+
+        if should_cleanup_cache:
+            self._cleanup_unreferenced_media_cache(chat_id)
 
     def _estimate_tokens(self, chat_id: str) -> int:
         """

@@ -166,7 +166,8 @@ class MessageProcessor:
             if not isinstance(item, dict):
                 continue
             ref = (
-                item.get("local_file_path")
+                item.get("cache_path")
+                or item.get("local_file_path")
                 or item.get("original_file_url")
                 or item.get("original_url")
             )
