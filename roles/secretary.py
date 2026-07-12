@@ -313,9 +313,6 @@ class Secretary:
             # 启动耐心计时器
             await self.angel_context.start_patience_timer(chat_id)
 
-            # 标记对话为已处理
-            self.angel_context.conversation_ledger.mark_as_processed(chat_id, boundary_ts)
-
             # 注入上下文
             full_snapshot = historical_context + recent_dialogue
             try:
@@ -339,8 +336,6 @@ class Secretary:
         elif decision:
             logger.info(f"AngelHeart[{chat_id}]: 决策为'不参与'。原因: {decision.reply_strategy}")
             await self.angel_context.clear_decision(chat_id)
-            self.angel_context.conversation_ledger.mark_as_processed(chat_id, boundary_ts)
         else:
             logger.warning(f"AngelHeart[{chat_id}]: 分析失败，无决策结果")
             await self.angel_context.clear_decision(chat_id)
-            self.angel_context.conversation_ledger.mark_as_processed(chat_id, boundary_ts)

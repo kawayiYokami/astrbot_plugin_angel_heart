@@ -182,7 +182,6 @@ class AngelHeartPlugin(Star):
                         "timestamp": time.time(),
                         "sender_id": "assistant",
                         "sender_name": "assistant",
-                        "is_processed": True,  # 工具调用消息应标记为已处理
                         # 新增：标记这是结构化的toolcall记录，便于后续处理
                         "is_structured_toolcall": True,
                     }
@@ -199,7 +198,6 @@ class AngelHeartPlugin(Star):
                             "timestamp": time.time(),
                             "sender_id": "tool",
                             "sender_name": "tool_result",
-                            "is_processed": True,  # 工具结果消息应标记为已处理
                             # 新增：标记这是结构化的toolcall记录
                             "is_structured_toolcall": True,
                         }
@@ -446,7 +444,6 @@ class AngelHeartPlugin(Star):
                         "sender_id": str(event.get_self_id()),
                         "sender_name": "assistant",
                         "timestamp": time.time(),
-                        "is_processed": True,  # 助理回复应标记为已处理
                     }
                     self.angel_context.conversation_ledger.add_message(chat_id, ai_message)
                     logger.debug(f"AngelHeart[{chat_id}]: AI多模态回复已加入对话总账")
@@ -469,7 +466,6 @@ class AngelHeartPlugin(Star):
                             "sender_id": str(event.get_self_id()),
                             "sender_name": "assistant",
                             "timestamp": time.time(),
-                            "is_processed": True,  # 助理回复应标记为已处理
                         }
                         self.angel_context.conversation_ledger.add_message(chat_id, ai_message)
                         logger.info(f"AngelHeart[{chat_id}]: AI回复（仅文本）已在降级处理后加入对话总账")

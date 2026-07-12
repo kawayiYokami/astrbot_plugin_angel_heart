@@ -77,6 +77,29 @@ class AngelHeartContext:
         # 群聊双防抖（目的）/ 扣押（实现）
         self.debounce_manager = DebounceManager(config_manager)
 
+        # 整理开始时关闭防抖
+        def _close_debounce_on_organize(chat_id: str):
+            try:
+                # 同步调度清理；debounce clear 是 async
+                import asyncio
+
+                async def _clear():
+                    await self.debounce_manager.clear_chat(chat_id, reason="context_organize")
+
+                try:
+                    loop = asyncio.get_running_loop()
+                    loop.create_task(_clear())
+                except RuntimeError:
+                    # 无事件循环时尽力同步跑
+                    try:
+                        asyncio.run(_clear())
+                    except Exception:
+                        pass
+            except Exception as e:
+                logger.warning(f"AngelHeart[{chat_id}]: 整理时关闭防抖失败: {e}")
+
+        self.conversation_ledger.on_before_organize = _close_debounce_on_organize
+
         # 主动应答管理器
         self.proactive_manager = ProactiveManager(self)
 

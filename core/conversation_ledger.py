@@ -5,6 +5,7 @@ import aiohttp
 import io
 import base64
 import os
+import asyncio
 from PIL import Image
 from pathlib import Path
 from typing import List, Dict, Tuple, Optional
@@ -52,6 +53,10 @@ class ConversationLedger:
 
         # 每个会话的最后压缩时间戳 {chat_id: timestamp}
         self._last_compression_time: Dict[str, float] = {}
+        # 压缩锁：整理期间互斥，防止半成品外泄
+        self._compression_locks: Dict[str, threading.Lock] = {}
+        # 可选：整理开始时关闭防抖的回调 chat_id -> awaitable/callable
+        self.on_before_organize = None
 
         # 初始化 SQLite 数据库用于图片转述缓存
         db_path = data_dir / "caption_cache.db"
@@ -244,9 +249,110 @@ class ConversationLedger:
             if chat_id not in self._ledgers:
                 self._ledgers[chat_id] = {
                     "messages": [],
-                    "last_processed_timestamp": 0.0
+                    "current_summary": "",  # 当前摘要（正式上下文前缀）
                 }
+            else:
+                self._ledgers[chat_id].setdefault("current_summary", "")
+                # 兼容清理旧字段
+                self._ledgers[chat_id].pop("last_processed_timestamp", None)
+            if chat_id not in self._compression_locks:
+                self._compression_locks[chat_id] = threading.Lock()
             return self._ledgers[chat_id]
+
+    def _is_private_chat_id(self, chat_id: str) -> bool:
+        return "FriendMessage" in (chat_id or "")
+
+    def get_current_summary(self, chat_id: str) -> str:
+        ledger = self._get_or_create_ledger(chat_id)
+        with self._lock:
+            return str(ledger.get("current_summary") or "")
+
+    def set_current_summary(self, chat_id: str, summary: str) -> None:
+        ledger = self._get_or_create_ledger(chat_id)
+        with self._lock:
+            ledger["current_summary"] = (summary or "").strip()
+
+    def _get_compression_lock(self, chat_id: str) -> threading.Lock:
+        self._get_or_create_ledger(chat_id)
+        return self._compression_locks[chat_id]
+
+    def _notify_before_organize(self, chat_id: str) -> None:
+        """整理开始：关掉该会话全部防抖。"""
+        cb = self.on_before_organize
+        if not cb:
+            return
+        try:
+            result = cb(chat_id)
+            # 同步回调直接返回；异步回调在无运行 loop 时忽略等待
+            if asyncio.iscoroutine(result):
+                try:
+                    loop = asyncio.get_running_loop()
+                    loop.create_task(result)
+                except RuntimeError:
+                    pass
+        except Exception as e:
+            logger.warning(f"AngelHeart[{chat_id}]: 整理前关闭防抖失败: {e}")
+
+    def _extract_message_text(self, msg: Dict) -> str:
+        content = msg.get("content", "")
+        if isinstance(content, str):
+            return content.strip()
+        if isinstance(content, list):
+            parts = []
+            for item in content:
+                if isinstance(item, dict) and item.get("type") == "text":
+                    parts.append(str(item.get("text", "")))
+            return "".join(parts).strip()
+        return str(content or "").strip()
+
+    def _is_tool_message(self, msg: Dict) -> bool:
+        if msg.get("role") == "tool":
+            return True
+        if msg.get("tool_calls"):
+            return True
+        if msg.get("role") == "user" and msg.get("sender_name") == "tool_result":
+            return True
+        if msg.get("kind") in ("context_summary", "summary_context", "context_compaction"):
+            return False
+        return False
+
+    def _build_rule_summary(self, old_summary: str, discarded: List[Dict], keep_tools: bool) -> str:
+        """群聊/回退用的规则摘要，不是 LLM 摘要。"""
+        lines = []
+        if old_summary:
+            lines.append(old_summary.strip())
+        for msg in discarded:
+            if not keep_tools and self._is_tool_message(msg):
+                continue
+            if msg.get("kind") in ("context_summary", "summary_context", "context_compaction"):
+                text = self._extract_message_text(msg)
+                if text:
+                    lines.append(text)
+                continue
+            role = msg.get("role", "user")
+            name = msg.get("sender_name") or msg.get("sender_id") or role
+            text = self._extract_message_text(msg)
+            if not text:
+                continue
+            # 控制规则摘要体积
+            if len(text) > 120:
+                text = text[:120] + "…"
+            lines.append(f"{name}: {text}")
+        summary = "\n".join(lines).strip()
+        # 限制摘要总长，避免无限膨胀
+        if len(summary) > 4000:
+            summary = summary[-4000:]
+        return summary
+
+    def _make_summary_message(self, summary: str, timestamp: float) -> Dict:
+        return {
+            "role": "system",
+            "content": f"[当前摘要]\n{summary}",
+            "sender_id": "system",
+            "sender_name": "context_summary",
+            "kind": "context_summary",
+            "timestamp": max(0.0, float(timestamp) - 0.001),
+        }
 
     def add_message(self, chat_id: str, message: Dict, should_prune: bool = False):
         """
@@ -262,10 +368,8 @@ class ConversationLedger:
         ledger = self._get_or_create_ledger(chat_id)
         should_cleanup_cache = False
         with self._lock:
-            # 添加一个字段标记消息是否已处理，如果未设置则默认为False
-            # 这样可以避免覆盖外部预设的 is_processed 值（如 tool_call 消息）
-            if "is_processed" not in message:
-                message["is_processed"] = False
+            # is_processed 已退役，写入时清理旧字段
+            message.pop("is_processed", None)
             if "chat_id" not in message:
                 message["chat_id"] = chat_id
 
@@ -286,9 +390,11 @@ class ConversationLedger:
         if should_cleanup_cache:
             self._cleanup_unreferenced_media_cache(chat_id)
 
-        # 2. 判断是否需要压缩
-        if self._should_compress(chat_id):
-            self._compress_context(chat_id)
+        # 2. 判断是否需要压缩/整理
+        # 私聊：留给上层主动 LLM 摘要，不在入库同步路径里抢先规则收口
+        # 群聊：规则整理
+        if self._should_compress(chat_id) and not self._is_private_chat_id(chat_id):
+            self.organize_context(chat_id, mode="group_rule")
 
         # 3. 检查并限制总消息数量
         self._enforce_total_message_limit()
@@ -329,27 +435,371 @@ class ConversationLedger:
         # 直接调用新的、独立的工具函数
         return utils.partition_dialogue(self, chat_id)
 
-    def mark_as_processed(self, chat_id: str, boundary_timestamp: float):
+    def get_formal_context(self, chat_id: str) -> List[Dict]:
+        """正式上下文：当前摘要 + 当前连续消息块。"""
+        ledger = self._get_or_create_ledger(chat_id)
+        with self._lock:
+            summary = str(ledger.get("current_summary") or "").strip()
+            messages = [m.copy() for m in ledger.get("messages", [])]
+        if not summary:
+            return messages
+        # 若消息块开头已有摘要消息，不再重复插入
+        if messages and messages[0].get("kind") in (
+            "context_summary",
+            "summary_context",
+            "context_compaction",
+        ):
+            return messages
+        ts = messages[0].get("timestamp", time.time()) if messages else time.time()
+        return [self._make_summary_message(summary, ts)] + messages
+
+    def organize_context(
+        self,
+        chat_id: str,
+        mode: str = "auto",
+        *,
+        keep_from_timestamp: float | None = None,
+        llm_summary: str | None = None,
+    ) -> bool:
         """
-        将指定时间戳之前的所有未处理消息标记为已处理，并原子化地更新处理边界。
-        此操作通过检查 last_processed_timestamp 来处理并发，确保处理状态不倒退。
+        会话整理入口（可上锁）。
+
+        mode:
+        - auto: 私聊优先 LLM 摘要结果（若提供），否则规则收口；群聊规则整理
+        - group_rule: 群聊规则整理
+        - private_llm: 使用传入的 llm_summary 做私聊摘要提交
+        - private_fallback: 私聊摘要失败时的安全规则回退
         """
-        if boundary_timestamp <= 0:
-            return
+        is_private = self._is_private_chat_id(chat_id)
+        if mode == "auto":
+            if is_private and llm_summary:
+                mode = "private_llm"
+            elif is_private:
+                mode = "private_fallback"
+            else:
+                mode = "group_rule"
+
+        lock = self._get_compression_lock(chat_id)
+        if not lock.acquire(blocking=False):
+            logger.info(f"AngelHeart[{chat_id}]: 会话整理进行中，跳过重复整理")
+            return False
+
+        try:
+            # 整理期间关掉所有防抖
+            self._notify_before_organize(chat_id)
+
+            keep_tools = is_private and mode in ("private_llm", "private_fallback")
+            if mode == "private_llm":
+                return self._commit_summary_and_block(
+                    chat_id,
+                    summary_text=llm_summary or "",
+                    keep_tools=True,
+                    keep_from_timestamp=keep_from_timestamp,
+                    reason="private_llm",
+                )
+            if mode == "private_fallback":
+                return self._rule_organize(
+                    chat_id,
+                    keep_tools=True,
+                    keep_from_timestamp=keep_from_timestamp,
+                    reason="private_fallback",
+                )
+            # group_rule / 默认
+            return self._rule_organize(
+                chat_id,
+                keep_tools=False,
+                keep_from_timestamp=keep_from_timestamp,
+                reason="group_rule",
+            )
+        finally:
+            lock.release()
+
+    def organize_on_group_enter(
+        self, chat_id: str, keep_from_timestamp: float | None = None
+    ) -> bool:
+        """群聊离场→在场：瞬时规则收口，不主动 LLM 摘要。"""
+        return self.organize_context(
+            chat_id,
+            mode="group_rule",
+            keep_from_timestamp=keep_from_timestamp,
+        )
+
+    async def maybe_llm_compress_private(
+        self, chat_id: str, provider_text_chat
+    ) -> bool:
+        """
+        私聊主动 LLM 摘要压缩。
+
+        provider_text_chat: async (prompt:str) -> str
+        """
+        if not self._is_private_chat_id(chat_id):
+            return False
+        if not self._should_compress(chat_id):
+            return False
+
+        lock = self._get_compression_lock(chat_id)
+        if not lock.acquire(blocking=False):
+            return False
+
+        try:
+            self._notify_before_organize(chat_id)
+            formal = self.get_formal_context(chat_id)
+            if len(formal) < self.MIN_RETAIN_COUNT:
+                return False
+
+            # 保留最近正文预算，其余交给 LLM 摘要
+            content_budget = self.config_manager.context_content_retain_tokens
+            retained = []
+            used = 0
+            for msg in reversed(formal):
+                # 私聊工具有价值，可进入保留候选
+                tokens = self._count_message_tokens(msg)
+                if used + tokens <= content_budget or len(retained) < self.MIN_RETAIN_COUNT:
+                    retained.append(msg)
+                    used += tokens
+                else:
+                    break
+            retained.reverse()
+            retained_ids = {id(m) for m in retained}
+            # formal 是 copy，用 timestamp+role+text 近似匹配丢弃段
+            retained_keys = {
+                (
+                    m.get("timestamp", 0),
+                    m.get("role"),
+                    self._extract_message_text(m)[:80],
+                )
+                for m in retained
+            }
+            discarded = []
+            for m in formal:
+                key = (
+                    m.get("timestamp", 0),
+                    m.get("role"),
+                    self._extract_message_text(m)[:80],
+                )
+                if key not in retained_keys:
+                    discarded.append(m)
+
+            if not discarded:
+                return False
+
+            prompt = self._build_private_summary_prompt(
+                old_summary=self.get_current_summary(chat_id),
+                discarded=discarded,
+            )
+            try:
+                summary_text = await provider_text_chat(prompt)
+                summary_text = (summary_text or "").strip()
+            except Exception as e:
+                logger.warning(f"AngelHeart[{chat_id}]: 私聊 LLM 摘要失败，安全回退: {e}")
+                summary_text = ""
+
+            if not summary_text:
+                # 失败：安全规则回退，不提交半成品
+                return self._rule_organize(
+                    chat_id,
+                    keep_tools=True,
+                    reason="private_llm_failed_fallback",
+                )
+
+            keep_from = retained[0].get("timestamp", 0) if retained else None
+            return self._commit_summary_and_block(
+                chat_id,
+                summary_text=summary_text,
+                keep_tools=True,
+                keep_from_timestamp=keep_from,
+                reason="private_llm",
+            )
+        finally:
+            lock.release()
+
+    def _build_private_summary_prompt(self, old_summary: str, discarded: List[Dict]) -> str:
+        lines = []
+        if old_summary:
+            lines.append(f"已有摘要：\n{old_summary}")
+        lines.append("待收口历史：")
+        for msg in discarded:
+            name = msg.get("sender_name") or msg.get("role") or "user"
+            text = self._extract_message_text(msg)
+            if not text and self._is_tool_message(msg):
+                text = "[tool]"
+            if text:
+                lines.append(f"- {name}: {text[:300]}")
+        body = "\n".join(lines)
+        return (
+            "你正在为私聊会话生成上下文交接摘要。\n"
+            "要求：\n"
+            "1. 只输出摘要正文，不要前后缀。\n"
+            "2. 保留目标、已完成、进行中、关键决策、下一步、关键约束。\n"
+            "3. 私聊工具过程若影响续跑，需简要保留。\n"
+            "4. 简洁，便于下一个模型无缝继续。\n\n"
+            f"{body}"
+        )
+
+    def _rule_organize(
+        self,
+        chat_id: str,
+        *,
+        keep_tools: bool,
+        keep_from_timestamp: float | None = None,
+        reason: str = "rule",
+    ) -> bool:
+        ledger = self._get_or_create_ledger(chat_id)
+        with self._lock:
+            messages = list(ledger.get("messages") or [])
+            old_summary = str(ledger.get("current_summary") or "")
+            if not messages:
+                return False
+
+            content_budget = self.config_manager.context_content_retain_tokens
+            tool_budget = self.config_manager.context_tool_retain_tokens if keep_tools else 0
+
+            retained_content = []
+            content_used = 0
+            for msg in reversed(messages):
+                if self._is_tool_message(msg):
+                    continue
+                if keep_from_timestamp is not None and msg.get("timestamp", 0) < keep_from_timestamp:
+                    # 入场整理：触发点之前不进当前块
+                    continue
+                tokens = self._count_message_tokens(msg)
+                if content_used + tokens <= content_budget or len(retained_content) < self.MIN_RETAIN_COUNT:
+                    retained_content.append(msg)
+                    content_used += tokens
+                else:
+                    break
+            retained_content.reverse()
+
+            retained_tools = []
+            tool_used = 0
+            if keep_tools:
+                for msg in reversed(messages):
+                    if not self._is_tool_message(msg):
+                        continue
+                    if keep_from_timestamp is not None and msg.get("timestamp", 0) < keep_from_timestamp:
+                        continue
+                    tokens = self._count_message_tokens(msg)
+                    if tool_used + tokens <= tool_budget:
+                        retained_tools.append(msg)
+                        tool_used += tokens
+                    else:
+                        break
+                retained_tools.reverse()
+
+            retained = retained_content + retained_tools
+            retained.sort(key=lambda m: m.get("timestamp", 0))
+            # 有明确 keep_from 时，不回退成“最近 N 条”，避免把入场前历史再带回来
+            if (
+                keep_from_timestamp is None
+                and len(retained) < self.MIN_RETAIN_COUNT
+                and len(messages) >= self.MIN_RETAIN_COUNT
+            ):
+                retained = messages[-self.MIN_RETAIN_COUNT :]
+
+            retained_keys = {
+                (
+                    m.get("timestamp", 0),
+                    m.get("role"),
+                    self._extract_message_text(m)[:80],
+                )
+                for m in retained
+            }
+            discarded = []
+            for m in messages:
+                key = (
+                    m.get("timestamp", 0),
+                    m.get("role"),
+                    self._extract_message_text(m)[:80],
+                )
+                if key not in retained_keys:
+                    discarded.append(m)
+
+            if not discarded and not old_summary:
+                return False
+
+            summary = self._build_rule_summary(old_summary, discarded, keep_tools=keep_tools)
+            ledger["current_summary"] = summary
+            # 去掉旧摘要消息，避免重复
+            retained = [
+                m
+                for m in retained
+                if m.get("kind")
+                not in ("context_summary", "summary_context", "context_compaction")
+            ]
+            if summary:
+                ts = retained[0].get("timestamp", time.time()) if retained else time.time()
+                retained = [self._make_summary_message(summary, ts)] + retained
+            original = len(messages)
+            ledger["messages"] = retained
+            self._last_compression_time[chat_id] = time.time()
+            logger.info(
+                f"AngelHeart[{chat_id}]: 上下文整理完成({reason}) "
+                f"{original} -> {len(retained)}，摘要长度={len(summary)}"
+            )
+        self._cleanup_unreferenced_media_cache(chat_id)
+        return True
+
+    def _commit_summary_and_block(
+        self,
+        chat_id: str,
+        *,
+        summary_text: str,
+        keep_tools: bool,
+        keep_from_timestamp: float | None = None,
+        reason: str = "summary",
+    ) -> bool:
+        summary_text = (summary_text or "").strip()
+        if not summary_text:
+            return self._rule_organize(
+                chat_id,
+                keep_tools=keep_tools,
+                keep_from_timestamp=keep_from_timestamp,
+                reason=f"{reason}_empty_fallback",
+            )
 
         ledger = self._get_or_create_ledger(chat_id)
         with self._lock:
-            # 关键并发控制：只有当新的边界时间戳大于当前记录时，才进行处理。
-            # 这可以防止旧的或乱序的调用覆盖新的状态。
-            if boundary_timestamp > ledger["last_processed_timestamp"]:
+            messages = list(ledger.get("messages") or [])
+            if keep_from_timestamp is not None:
+                retained = [
+                    m for m in messages if m.get("timestamp", 0) >= keep_from_timestamp
+                ]
+            else:
+                # 默认保留最近正文预算
+                content_budget = self.config_manager.context_content_retain_tokens
+                retained = []
+                used = 0
+                for msg in reversed(messages):
+                    if not keep_tools and self._is_tool_message(msg):
+                        continue
+                    tokens = self._count_message_tokens(msg)
+                    if used + tokens <= content_budget or len(retained) < self.MIN_RETAIN_COUNT:
+                        retained.append(msg)
+                        used += tokens
+                    else:
+                        break
+                retained.reverse()
 
-                # 遍历所有消息，更新 is_processed 标志
-                for message in ledger["messages"]:
-                    if not message.get("is_processed") and message.get("timestamp", 0) <= boundary_timestamp:
-                        message["is_processed"] = True
+            retained = [
+                m
+                for m in retained
+                if m.get("kind")
+                not in ("context_summary", "summary_context", "context_compaction")
+            ]
+            ts = retained[0].get("timestamp", time.time()) if retained else time.time()
+            ledger["current_summary"] = summary_text
+            ledger["messages"] = [self._make_summary_message(summary_text, ts)] + retained
+            self._last_compression_time[chat_id] = time.time()
+            logger.info(
+                f"AngelHeart[{chat_id}]: 摘要提交完成({reason}) "
+                f"保留 {len(retained)} 条，摘要长度={len(summary_text)}"
+            )
+        self._cleanup_unreferenced_media_cache(chat_id)
+        return True
 
-                # 在完成所有标记后，更新“高水位标记”
-                ledger["last_processed_timestamp"] = boundary_timestamp
+    def mark_as_processed(self, chat_id: str, boundary_timestamp: float = 0.0):
+        """兼容旧接口：is_processed 已退役，空操作。"""
+        return
 
     def _cleanup_cache_for_message(self, chat_id: str, msg: dict):
         """兼容旧调用：按当前账本引用清理未使用的媒体缓存。"""
@@ -966,100 +1416,8 @@ class ConversationLedger:
             return (time.time() - last_time) > forgetting_timeout
 
     def _compress_context(self, chat_id: str):
-        """
-        执行分级上下文压缩算法。
-
-        算法步骤：
-        1. 从最后一条消息往前保留10K Token的消息正文（非工具消息）
-        2. 剩余消息中，工具调用+工具结果只保留10K Token，超出部分成批删除
-        3. 超出保留范围的普通消息全部丢弃
-
-        这确保了最近的对话上下文始终可用，同时工具调用历史也有一定保留。
-        """
-        ledger = self._get_or_create_ledger(chat_id)
-        should_cleanup_cache = False
-        with self._lock:
-            messages = ledger["messages"]
-            if not messages:
-                return
-
-            # 获取保留Token预算
-            content_budget = self.config_manager.context_content_retain_tokens
-            tool_budget = self.config_manager.context_tool_retain_tokens
-
-            # === 第一步：从末尾往前保留 content_budget Token 的正文消息 ===
-            retained_content_msgs = []
-            content_tokens_used = 0
-
-            # 从最新消息往前遍历
-            for msg in reversed(messages):
-                is_tool = msg.get("role") == "tool"
-                has_tool_calls = bool(msg.get("tool_calls"))
-
-                if is_tool or has_tool_calls:
-                    # 工具消息暂时跳过，后续单独处理
-                    continue
-
-                msg_tokens = self._count_message_tokens(msg)
-                if content_tokens_used + msg_tokens <= content_budget:
-                    retained_content_msgs.append(msg)
-                    content_tokens_used += msg_tokens
-                else:
-                    # 预算用尽，停止保留正文消息
-                    break
-
-            # 恢复时间顺序
-            retained_content_msgs.reverse()
-
-            # === 第二步：从末尾往前保留 tool_budget Token 的工具消息 ===
-            retained_tool_msgs = []
-            tool_tokens_used = 0
-
-            for msg in reversed(messages):
-                is_tool = msg.get("role") == "tool"
-                has_tool_calls = bool(msg.get("tool_calls"))
-
-                if not is_tool and not has_tool_calls:
-                    continue
-
-                msg_tokens = self._count_message_tokens(msg)
-                if tool_tokens_used + msg_tokens <= tool_budget:
-                    retained_tool_msgs.append(msg)
-                    tool_tokens_used += msg_tokens
-                else:
-                    break
-
-            # 恢复时间顺序
-            retained_tool_msgs.reverse()
-
-            # === 第三步：合并并按时间排序 ===
-            all_retained = retained_content_msgs + retained_tool_msgs
-            all_retained.sort(key=lambda m: m.get("timestamp", 0))
-
-            # 确保至少保留 MIN_RETAIN_COUNT 条消息
-            if len(all_retained) < self.MIN_RETAIN_COUNT and len(messages) >= self.MIN_RETAIN_COUNT:
-                # 如果压缩后消息太少，回退到保留最新的 MIN_RETAIN_COUNT 条
-                all_retained = messages[-self.MIN_RETAIN_COUNT:]
-            elif len(all_retained) == 0 and messages:
-                # 极端情况：至少保留最后一条
-                all_retained = messages[-1:]
-
-            original_count = len(messages)
-            ledger["messages"] = all_retained
-            should_cleanup_cache = True
-
-            # 更新压缩时间戳
-            self._last_compression_time[chat_id] = time.time()
-
-            logger.info(
-                f"AngelHeart[{chat_id}]: 上下文压缩完成 "
-                f"({original_count} -> {len(all_retained)} 条消息, "
-                f"正文保留 {content_tokens_used} tokens, "
-                f"工具保留 {tool_tokens_used} tokens)"
-            )
-
-        if should_cleanup_cache:
-            self._cleanup_unreferenced_media_cache(chat_id)
+        """兼容旧入口：转交 organize_context。"""
+        self.organize_context(chat_id, mode="auto")
 
     def _count_message_tokens(self, msg: Dict) -> int:
         """

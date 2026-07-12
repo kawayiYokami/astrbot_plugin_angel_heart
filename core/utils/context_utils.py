@@ -85,39 +85,50 @@ def partition_dialogue(
     chat_id: str
 ) -> Tuple[List[Dict], List[Dict], float]:
     """
-    根据指定会话的最后处理时间戳，将对话记录分割为历史和新对话。
-    这是从 ConversationLedger.get_context_snapshot 提取的核心逻辑。
-
-    同时对工具调用进行压缩处理，便于秘书分析。
-
-    Args:
-        ledger: ConversationLedger 的实例。
-        chat_id: 会话 ID。
-
-    Returns:
-        一个元组 (historical_context, recent_dialogue, boundary_timestamp)。
+    正式上下文切分（秘书轻量分析用）：
+    - 当前摘要作为历史前缀
+    - 当前连续消息块整体作为 recent（不再用 is_processed）
+    - boundary 为块尾时间戳
     """
-    # _get_or_create_ledger 是 protected, 但在这里为了重构暂时使用
-    # 使用公共方法获取消息
     all_messages = ledger.get_all_messages(chat_id)
+    summary = ""
+    try:
+        summary = ledger.get_current_summary(chat_id)
+    except Exception:
+        summary = ""
 
-    # 对所有消息进行工具调用压缩处理（在锁外）
-    processed_messages = []
+    # 秘书路径：压缩/丢弃工具消息
+    recent_dialogue = []
     for msg in all_messages:
         processed_msg = _compress_tool_message(msg)
-        if processed_msg:  # 只有在消息没有被丢弃时才添加
-            processed_messages.append(processed_msg)
+        if processed_msg:
+            recent_dialogue.append(processed_msg)
 
-    # 根据 is_processed 标志进行分割
-    historical_context = [m for m in processed_messages if m.get("is_processed", False)]
-    recent_dialogue = [m for m in processed_messages if not m.get("is_processed", False)]
+    recent_dialogue.sort(key=lambda m: m.get("timestamp", 0))
+    boundary_ts = recent_dialogue[-1].get("timestamp", 0.0) if recent_dialogue else 0.0
 
-    # 边界时间戳是新对话中最后一条消息的时间戳
-    boundary_ts = 0.0
-    if recent_dialogue:
-        # 为确保准确，最好在取最后一个元素前按时间戳排序
-        recent_dialogue.sort(key=lambda m: m.get("timestamp", 0))
-        boundary_ts = recent_dialogue[-1].get("timestamp", 0.0)
+    historical_context = []
+    if summary:
+        has_summary_msg = any(
+            m.get("kind") in ("context_summary", "summary_context", "context_compaction")
+            for m in recent_dialogue[:1]
+        )
+        if not has_summary_msg:
+            ts = recent_dialogue[0].get("timestamp", 0) if recent_dialogue else 0
+            historical_context = [
+                {
+                    "role": "system",
+                    "content": f"[当前摘要]\n{summary}",
+                    "sender_id": "system",
+                    "sender_name": "context_summary",
+                    "kind": "context_summary",
+                    "timestamp": max(0.0, float(ts) - 0.001) if ts else 0.0,
+                }
+            ]
+        else:
+            # 块内已有摘要消息：把它视作历史前缀，其余当 recent
+            historical_context = [recent_dialogue[0]]
+            recent_dialogue = recent_dialogue[1:]
 
     return historical_context, recent_dialogue, boundary_ts
 
@@ -173,31 +184,43 @@ def partition_dialogue_raw(
     chat_id: str
 ) -> Tuple[List[Dict], List[Dict], float]:
     """
-    根据指定会话的最后处理时间戳，将对话记录分割为历史和新对话。
-    与 partition_dialogue 的区别是：此函数保留原始的工具调用结构，不进行压缩。
-    专门用于给老板（前台LLM）构建完整的上下文。
-
-    Args:
-        ledger: ConversationLedger 的实例。
-        chat_id: 会话 ID。
-
-    Returns:
-        一个元组 (historical_context, recent_dialogue, boundary_timestamp)。
+    正式上下文切分（主脑完整上下文）：
+    - 当前摘要作为历史前缀
+    - 当前连续消息块作为 recent
+    - 保留工具结构
+    - 不再使用 is_processed
     """
-    # 使用公共方法获取消息
     all_messages = ledger.get_all_messages(chat_id)
+    summary = ""
+    try:
+        summary = ledger.get_current_summary(chat_id)
+    except Exception:
+        summary = ""
 
-    # 不进行任何压缩处理，保留原始消息结构
-    # 直接根据 is_processed 标志进行分割
-    historical_context = [m for m in all_messages if m.get("is_processed", False)]
-    recent_dialogue = [m for m in all_messages if not m.get("is_processed", False)]
+    recent_dialogue = sorted(all_messages, key=lambda m: m.get("timestamp", 0))
+    boundary_ts = recent_dialogue[-1].get("timestamp", 0.0) if recent_dialogue else 0.0
 
-    # 边界时间戳是新对话中最后一条消息的时间戳
-    boundary_ts = 0.0
-    if recent_dialogue:
-        # 为确保准确，最好在取最后一个元素前按时间戳排序
-        recent_dialogue.sort(key=lambda m: m.get("timestamp", 0))
-        boundary_ts = recent_dialogue[-1].get("timestamp", 0.0)
+    historical_context = []
+    if summary:
+        has_summary_msg = any(
+            m.get("kind") in ("context_summary", "summary_context", "context_compaction")
+            for m in recent_dialogue[:1]
+        )
+        if not has_summary_msg:
+            ts = recent_dialogue[0].get("timestamp", 0) if recent_dialogue else 0
+            historical_context = [
+                {
+                    "role": "system",
+                    "content": f"[当前摘要]\n{summary}",
+                    "sender_id": "system",
+                    "sender_name": "context_summary",
+                    "kind": "context_summary",
+                    "timestamp": max(0.0, float(ts) - 0.001) if ts else 0.0,
+                }
+            ]
+        else:
+            historical_context = [recent_dialogue[0]]
+            recent_dialogue = recent_dialogue[1:]
 
     return historical_context, recent_dialogue, boundary_ts
 
