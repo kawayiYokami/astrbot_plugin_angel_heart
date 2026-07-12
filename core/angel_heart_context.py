@@ -22,6 +22,7 @@ from ..core.conversation_ledger import ConversationLedger
 from ..core.angel_heart_status import AngelHeartStatus, StatusTransitionManager
 from ..core.proactive_manager import ProactiveManager
 from ..core.debounce_manager import DebounceManager
+from ..core.work_ledger import WorkLedger
 
 
 class AngelHeartContext:
@@ -76,6 +77,9 @@ class AngelHeartContext:
 
         # 群聊双防抖（目的）/ 扣押（实现）
         self.debounce_manager = DebounceManager(config_manager)
+
+        # 助理工作账本：正在/已经处理哪一套活
+        self.work_ledger = WorkLedger()
 
         # 整理开始时关闭防抖
         def _close_debounce_on_organize(chat_id: str):

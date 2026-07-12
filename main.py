@@ -499,8 +499,39 @@ class AngelHeartPlugin(Star):
                     await self.angel_context.handle_message_sent(chat_id)
                 except (AttributeError, RuntimeError) as e:
                     logger.warning(f"AngelHeart[{chat_id}]: 状态转换处理异常: {e}")
+                # 工作账本：本轮完成
+                try:
+                    work_id = ""
+                    if hasattr(event, "get_extra"):
+                        work_id = str(event.get_extra("angelheart_work_id", "") or "")
+                    if not work_id:
+                        work_id = self.front_desk._get_event_message_id(event)
+                    preview = self._extract_sent_message_content(event)
+                    if len(preview) > 80:
+                        preview = preview[:80] + "…"
+                    self.angel_context.work_ledger.complete_work(
+                        chat_id,
+                        work_id,
+                        status="done",
+                        result_summary=preview or "已回复",
+                    )
+                except Exception as e:
+                    logger.debug(f"AngelHeart[{chat_id}]: 更新工作账本完成状态失败: {e}")
             else:
                 logger.debug(f"AngelHeart[{chat_id}]: 消息链为空，跳过状态转换")
+                try:
+                    work_id = ""
+                    if hasattr(event, "get_extra"):
+                        work_id = str(event.get_extra("angelheart_work_id", "") or "")
+                    if work_id:
+                        self.angel_context.work_ledger.complete_work(
+                            chat_id,
+                            work_id,
+                            status="failed",
+                            result_summary="空回复/未发送",
+                        )
+                except Exception:
+                    pass
         except Exception as e:
             logger.error(f"AngelHeart[{chat_id}]: after_message_sent处理异常: {e}", exc_info=True)
         finally:

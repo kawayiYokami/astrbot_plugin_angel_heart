@@ -184,16 +184,13 @@ class LLMAnalyzer:
                     raise
 
     def _build_prompt(
-        self, historical_context: List[Dict], recent_dialogue: List[Dict]
+        self,
+        historical_context: List[Dict],
+        recent_dialogue: List[Dict],
+        work_ledger_text: str = "",
     ) -> str:
         """
         使用给定的对话历史构建分析提示词
-
-        Args:
-            conversations (List[Dict]): 对话历史
-
-        Returns:
-            str: 构建好的提示词
         """
         # 分别格式化历史上下文和最近对话，并添加 XML 包裹
         historical_body = self._format_conversation_history(historical_context)
@@ -222,10 +219,23 @@ class LLMAnalyzer:
             self.config_manager.ai_self_identity if self.config_manager else "",
         )
 
+        # 动态追加工作账本（第三人称）
+        ledger_text = (work_ledger_text or "").strip()
+        if ledger_text:
+            base_prompt = (
+                f"{base_prompt}\n\n"
+                f"<助理工作账本>\n{ledger_text}\n</助理工作账本>\n"
+                "请结合工作账本判断，不要让助理处理重复的问题。"
+            )
+
         return base_prompt
 
     async def analyze_and_decide(
-        self, historical_context: List[Dict], recent_dialogue: List[Dict], chat_id: str
+        self,
+        historical_context: List[Dict],
+        recent_dialogue: List[Dict],
+        chat_id: str,
+        work_ledger_text: str = "",
     ) -> SecretaryDecision:
         """
         分析对话历史，做出结构化的决策 (JSON)
@@ -252,7 +262,9 @@ class LLMAnalyzer:
 
         # 1. 调用轻量级AI进行分析
         logger.debug("AngelHeart分析器: 准备调用轻量级AI进行分析...")
-        prompt = self._build_prompt(historical_context, recent_dialogue)
+        prompt = self._build_prompt(
+            historical_context, recent_dialogue, work_ledger_text=work_ledger_text
+        )
 
         # 2. 增强检查：如果生成的提示词为空，则记录警告日志并返回一个明确的决策
         if not prompt:
