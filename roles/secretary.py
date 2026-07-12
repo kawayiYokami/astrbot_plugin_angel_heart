@@ -176,9 +176,18 @@ class Secretary:
         logger.info(f"AngelHeart[{chat_id}]: 秘书开始调用LLM进行分析...")
 
         try:
+            work_ledger_text = ""
+            try:
+                work_ledger_text = self.angel_context.work_ledger.format_for_secretary(chat_id)
+            except Exception:
+                work_ledger_text = ""
+
             # 调用分析器进行决策，传递结构化的上下文
             decision = await self.llm_analyzer.analyze_and_decide(
-                historical_context=db_history, recent_dialogue=recent_dialogue, chat_id=chat_id
+                historical_context=db_history,
+                recent_dialogue=recent_dialogue,
+                chat_id=chat_id,
+                work_ledger_text=work_ledger_text,
             )
 
             # 移除重复日志，已在 process_notification 中记录

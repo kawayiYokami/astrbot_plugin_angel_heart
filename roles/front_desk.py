@@ -558,6 +558,39 @@ class FrontDesk:
         # 激活时重建上下文
         await self._ensure_minimum_context(chat_id, event)
 
+        # 登记工作账本：本事件对应一套活
+        try:
+            work_id = self._ensure_internal_event_id(event)
+            trigger_message_id = ""
+            trigger_summary = ""
+            try:
+                if hasattr(event, "get_extra"):
+                    trigger_message_id = str(
+                        event.get_extra("angelheart_debounce_end_event_id", "") or ""
+                    )
+            except Exception:
+                trigger_message_id = ""
+            if not trigger_message_id:
+                trigger_message_id = work_id
+            try:
+                trigger_summary = (event.get_message_outline() or event.message_str or "").strip()
+            except Exception:
+                trigger_summary = (getattr(event, "message_str", "") or "").strip()
+            if len(trigger_summary) > 80:
+                trigger_summary = trigger_summary[:80] + "…"
+            kind = self.context.debounce_manager.get_debounce_kind(event) or "assistant"
+            self.context.work_ledger.start_work(
+                chat_id=chat_id,
+                work_id=work_id,
+                trigger_message_id=trigger_message_id,
+                trigger_summary=trigger_summary or "群聊应答",
+                kind=kind,
+            )
+            if hasattr(event, "set_extra"):
+                event.set_extra("angelheart_work_id", work_id)
+        except Exception as e:
+            logger.warning(f"AngelHeart[{chat_id}]: 登记工作账本失败: {e}")
+
         # 一事件一子代理：激活后直接进入秘书决策。
         # 不再用旧单槽扣押队列收集消息；并发由多个被放行事件自然形成。
         await self._call_secretary_and_execute(event, chat_id)
@@ -659,6 +692,23 @@ class FrontDesk:
             else:
                 logger.warning(f"AngelHeart[{chat_id}]: 分析失败，无决策结果")
 
+            # 不回复：关闭本轮工作，避免账本一直 running
+            try:
+                work_id = ""
+                if hasattr(event, "get_extra"):
+                    work_id = str(event.get_extra("angelheart_work_id", "") or "")
+                if not work_id:
+                    work_id = self._get_event_message_id(event)
+                reason = decision.reply_strategy if decision else "分析失败"
+                self.context.work_ledger.complete_work(
+                    chat_id,
+                    work_id,
+                    status="done",
+                    result_summary=f"不回复：{reason}",
+                )
+            except Exception:
+                pass
+
             # 不回复时停止事件，避免继续进入主脑
             event.stop_event()
         except Exception as e:
@@ -667,6 +717,15 @@ class FrontDesk:
                 f"AngelHeart[{chat_id}]: 调用秘书异常 (event_id={event_id}): {e}",
                 exc_info=True,
             )
+            try:
+                self.context.work_ledger.complete_work(
+                    chat_id,
+                    event_id,
+                    status="failed",
+                    result_summary="秘书处理异常",
+                )
+            except Exception:
+                pass
             event.stop_event()
 
     async def _execute_secretary_decision(
@@ -1297,20 +1356,37 @@ class FrontDesk:
         return isinstance(prompt, str) and bool(prompt.strip())
 
     def _build_temporary_decision_context(self, chat_id: str, decision: Any) -> Dict[str, Any] | None:
-        """构建不会持久化的临时建议上下文消息"""
-        if not decision or not getattr(decision, "reply_strategy", None):
+        """兼容旧接口：秘书决策临时注入已废弃。"""
+        return None
+
+    def _build_temporary_work_ledger_context(
+        self, chat_id: str, event: AstrMessageEvent | None = None
+    ) -> Dict[str, Any] | None:
+        """构建不保存的工作账本临时提醒（第二人称）。"""
+        try:
+            work_id = ""
+            if event is not None and hasattr(event, "get_extra"):
+                work_id = str(event.get_extra("angelheart_work_id", "") or "")
+            if not work_id and event is not None:
+                work_id = self._get_event_message_id(event)
+            text = self.context.work_ledger.format_for_assistant(chat_id, current_work_id=work_id)
+        except Exception as e:
+            logger.warning(f"AngelHeart[{chat_id}]: 构建工作账本提醒失败: {e}")
+            return None
+
+        if not text or not text.strip():
             return None
 
         return {
-            "role": "assistant",
+            "role": "system",
             "content": [
                 {
                     "type": "text",
-                    "text": format_decision_xml(decision),
+                    "text": text.strip(),
                 }
             ],
-            "sender_id": "angelheart-secretary",
-            "sender_name": "AngelHeart秘书",
+            "sender_id": "angelheart-work-ledger",
+            "sender_name": "工作账本",
             "timestamp": time.time(),
             "_no_save": True,
             "is_temporary_context": True,
@@ -1590,11 +1666,10 @@ class FrontDesk:
             else []
         )
 
-        # 4. 将秘书建议作为临时上下文注入（仅群聊且需要回复时）
-        if self._is_group_chat(chat_id) and decision and decision.should_reply:
-            decision_context = self._build_temporary_decision_context(chat_id, decision)
-            if decision_context:
-                new_contexts.append(decision_context)
+        # 4. 注入工作账本临时提醒（不保存），不再注入秘书决策建议
+        work_context = self._build_temporary_work_ledger_context(chat_id, event)
+        if work_context:
+            new_contexts.append(work_context)
 
         # 5. 根据 Provider 的 modalities 配置过滤图片内容
         new_contexts = self.filter_images_for_provider(chat_id, new_contexts)
