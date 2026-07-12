@@ -51,6 +51,21 @@ class ConfigManager:
         return self._get_grouped("timing", "waiting_time", 7.0)
 
     @property
+    def assistant_debounce_time(self) -> float:
+        """助理防抖等待时长（秒）。"""
+        return self._get_grouped("timing", "assistant_debounce_time", 1.0)
+
+    @property
+    def secretary_debounce_time(self) -> float:
+        """秘书防抖等待时长（秒）。默认复用 waiting_time。"""
+        return self._get_grouped("timing", "secretary_debounce_time", self.waiting_time)
+
+    @property
+    def accelerate_debounce_time(self) -> float:
+        """加速防抖等待时长（秒）。"""
+        return self._get_grouped("timing", "accelerate_debounce_time", 1.0)
+
+    @property
     def llm_timeout(self) -> float:
         return self._get_grouped("timing", "llm_timeout", 180.0)
 
@@ -219,6 +234,9 @@ class ConfigManager:
         return {
             "timing": {
                 "waiting_time": self.waiting_time,
+                "assistant_debounce_time": self.assistant_debounce_time,
+                "secretary_debounce_time": self.secretary_debounce_time,
+                "accelerate_debounce_time": self.accelerate_debounce_time,
                 "llm_timeout": self.llm_timeout,
                 "no_reply_cooldown": self.no_reply_cooldown,
                 "cache_expiry": self.cache_expiry,

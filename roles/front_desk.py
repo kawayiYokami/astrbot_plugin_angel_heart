@@ -31,7 +31,8 @@ from ..core.fishing_direct_reply import FishingDirectReply
 from ..core.message_processor import MessageProcessor
 
 # 导入状态枚举
-from ..core.angel_heart_status import AngelHeartStatus
+from ..core.angel_heart_status import AngelHeartStatus, StatusChecker
+from ..core.debounce_manager import PROCESS, KILL
 
 
 
@@ -78,8 +79,11 @@ class FrontDesk:
         # 初始化图片处理器
         self.image_processor = ImageProcessor()
 
-        # 初始化混脸熟直接回复处理器
+        # 初始化混脸熟直接回复处理器（兼容保留，进场不再依赖）
         self.fishing_reply = FishingDirectReply(config_manager, angel_context)
+
+        # 唤醒判定复用 StatusChecker
+        self.status_checker = StatusChecker(config_manager, angel_context)
 
         # secretary 引用将由 main.py 设置
         self.secretary = None
@@ -410,6 +414,9 @@ class FrontDesk:
                     logger.info(
                         f"AngelHeart[{chat_id}]: 处于闭嘴状态 (剩余 {remaining:.1f} 秒)，事件已终止。"
                     )
+                    await self.context.debounce_manager.clear_chat(
+                        chat_id, reason="silenced"
+                    )
                     event.stop_event()
                     return
 
@@ -429,6 +436,9 @@ class FrontDesk:
                             logger.info(
                                 f"AngelHeart[{chat_id}]: 检测到掌嘴词 '{word}'，启动闭嘴模式 {silence_duration} 秒，事件已终止。"
                             )
+                            await self.context.debounce_manager.clear_chat(
+                                chat_id, reason="slap_words"
+                            )
                             event.stop_event()
                             return
 
@@ -446,33 +456,105 @@ class FrontDesk:
                     event.stop_event()
                 return
 
-            # 私聊由主框架直接响应，这里只负责缓存，不走秘书分析链路
+            # 私聊由主框架直接响应，这里只负责缓存，不走秘书/双防抖链路
+            # 根因：AstrBot 无法在子代理中注入消息，私聊忙碌时只能队列
             if self._is_private_chat(chat_id):
                 logger.debug(
-                    f"AngelHeart[{chat_id}]: 私聊消息已缓存，跳过秘书处理，等待主框架直接响应。"
+                    f"AngelHeart[{chat_id}]: 私聊消息已缓存，跳过秘书与双防抖，等待主框架队列/直接响应。"
                 )
                 return
 
-            # 5. 检查并补充历史消息，确保至少有7条上下文
-            await self._ensure_minimum_context(chat_id, event)
-
-            # 6. 通知秘书处理
-            await self._notify_secretary(event)
+            # 5. 群聊：双防抖（目的）+ 扣押事件（实现）
+            await self._schedule_group_debounce(event)
 
         except Exception as e:
             logger.error(f"AngelHeart[{chat_id}]: 前台事件处理异常: {e}", exc_info=True)
             # 发生异常时，终止事件传播
             event.stop_event()
 
+    async def _schedule_group_debounce(self, event: AstrMessageEvent):
+        """群聊双防抖调度：账本自管，等待挂在事件上。"""
+        chat_id = event.unified_msg_origin
+        sender_id = str(event.get_sender_id() or "")
+        event_id = self._ensure_internal_event_id(event)
+
+        # 在场超时检查（离场）
+        await self._check_and_handle_timeout(chat_id, time.time())
+
+        is_wake = self.status_checker.is_event_wake(event)
+        is_present = self.context.is_present(chat_id)
+
+        # 离场唤醒：先标记进场，再进入助理防抖
+        if is_wake and not is_present:
+            await self.context.transition_to_status(
+                chat_id,
+                AngelHeartStatus.OBSERVATION,
+                "离场唤醒，进入在场",
+            )
+            is_present = True
+
+        ticket = await self.context.debounce_manager.schedule(
+            chat_id=chat_id,
+            event=event,
+            sender_id=sender_id,
+            event_id=event_id,
+            is_wake=is_wake,
+            is_present=is_present,
+        )
+
+        if ticket is None:
+            # 只入库，不激活
+            logger.debug(
+                f"AngelHeart[{chat_id}]: 消息仅入库，不激活事件 "
+                f"(wake={is_wake}, present={is_present}, sender={sender_id})"
+            )
+            event.stop_event()
+            return
+
+        result = await ticket
+        if result == KILL:
+            logger.debug(f"AngelHeart[{chat_id}]: 防抖旧事件被替换，停止当前事件")
+            result_obj = event.get_result()
+            if result_obj:
+                result_obj.chain = []
+            event.stop_event()
+            return
+
+        if result != PROCESS:
+            logger.warning(f"AngelHeart[{chat_id}]: 未知防抖结果 '{result}'，停止事件")
+            event.stop_event()
+            return
+
+        # 激活：重建上下文后进入秘书/主脑
+        await self._activate_group_event(event)
+
+    async def _activate_group_event(self, event: AstrMessageEvent):
+        """防抖到期后激活事件：重建上下文，再请求。"""
+        chat_id = event.unified_msg_origin
+        logger.info(
+            f"AngelHeart[{chat_id}]: 防抖放行，重建上下文后激活 "
+            f"(kind={self.context.debounce_manager.get_debounce_kind(event)}, "
+            f"must_reply={self.context.debounce_manager.get_must_reply(event)})"
+        )
+
+        # 激活时重建上下文
+        await self._ensure_minimum_context(chat_id, event)
+
+        # 一事件一子代理：激活后直接进入秘书决策。
+        # 不再用旧单槽扣押队列收集消息；并发由多个被放行事件自然形成。
+        await self._call_secretary_and_execute(event, chat_id)
+
     async def _check_and_handle_timeout(self, chat_id: str, current_time: float):
-        """检查并处理观测中/混脸熟状态超时"""
+        """检查并处理在场超时 → 离场"""
         try:
-            # 检查当前状态
             current_status = self.context.get_chat_status(chat_id)
-            if current_status not in (AngelHeartStatus.OBSERVATION, AngelHeartStatus.GETTING_FAMILIAR):
+            if current_status not in (
+                AngelHeartStatus.OBSERVATION,
+                AngelHeartStatus.SUMMONED,
+                AngelHeartStatus.GETTING_FAMILIAR,
+            ):
                 return
 
-            # 获取状态开始时间
             status_start_time = (
                 self.context.status_transition_manager.get_status_start_time(chat_id)
             )
@@ -482,154 +564,72 @@ class FrontDesk:
                 )
                 return
 
-            # 根据状态选择超时时间
-            if current_status == AngelHeartStatus.OBSERVATION:
-                timeout = self.config_manager.observation_timeout
-            else:
-                timeout = self.config_manager.familiarity_timeout
-
-            # 检查是否超时
+            timeout = self.config_manager.observation_timeout
             if current_time - status_start_time >= timeout:
                 logger.info(
-                    f"AngelHeart[{chat_id}]: {current_status.value}状态超时({timeout}秒)，降级到不在场"
+                    f"AngelHeart[{chat_id}]: 在场超时({timeout}秒)，转为离场"
                 )
-
-                # 执行状态降级
                 await self.context.transition_to_status(
                     chat_id,
                     AngelHeartStatus.NOT_PRESENT,
-                    f"{current_status.value}超时({timeout}秒)自动降级",
+                    f"在场超时({timeout}秒)自动离场",
                 )
-
-                # 清理相关资源
                 await self.context.clear_decision(chat_id)
+                await self.context.debounce_manager.clear_chat(
+                    chat_id, reason="present_timeout"
+                )
 
         except Exception as e:
             logger.error(f"AngelHeart[{chat_id}]: 超时检查异常: {e}", exc_info=True)
 
-    async def _try_acquire_lock(self, chat_id: str, event: AstrMessageEvent) -> tuple[bool, str, float]:
-        """
-        尝试获取门锁，统一管理扣押和上锁
-
-        Args:
-            chat_id: 会话ID
-            event: 当前消息事件
-
-        Returns:
-            tuple[bool, str, float]: (是否成功获取, 原因, 剩余时间)
-        """
-        # 尝试获取门锁（这会原子性地检查并上锁）
-        acquired, reason, remaining_time = await self.context.acquire_chat_processing(chat_id, event)
-
-        if not acquired:
-            # 门锁被占用或冷却
-            return False, reason, remaining_time
-
-        # 成功获取门锁
-        return True, "SUCCESS", 0.0
-
-
-    async def _enter_detention_queue(
-        self, event: AstrMessageEvent, reason: str
-    ):
-        """
-        进入扣押队列
-
-        Args:
-            event: 消息事件
-            reason: 扣押原因
-        """
-        chat_id = event.unified_msg_origin
-        logger.info(f"AngelHeart[{chat_id}]: 消息进入扣押队列，原因: {reason}")
-
-        # 使用观察期等待机制，传入事件对象用于撤回检测
-        ticket = await self.context.hold_and_start_observation(chat_id, event)
-        result = await ticket
-
-        if result == "KILL":
-            logger.debug(f"AngelHeart[{chat_id}]: 扣押消息被取消，离开")
-            # 产生空回复并停止事件传播
-            result_obj = event.get_result()
-            if result_obj:
-                result_obj.chain = []
-            event.stop_event()
-            return
-        elif result == "PROCESS":
-            logger.info(f"AngelHeart[{chat_id}]: 扣押解除，继续处理消息")
-        else:
-            logger.warning(f"AngelHeart[{chat_id}]: 收到未知信号 '{result}'")
-            return
-
-        # 扣押解除后，尝试获取门锁
-        acquired, reason, remaining_time = await self.context.acquire_chat_processing(chat_id, event)
-        if not acquired:
-            # 还是获取不到，重新进入扣押
-            logger.debug(f"AngelHeart[{chat_id}]: 门锁仍被占用 (原因: {reason})，重新扣押")
-            await self._enter_detention_queue(event, f"门锁占用({reason})")
-            return
-
-        # 成功获取门锁，通知秘书处理消息
-        # 注意：不要在这里统一释放门锁。
-        # - 不回复：由 _call_secretary_and_execute 内部按 no_reply_cooldown 释放
-        # - 需要回复：由 main.py 的 after_message_sent 在消息发送并写入总账后释放
-        await self._call_secretary_and_execute(event, chat_id)
-
-
     async def _call_secretary_and_execute(self, event: AstrMessageEvent, chat_id: str):
         """
-        调用秘书并执行决策的公共逻辑
+        调用秘书并执行决策。
 
-        注意：调用此方法时必须已经持有门锁，门锁将在 main.py 的 strip_markdown_on_decorating_result 方法中统一释放
-
-        Args:
-            event: 消息事件
-            chat_id: 会话ID
+        群聊现行模型：
+        - 防抖放行后的每个事件天然是独立子代理
+        - 不再依赖单槽门锁做消息收集
+        - 不能把后到消息注入已运行子代理
         """
         try:
-            # 调用秘书进行状态判断和处理
             decision = await self.secretary.handle_message_by_state(event)
 
-            # 根据决策结果处理回复逻辑
             if decision and decision.should_reply:
-                # 决策需要回复，执行回复
                 await self._execute_secretary_decision(decision, event, chat_id)
+                return
+
+            try:
+                _, _, boundary_ts = self.context.conversation_ledger.get_context_snapshot(chat_id)
+                if boundary_ts > 0:
+                    self.context.conversation_ledger.mark_as_processed(chat_id, boundary_ts)
+            except Exception:
+                pass
+
+            if (
+                event.is_at_or_wake_command
+                and self.context.config_manager.block_unapproved_wake_non_command
+            ):
+                logger.debug(
+                    f"AngelHeart[{chat_id}]: 上游唤醒聊天事件未获批准，已停止后续主 LLM 处理。"
+                )
+                event.stop_event()
+
+            if decision:
+                logger.info(
+                    f"AngelHeart[{chat_id}]: 决策为'不参与'。原因: {decision.reply_strategy}"
+                )
             else:
-                try:
-                    _, _, boundary_ts = self.context.conversation_ledger.get_context_snapshot(chat_id)
-                    if boundary_ts > 0:
-                        self.context.conversation_ledger.mark_as_processed(chat_id, boundary_ts)
-                except Exception:
-                    pass
-                if (
-                    event.is_at_or_wake_command
-                    and self.context.config_manager.block_unapproved_wake_non_command
-                ):
-                    logger.debug(
-                        f"AngelHeart[{chat_id}]: 上游唤醒聊天事件未获批准，已停止后续主 LLM 处理。"
-                    )
-                    event.stop_event()
-                # 决策不需要回复，记录原因并立即释放门锁（设置较短的“不回复”冷却）
-                if decision:
-                    logger.info(f"AngelHeart[{chat_id}]: 决策为'不参与'。原因: {decision.reply_strategy}")
-                else:
-                    logger.warning(f"AngelHeart[{chat_id}]: 分析失败，无决策结果")
-                no_reply_cd = self.context.config_manager.no_reply_cooldown
-                await self.context.release_chat_processing(chat_id, set_cooldown=True, duration=no_reply_cd)
-            # 注意：需要回复的情况，门锁释放由 main.py 的 strip_markdown_on_decorating_result 方法统一处理
+                logger.warning(f"AngelHeart[{chat_id}]: 分析失败，无决策结果")
+
+            # 不回复时停止事件，避免继续进入主脑
+            event.stop_event()
         except Exception as e:
             event_id = self._get_event_message_id(event)
             logger.error(
-                f"AngelHeart[{chat_id}]: 调用秘书异常，准备释放门锁 (event_id={event_id}): {e}",
+                f"AngelHeart[{chat_id}]: 调用秘书异常 (event_id={event_id}): {e}",
                 exc_info=True,
             )
-            # 发生异常时也要释放门锁，避免死锁
-            try:
-                await self.context.release_chat_processing(chat_id, set_cooldown=False)
-                logger.warning(
-                    f"AngelHeart[{chat_id}]: 已因异常释放门锁 (event_id={event_id})"
-                )
-            except Exception:
-                pass  # 忽略释放门锁时的异常
+            event.stop_event()
 
     async def _execute_secretary_decision(
         self, decision, event: AstrMessageEvent, chat_id: str
@@ -731,54 +731,7 @@ class FrontDesk:
                 logger.debug(f"AngelHeart[{chat_id}]: 已设置唤醒主脑标志")
             else:
                 logger.info(f"AngelHeart[{chat_id}]: 调试模式已启用，阻止了实际唤醒。")
-            # 注意：门锁释放由 main.py 的 strip_markdown_on_decorating_result 方法统一处理
-
-    async def _notify_secretary(self, event: AstrMessageEvent):
-        """
-        通知秘书处理新消息
-
-        Args:
-            event: 消息事件
-        """
-        try:
-            # 检查秘书是否可用
-            if not self.secretary:
-                logger.warning("AngelHeart: Secretary 未初始化，跳过通知")
-                return
-
-            chat_id = event.unified_msg_origin
-
-            # 第一次尝试获取门锁
-            acquired, reason, remaining_time = await self.context.acquire_chat_processing(chat_id, event)
-
-            if acquired:
-                # 首次尝试成功，直接处理
-                await self._call_secretary_and_execute(event, chat_id)
-                return
-
-            if reason == "COOLDOWN":
-                # 是因为冷却，等待精确时间
-                logger.debug(f"AngelHeart[{chat_id}]: 门锁冷却中，等待 {remaining_time:.2f} 秒...")
-                await asyncio.sleep(remaining_time)
-
-                # 再次尝试获取门锁
-                acquired, reason, _ = await self.context.acquire_chat_processing(chat_id, event)
-                if acquired:
-                    # 等待后成功，直接处理
-                    await self._call_secretary_and_execute(event, chat_id)
-                    return
-
-            # 如果是因为LOCKED，或者等待冷却后仍然LOCKED，才进入扣押队列
-            logger.debug(f"AngelHeart[{chat_id}]: 门锁被占用 (原因: {reason})，进入扣押队列")
-            await self._enter_detention_queue(event, f"门锁占用({reason})")
-
-        except Exception as e:
-            logger.error(
-                f"AngelHeart[{event.unified_msg_origin}]: 通知秘书异常: {e}",
-                exc_info=True,
-            )
-            # 发生异常时，终止事件传播
-            event.stop_event()
+            # 需要回复时，由主框架继续处理该事件（一事件一子代理）
 
     async def _ensure_minimum_context(self, chat_id: str, event: AstrMessageEvent):
         """
