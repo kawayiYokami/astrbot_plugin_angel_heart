@@ -63,182 +63,100 @@ class Secretary:
 
     async def handle_message_by_state(self, event: AstrMessageEvent) -> SecretaryDecision:
         """
-        秘书职责：根据状态决定消息处理方式
+        秘书职责：防抖激活后，重建上下文并决策。
 
-        Args:
-            event: 消息事件
-
-        Returns:
-            SecretaryDecision: 分析后得出的决策对象
+        群聊现行模型：
+        - 离场 / 在场
+        - 助理防抖 / 秘书防抖（扣押实现）
+        - must_reply 由防抖账本在放行时挂到事件上
         """
         chat_id = event.unified_msg_origin
-
-        # 获取当前状态
         current_status = self.angel_context.get_chat_status(chat_id)
-        logger.info(f"AngelHeart[{chat_id}]: 秘书处理消息 (状态: {current_status.value})")
+        must_reply = self.angel_context.debounce_manager.get_must_reply(event)
+        debounce_kind = self.angel_context.debounce_manager.get_debounce_kind(event)
+        logger.info(
+            f"AngelHeart[{chat_id}]: 秘书处理激活事件 "
+            f"(状态: {current_status.value}, kind={debounce_kind or 'unknown'}, must_reply={must_reply})"
+        )
 
-        # 优先检查是否被呼唤（无论当前状态如何）
-        if self.status_checker._is_summoned(chat_id):
-            # 如果当前不是 SUMMONED 状态，需要转换
-            if current_status != AngelHeartStatus.SUMMONED:
-                logger.info(f"AngelHeart[{chat_id}]: 检测到被呼唤，从 {current_status.value} 转换到被呼唤状态")
-                await self.angel_context.status_transition_manager.transition_to_status(
-                    chat_id, AngelHeartStatus.SUMMONED, "检测到呼唤"
-                )
+        # 激活后确保在场
+        if not self.angel_context.is_present(chat_id):
+            await self.angel_context.status_transition_manager.transition_to_status(
+                chat_id, AngelHeartStatus.OBSERVATION, "防抖激活，确保在场"
+            )
 
-            # 纯 @ 空消息：只切状态不回复，等下一句实质消息
-            if not event.message_str.strip():
-                logger.info(f"AngelHeart[{chat_id}]: 纯@呼唤（无实质文本），已切换到被呼唤状态，跳过回复")
-                return SecretaryDecision(
-                    should_reply=False, reply_strategy="纯@呼唤", topic="被呼唤",
-                    entities=[], facts=[], keywords=[]
-                )
+        # 纯 @ 空消息：不单独开回复，等后续实质边界事件
+        if not event.message_str.strip() and not must_reply:
+            logger.info(f"AngelHeart[{chat_id}]: 空消息且非必须回应，跳过回复")
+            return SecretaryDecision(
+                should_reply=False, reply_strategy="空消息", topic="无",
+                entities=[], facts=[], keywords=[]
+            )
 
-            return await self._handle_summoned_reply(event, chat_id)
+        # 激活时重建上下文后再分析
+        historical_context, recent_dialogue, boundary_ts = (
+            self.angel_context.conversation_ledger.get_context_snapshot(chat_id)
+        )
+        if not recent_dialogue:
+            logger.info(f"AngelHeart[{chat_id}]: 无新消息需要分析。")
+            return SecretaryDecision(
+                should_reply=False, reply_strategy="无新消息", topic="未知",
+                entities=[], facts=[], keywords=[]
+            )
 
-        # 根据当前状态选择处理方式
-        if current_status == AngelHeartStatus.GETTING_FAMILIAR:
-            return await self._handle_familiarity_reply(event, chat_id)
-        elif current_status == AngelHeartStatus.SUMMONED:
-            return await self._handle_summoned_reply(event, chat_id)
-        elif current_status == AngelHeartStatus.OBSERVATION:
-            return await self._handle_observation_reply(event, chat_id)
-        else:
-            # 不在场：检查触发条件
-            return await self._handle_not_present_check(event, chat_id)
+        decision = await self.perform_analysis(recent_dialogue, historical_context, chat_id)
+
+        # 必须回应：助理防抖 / 加速秘书防抖
+        if must_reply:
+            has_reason = (
+                decision.is_questioned
+                or decision.is_interesting
+                or self.config_manager.reply_even_not_questioned
+                or self.config_manager.force_reply_when_summoned
+            )
+            if has_reason:
+                decision.should_reply = True
+                if not decision.reply_strategy or decision.reply_strategy == "继续观察":
+                    decision.reply_strategy = "必须回应"
+            else:
+                # 配置要求强制回复时，即使理由弱也回
+                if self.config_manager.force_reply_when_summoned:
+                    decision.should_reply = True
+                    decision.reply_strategy = "必须回应"
+
+        return decision
 
     async def _handle_familiarity_reply(self, event: AstrMessageEvent, chat_id: str) -> SecretaryDecision:
-        """处理混脸熟状态 - 快速回复"""
-        try:
-            # 检测实际触发类型
-            if self.status_checker._detect_echo_chamber(chat_id):
-                trigger_type = "echo_chamber"
-            else:
-                trigger_type = "dense_conversation"
-
-            logger.info(f"AngelHeart[{chat_id}]: 秘书处理混脸熟状态，触发类型: {trigger_type}")
-
-            # 使用 fishing_reply 生成策略
-            from ..core.fishing_direct_reply import FishingDirectReply
-
-            fishing_reply = FishingDirectReply(self.config_manager, self.context)
-            decision = await fishing_reply.generate_reply_strategy(
-                chat_id, event, trigger_type
-            )
-
-            return decision
-
-        except Exception as e:
-            logger.error(f"AngelHeart[{chat_id}]: 秘书混脸熟处理异常: {e}", exc_info=True)
-            return SecretaryDecision(
-                should_reply=False, reply_strategy="处理异常", topic="未知",
-                entities=[], facts=[], keywords=[]
-            )
+        """兼容旧路径：混脸熟不再作为进场条件。"""
+        logger.info(f"AngelHeart[{chat_id}]: 混脸熟路径已停用，默认不回复")
+        return SecretaryDecision(
+            should_reply=False, reply_strategy="混脸熟已停用", topic="未知",
+            entities=[], facts=[], keywords=[]
+        )
 
     async def _handle_summoned_reply(self, event: AstrMessageEvent, chat_id: str) -> SecretaryDecision:
-        """处理被呼唤状态 - 可配置为强制回复或尊重分析结果"""
-        try:
-            logger.info(f"AngelHeart[{chat_id}]: 秘书处理被呼唤状态")
-
-            # 获取上下文
-            historical_context, recent_dialogue, boundary_ts = (
-                self.angel_context.conversation_ledger.get_context_snapshot(chat_id)
-            )
-
-            if not recent_dialogue:
-                logger.info(f"AngelHeart[{chat_id}]: 无新消息需要分析。")
-                return SecretaryDecision(
-                    should_reply=False, reply_strategy="无新消息", topic="未知",
-                    entities=[], facts=[], keywords=[]
-                )
-
-            # 执行分析
-            decision = await self.perform_analysis(recent_dialogue, historical_context, chat_id)
-
-            # 有正当理由时才强制回复
-            if self.config_manager.force_reply_when_summoned:
-                has_reason = (
-                    decision.is_questioned
-                    or decision.is_interesting
-                    or self.config_manager.reply_even_not_questioned
-                )
-                if has_reason:
-                    decision.should_reply = True
-                    decision.reply_strategy = "被呼唤回复"
-
-            return decision
-
-        except Exception as e:
-            logger.error(f"AngelHeart[{chat_id}]: 秘书被呼唤处理异常: {e}", exc_info=True)
-            return SecretaryDecision(
-                should_reply=False, reply_strategy="处理异常", topic="未知",
-                entities=[], facts=[], keywords=[]
-            )
+        """兼容旧路径：唤醒决策改由统一激活入口处理。"""
+        logger.info(f"AngelHeart[{chat_id}]: 旧被呼唤路径已停用，改由激活入口处理")
+        return SecretaryDecision(
+            should_reply=False, reply_strategy="请走防抖激活入口", topic="未知",
+            entities=[], facts=[], keywords=[]
+        )
 
     async def _handle_observation_reply(self, event: AstrMessageEvent, chat_id: str) -> SecretaryDecision:
-        """处理观测中状态 - 智能判断"""
-        try:
-            logger.info(f"AngelHeart[{chat_id}]: 秘书处理观测中状态")
-
-            # 获取上下文
-            historical_context, recent_dialogue, boundary_ts = (
-                self.angel_context.conversation_ledger.get_context_snapshot(chat_id)
-            )
-
-            if not recent_dialogue:
-                logger.info(f"AngelHeart[{chat_id}]: 无新消息需要分析。")
-                return SecretaryDecision(
-                    should_reply=False, reply_strategy="无新消息", topic="未知",
-                    entities=[], facts=[], keywords=[]
-                )
-
-            # 执行分析
-            decision = await self.perform_analysis(recent_dialogue, historical_context, chat_id)
-
-            return decision
-
-        except Exception as e:
-            logger.error(f"AngelHeart[{chat_id}]: 秘书观测中处理异常: {e}", exc_info=True)
-            return SecretaryDecision(
-                should_reply=False, reply_strategy="处理异常", topic="未知",
-                entities=[], facts=[], keywords=[]
-            )
+        """兼容旧路径：在场决策改由统一激活入口处理。"""
+        logger.info(f"AngelHeart[{chat_id}]: 旧在场路径已停用，改由激活入口处理")
+        return SecretaryDecision(
+            should_reply=False, reply_strategy="请走防抖激活入口", topic="未知",
+            entities=[], facts=[], keywords=[]
+        )
 
     async def _handle_not_present_check(self, event: AstrMessageEvent, chat_id: str) -> SecretaryDecision:
-        """处理不在场状态 - 检查触发条件"""
-        try:
-            logger.debug(f"AngelHeart[{chat_id}]: 秘书处理不在场状态，检查触发条件")
-
-            # 判断状态
-            new_status = await self.status_checker.determine_status(chat_id)
-
-            # 如果需要转换状态
-            if new_status in [AngelHeartStatus.GETTING_FAMILIAR, AngelHeartStatus.SUMMONED]:
-                logger.info(f"AngelHeart[{chat_id}]: 秘书检测到触发条件，状态: {new_status.value}")
-
-                # 转换状态
-                await self.angel_context.status_transition_manager.transition_to_status(
-                    chat_id, new_status, f"触发条件：{new_status.value}"
-                )
-
-                # 根据新状态直接调用对应的处理方法
-                if new_status == AngelHeartStatus.GETTING_FAMILIAR:
-                    return await self._handle_familiarity_reply(event, chat_id)
-                elif new_status == AngelHeartStatus.SUMMONED:
-                    return await self._handle_summoned_reply(event, chat_id)
-            else:
-                logger.debug(f"AngelHeart[{chat_id}]: 秘书判断无触发条件，保持不在场")
-                return SecretaryDecision(
-                    should_reply=False, reply_strategy="不在场", topic="未知",
-                    entities=[], facts=[], keywords=[]
-                )
-
-        except Exception as e:
-            logger.error(f"AngelHeart[{chat_id}]: 秘书不在场状态处理异常: {e}", exc_info=True)
-            return SecretaryDecision(
-                should_reply=False, reply_strategy="处理异常", topic="未知",
-                entities=[], facts=[], keywords=[]
-            )
+        """兼容旧路径：离场未唤醒不应进入秘书；若误入则不回复。"""
+        logger.debug(f"AngelHeart[{chat_id}]: 离场检查路径命中，默认不回复")
+        return SecretaryDecision(
+            should_reply=False, reply_strategy="离场", topic="未知",
+            entities=[], facts=[], keywords=[]
+        )
 
     async def perform_analysis(
         self, recent_dialogue: List[Dict], db_history: List[Dict], chat_id: str

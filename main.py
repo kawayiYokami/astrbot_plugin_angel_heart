@@ -1,16 +1,16 @@
 """
 AngelHeart插件 - 天使心智能群聊/私聊交互插件
 
-基于AngelHeart轻量级架构设计，实现两级AI协作体系。
-采用"前台缓存，秘书定时处理"模式：
-- 前台：接收并缓存所有合规消息
-- 秘书：定时分析缓存内容，决定是否回复
+基于轻量级两级协作：
+- 前台：接收并缓存消息
+- 群聊双防抖：助理/秘书防抖（扣押实现）后激活最后边界事件
+- 秘书：对激活事件重建上下文并决策是否回复
+- 私聊：只缓存，主框架队列（无法向运行中子代理注入消息）
 """
 
 import asyncio
 import time
 import json
-from concurrent.futures import InvalidStateError
 from typing import Any
 
 from astrbot.api.star import Star, Context, register
@@ -576,35 +576,16 @@ class AngelHeartPlugin(Star):
     async def _cleanup_all_waiting_resources(self):
         """清理所有等待中的资源和任务"""
         try:
-            # 清理所有 pending_futures
-            for chat_id, future in self.angel_context.pending_futures.items():
-                if not future.done():
-                    try:
-                        future.set_result("KILL")  # 设置结果以释放等待
-                        logger.debug(f"AngelHeart[{chat_id}]: 已在terminate时清理Future")
-                    except (InvalidStateError, asyncio.InvalidStateError) as e:
-                        # Future 状态可能在检查 done() 后立即改变（竞态条件）
-                        # 尝试取消 Future 作为备选方案
-                        logger.debug(f"AngelHeart[{chat_id}]: Future状态异常 ({type(e).__name__})，尝试取消")
-                        try:
-                            future.cancel()
-                        except Exception as cancel_err:
-                            logger.debug(f"AngelHeart[{chat_id}]: 取消Future失败: {type(cancel_err).__name__}: {cancel_err}")
-                    except Exception as e:
-                        # 捕获任何其他异常，防止停止清理流程
-                        logger.debug(f"AngelHeart[{chat_id}]: 清理Future时发生异常: {type(e).__name__}: {e}")
-            self.angel_context.pending_futures.clear()
-
-            # 清理所有 pending_events
-            self.angel_context.pending_events.clear()
-            logger.debug("AngelHeart: 已在terminate时清理所有pending_events")
-
-            # 取消所有扣押超时计时器
-            for chat_id, timer in self.angel_context.detention_timeout_timers.items():
-                if not timer.done():
-                    timer.cancel()
-                    logger.debug(f"AngelHeart[{chat_id}]: 已在terminate时取消扣押超时计时器")
-            self.angel_context.detention_timeout_timers.clear()
+            # 清理双防抖账本：旧事件全部 KILL
+            for chat_id in list(self.angel_context.current_states.keys()):
+                try:
+                    await self.angel_context.debounce_manager.clear_chat(
+                        chat_id, reason="terminate"
+                    )
+                except Exception as e:
+                    logger.debug(
+                        f"AngelHeart[{chat_id}]: terminate 清理防抖失败: {type(e).__name__}: {e}"
+                    )
 
             # 取消所有耐心计时器
             for chat_id, timer in self.angel_context.patience_timers.items():

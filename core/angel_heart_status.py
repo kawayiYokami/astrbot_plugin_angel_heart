@@ -14,12 +14,19 @@ except ImportError:
 
 
 class AngelHeartStatus(Enum):
-    """AngelHeart 4状态枚举"""
+    """AngelHeart 群聊参与状态。
 
-    NOT_PRESENT = "不在场"  # 初始状态，无消息缓存
-    SUMMONED = "被呼唤"  # 检测到唤醒词或@消息
-    GETTING_FAMILIAR = "混脸熟"  # 连续互动阶段，可直接回复
-    OBSERVATION = "观测中"  # 观测中等待，1分钟自动降级
+    现行语义只保留两态：
+    - NOT_PRESENT：离场
+    - OBSERVATION：在场（回复后进入，超时回离场）
+
+    SUMMONED / GETTING_FAMILIAR 仅兼容旧代码路径，不再作为进场条件。
+    """
+
+    NOT_PRESENT = "离场"
+    SUMMONED = "被呼唤"  # 兼容旧路径，不再作为主状态机进场条件
+    GETTING_FAMILIAR = "混脸熟"  # 兼容旧路径，不再作为进场条件
+    OBSERVATION = "在场"
 
 
 class StatusChecker:
@@ -83,34 +90,7 @@ class StatusChecker:
                 )
                 return AngelHeartStatus.NOT_PRESENT
 
-            # 检查混脸熟触发条件（只有在不在场时才能触发）
-            if current_status == AngelHeartStatus.NOT_PRESENT:
-                # 7.0 检查是否在冷却期
-                if self.angel_context.is_familiarity_in_cooldown(chat_id):
-                    cooldown_remaining = int(
-                        self.angel_context.familiarity_cooldown_until[chat_id]
-                        - time.time()
-                    )
-                    logger.info(
-                        f"AngelHeart[{chat_id}]: 混脸熟在冷却期，剩余 {cooldown_remaining} 秒，跳过触发检查"
-                    )
-                    return AngelHeartStatus.NOT_PRESENT
-
-                # 7.1 检查复读行为
-                if self.config_manager.leave_echo_reply and self._detect_echo_chamber(chat_id):
-                    logger.debug(
-                        f"AngelHeart[{chat_id}]: 检测到复读行为，进入混脸熟状态"
-                    )
-                    return AngelHeartStatus.GETTING_FAMILIAR
-
-                # 7.2 检查密集发言
-                if self.config_manager.leave_dense_reply and self._detect_dense_conversation(chat_id):
-                    logger.debug(
-                        f"AngelHeart[{chat_id}]: 检测到密集发言，进入混脸熟状态"
-                    )
-                    return AngelHeartStatus.GETTING_FAMILIAR
-
-            # 默认不在场
+            # 混脸熟不再作为进场条件：离场时只有主动呼唤才可进场
             return AngelHeartStatus.NOT_PRESENT
 
         except Exception as e:
@@ -222,6 +202,46 @@ class StatusChecker:
             return self._detect_wake_word(chat_id, message_content)
         except Exception as e:
             logger.debug(f"AngelHeart[{chat_id}]: 检查被呼唤状态失败: {e}")
+            return False
+
+    def is_event_wake(self, event) -> bool:
+        """判断当前事件本身是否为唤醒。
+
+        双防抖调度必须基于当前事件，不能回扫历史@消息。
+        """
+        try:
+            chat_id = getattr(event, "unified_msg_origin", "") or ""
+            if chat_id and self._is_silenced(chat_id):
+                return False
+
+            # @自己：只看当前事件组件
+            try:
+                self_id = str(event.get_self_id())
+                for component in event.get_messages():
+                    qq = getattr(component, "qq", None)
+                    if qq is None:
+                        continue
+                    # AstrBot At 组件带 qq；类名在不同导入路径下可能不同，故宽松匹配
+                    cls_name = component.__class__.__name__
+                    if str(qq) == self_id and ("At" in cls_name or "at" in cls_name.lower()):
+                        return True
+            except Exception:
+                pass
+
+            # 唤醒词 / 昵称：只看当前事件正文
+            content = ""
+            try:
+                content = event.get_message_outline() or ""
+            except Exception:
+                content = getattr(event, "message_str", "") or ""
+            if not content:
+                try:
+                    content = getattr(event, "message_str", "") or ""
+                except Exception:
+                    content = ""
+            return self._detect_wake_word(chat_id, content)
+        except Exception as e:
+            logger.debug(f"AngelHeart: 当前事件唤醒判定失败: {e}")
             return False
 
     def _is_silenced(self, chat_id: str) -> bool:
@@ -497,11 +517,21 @@ class StatusTransitionManager:
             status = self.angel_context.get_chat_status(chat_id)
             duration = self.get_status_duration(chat_id)
 
+            has_assistant = False
+            has_secretary = False
+            try:
+                dm = self.angel_context.debounce_manager
+                has_assistant = dm.has_assistant_debounce(chat_id)
+                has_secretary = dm.has_secretary_debounce(chat_id)
+            except Exception:
+                pass
+
             return {
                 "current_status": status.value if status else "Unknown",
                 "duration_seconds": round(duration, 2),
                 "duration_minutes": round(duration / 60, 2),
-                "has_timer": chat_id in self.angel_context.detention_timeout_timers,
+                "has_assistant_debounce": has_assistant,
+                "has_secretary_debounce": has_secretary,
             }
         except Exception as e:
             logger.warning(f"AngelHeart[{chat_id}]: 获取状态摘要失败: {e}")

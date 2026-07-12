@@ -31,6 +31,24 @@
         "hint": "成功回复后，该对话需要等待多久才能再次分析。",
         "default": 7.0
       },
+      "assistant_debounce_time": {
+        "type": "float",
+        "description": "助理防抖时间（秒）",
+        "hint": "群友唤醒后，助理防抖窗口时长。防抖是目的，扣押是实现。",
+        "default": 1.0
+      },
+      "secretary_debounce_time": {
+        "type": "float",
+        "description": "秘书防抖时间（秒）",
+        "hint": "在场且未唤醒时，秘书防抖窗口时长。默认与回复后冷却一致。",
+        "default": 7.0
+      },
+      "accelerate_debounce_time": {
+        "type": "float",
+        "description": "加速防抖时间（秒）",
+        "hint": "已有防抖期间再次命中唤醒时的加速等待时长。",
+        "default": 1.0
+      },
       "llm_timeout": {
         "type": "float",
         "description": "LLM 处理超时时间（秒）",
@@ -45,8 +63,8 @@
       },
       "observation_timeout": {
         "type": "int",
-        "description": "观测中超时时间（秒）",
-        "hint": "多长时间无活动自动降级。",
+        "description": "在场超时时间（秒）",
+        "hint": "在场多长时间无活动后自动离场。",
         "default": 60
       }
     }
