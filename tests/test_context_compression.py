@@ -538,7 +538,7 @@ class TestCacheHitEffectiveness:
         assert len(historical) + len(recent) > 0
 
     def test_mark_processed_after_compression(self, temp_dir):
-        """压缩后 mark_as_processed 仍能正常工作"""
+        """is_processed 已退役：mark_as_processed 为空操作且不抛错。"""
         from core.conversation_ledger import ConversationLedger
         config = MockConfigManager(
             max_conversation_tokens=800,
@@ -555,15 +555,13 @@ class TestCacheHitEffectiveness:
                 "user", f"消息{i}", base_time + i
             ))
 
-        # 标记到某个时间点
         boundary = base_time + 25
         ledger.mark_as_processed(chat_id, boundary)
 
         messages = ledger.get_all_messages(chat_id)
-        for msg in messages:
-            if msg["timestamp"] <= boundary:
-                assert msg["is_processed"], \
-                    f"时间戳 {msg['timestamp']} 应被标记为已处理"
+        assert messages
+        # 不再维护 is_processed
+        assert all("is_processed" not in msg for msg in messages)
 
     def test_repeated_compression_stability(self, temp_dir):
         """多次压缩后系统保持稳定"""

@@ -462,6 +462,11 @@ class FrontDesk:
                 logger.debug(
                     f"AngelHeart[{chat_id}]: 私聊消息已缓存，跳过秘书与双防抖，等待主框架队列/直接响应。"
                 )
+                # 私聊达到压缩条件时，主动尝试 LLM 摘要（失败则安全回退）
+                try:
+                    await self._maybe_private_llm_compress(chat_id)
+                except Exception as e:
+                    logger.warning(f"AngelHeart[{chat_id}]: 私聊摘要检查失败: {e}")
                 return
 
             # 5. 群聊：双防抖（目的）+ 扣押事件（实现）
@@ -486,6 +491,19 @@ class FrontDesk:
 
         # 离场唤醒：先标记进场，再进入助理防抖
         if is_wake and not is_present:
+            # 入场整理：收口离场历史（规则整理，不主动 LLM 摘要）
+            try:
+                keep_ts = None
+                # 尽量从当前事件对应消息取时间戳
+                all_msgs = self.context.conversation_ledger.get_all_messages(chat_id)
+                if all_msgs:
+                    keep_ts = all_msgs[-1].get("timestamp")
+                self.context.conversation_ledger.organize_on_group_enter(
+                    chat_id, keep_from_timestamp=keep_ts
+                )
+            except Exception as e:
+                logger.warning(f"AngelHeart[{chat_id}]: 入场整理失败: {e}")
+
             await self.context.transition_to_status(
                 chat_id,
                 AngelHeartStatus.OBSERVATION,
@@ -544,6 +562,33 @@ class FrontDesk:
         # 不再用旧单槽扣押队列收集消息；并发由多个被放行事件自然形成。
         await self._call_secretary_and_execute(event, chat_id)
 
+    async def _maybe_private_llm_compress(self, chat_id: str):
+        """私聊主动 LLM 摘要压缩。"""
+        ledger = self.context.conversation_ledger
+        if not ledger._should_compress(chat_id):
+            return
+
+        analyzer_model = self.config_manager.analyzer_model
+        if not analyzer_model:
+            # 无分析模型时安全规则回退
+            ledger.organize_context(chat_id, mode="private_fallback")
+            return
+
+        provider = None
+        try:
+            provider = self.astr_context.get_provider_by_id(analyzer_model)
+        except Exception:
+            provider = None
+        if not provider:
+            ledger.organize_context(chat_id, mode="private_fallback")
+            return
+
+        async def _text_chat(prompt: str) -> str:
+            token = await provider.text_chat(prompt=prompt)
+            return (token.completion_text or "").strip()
+
+        await ledger.maybe_llm_compress_private(chat_id, _text_chat)
+
     async def _check_and_handle_timeout(self, chat_id: str, current_time: float):
         """检查并处理在场超时 → 离场"""
         try:
@@ -597,13 +642,6 @@ class FrontDesk:
             if decision and decision.should_reply:
                 await self._execute_secretary_decision(decision, event, chat_id)
                 return
-
-            try:
-                _, _, boundary_ts = self.context.conversation_ledger.get_context_snapshot(chat_id)
-                if boundary_ts > 0:
-                    self.context.conversation_ledger.mark_as_processed(chat_id, boundary_ts)
-            except Exception:
-                pass
 
             if (
                 event.is_at_or_wake_command
@@ -762,13 +800,11 @@ class FrontDesk:
             supplement_messages = await self._fetch_database_history(chat_id, 19, event)
 
             if supplement_messages:
-                # 确保历史消息标记为已处理
-                for msg in supplement_messages:
-                    msg["is_processed"] = True
-
                 # 合并历史消息和当前内存消息；按时间戳去重，避免补历史时清空已有上下文。
+                # is_processed 已退役：冷启动补种直接进入当前连续块。
                 messages_by_timestamp = {}
                 for msg in supplement_messages + current_messages:
+                    msg.pop("is_processed", None)
                     messages_by_timestamp[msg.get("timestamp", 0)] = msg
 
                 all_messages = sorted(
@@ -936,7 +972,6 @@ class FrontDesk:
                     "sender_id": "assistant" if role == "assistant" else "history_user",
                     "sender_name": "assistant" if role == "assistant" else "user",
                     "timestamp": base_timestamp + index,
-                    "is_processed": True,
                     "source": "astrbot_conversation",
                 }
             )
@@ -1062,7 +1097,6 @@ class FrontDesk:
                 "sender_name": sender_name,
                 "source_event_id": str(raw_msg.get("message_id", "") or ""),
                 "timestamp": timestamp,
-                "is_processed": True,
                 "source": "qq_api",
             }
 
@@ -1278,7 +1312,6 @@ class FrontDesk:
             "sender_id": "angelheart-secretary",
             "sender_name": "AngelHeart秘书",
             "timestamp": time.time(),
-            "is_processed": True,
             "_no_save": True,
             "is_temporary_context": True,
             "chat_id": chat_id,
@@ -1290,10 +1323,8 @@ class FrontDesk:
         recent_dialogue: List[Dict],
         should_mark_processed: bool,
     ):
-        """在本轮请求会消费这些消息时，标记为已处理。"""
-        if should_mark_processed and recent_dialogue:
-            boundary_ts = max(msg.get('timestamp', 0) for msg in recent_dialogue)
-            self.context.conversation_ledger.mark_as_processed(chat_id, boundary_ts)
+        """兼容旧接口：is_processed 已退役，空操作。"""
+        return
 
     def _provider_supports_images(self, chat_id: str) -> bool:
         """判断当前会话使用的主模型是否支持图片输入。"""
