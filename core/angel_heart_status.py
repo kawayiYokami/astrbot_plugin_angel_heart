@@ -1,7 +1,6 @@
 """AngelHeart 插件 - 状态系统核心模块"""
 
 import time
-import asyncio
 from enum import Enum
 from typing import Dict, Optional, Tuple
 
@@ -405,18 +404,6 @@ class StatusTransitionManager:
         # 状态持续时间跟踪：chat_id -> (status, start_time)
         self.status_start_times: Dict[str, Tuple[AngelHeartStatus, float]] = {}
 
-        # 自动降级计时器：chat_id -> asyncio.Task
-        # 注意：已改为同步检查，保留此字典仅为兼容性
-        self.degradation_timers: Dict[str, asyncio.Task] = {}
-
-    async def cancel_degradation_timer(self, chat_id: str):
-        """取消指定会话的降级计时器"""
-        if chat_id in self.degradation_timers:
-            timer = self.degradation_timers.pop(chat_id)
-            if not timer.done():
-                timer.cancel()
-                logger.debug(f"AngelHeart[{chat_id}]: 已取消降级计时器")
-
     async def transition_to_status(
         self, chat_id: str, new_status: AngelHeartStatus, reason: str = ""
     ):
@@ -435,30 +422,8 @@ class StatusTransitionManager:
             # 记录状态开始时间
             self.status_start_times[chat_id] = (new_status, time.time())
 
-            # 启动新计时器
-            await self._start_new_timer(chat_id, new_status)
-
         except Exception as e:
             logger.error(f"AngelHeart[{chat_id}]: 状态转换失败: {e}")
-
-    async def _start_new_timer(self, chat_id: str, new_status: AngelHeartStatus):
-        """启动新状态的计时器"""
-        try:
-            if new_status == AngelHeartStatus.OBSERVATION:
-                # 观测中状态的超时现在由 FrontDesk.handle_event 中的同步检查处理
-                # 这里不再启动异步计时器
-                logger.debug(
-                    f"AngelHeart[{chat_id}]: 观测中状态，超时将由前台同步检查处理"
-                )
-
-            elif new_status == AngelHeartStatus.GETTING_FAMILIAR:
-                # 混脸熟状态不启动单独计时器，通过消息刷新
-                logger.debug(f"AngelHeart[{chat_id}]: 混脸熟状态，不启动计时器")
-
-        except Exception as e:
-            logger.warning(f"AngelHeart[{chat_id}]: 启动新计时器失败: {e}")
-
-    # 移除原有的 _degradation_timer_handler 方法，因为超时检查已改为同步方式
 
     def get_status_duration(self, chat_id: str) -> float:
         """

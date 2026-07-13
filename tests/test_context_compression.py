@@ -384,7 +384,7 @@ class TestCompressionAlgorithm:
         ledger.set_messages(chat_id, messages)
 
         # 手动触发压缩
-        ledger._compress_context(chat_id)
+        ledger.organize_context(chat_id, mode="auto")
 
         result = ledger.get_all_messages(chat_id)
         assert len(result) >= ledger.MIN_RETAIN_COUNT, \
@@ -582,32 +582,6 @@ class TestCacheHitEffectiveness:
         assert recent == []
         assert boundary == 0.0
 
-    def test_mark_processed_after_compression(self, temp_dir):
-        """is_processed 已退役：mark_as_processed 为空操作且不抛错。"""
-        from core.conversation_ledger import ConversationLedger
-        config = MockConfigManager(
-            max_conversation_tokens=800,
-            context_content_retain_tokens=400,
-            context_tool_retain_tokens=200,
-        )
-        ledger = ConversationLedger(config, temp_dir)
-
-        chat_id = "mark_test"
-        base_time = time.time()
-
-        for i in range(30):
-            ledger.add_message(chat_id, make_message(
-                "user", f"消息{i}", base_time + i
-            ))
-
-        boundary = base_time + 25
-        ledger.mark_as_processed(chat_id, boundary)
-
-        messages = ledger.get_all_messages(chat_id)
-        assert messages
-        # 不再维护 is_processed
-        assert all("is_processed" not in msg for msg in messages)
-
     def test_repeated_compression_stability(self, temp_dir):
         """多次压缩后系统保持稳定"""
         from core.conversation_ledger import ConversationLedger
@@ -765,7 +739,7 @@ class TestStressScenarios:
         assert recent == []
 
         # 强制压缩空会话不崩溃
-        ledger._compress_context(chat_id)
+        ledger.organize_context(chat_id, mode="auto")
         assert ledger.get_all_messages(chat_id) == []
 
     def test_single_message_chat(self, temp_dir):

@@ -63,9 +63,7 @@ class DummyConfig(ConfigManager):
 
 @pytest.fixture
 def ledger(tmp_path):
-    lg = ConversationLedger(DummyConfig(), tmp_path, astr_context=None)
-    lg.on_before_organize = MagicMock()
-    return lg
+    return ConversationLedger(DummyConfig(), tmp_path, astr_context=None)
 
 
 def _msg(i, text, *, role="user", tool=False, chat_id="GroupMessage:1"):
@@ -102,7 +100,6 @@ class TestGroupRuleOrganize:
         assert formal[0].get("kind") == "context_summary"
         # 群聊工具应被丢掉
         assert all(m.get("role") != "tool" for m in formal[1:])
-        ledger.on_before_organize.assert_called()
 
     def test_group_enter_keeps_from_timestamp(self, ledger):
         chat_id = "GroupMessage:2"
