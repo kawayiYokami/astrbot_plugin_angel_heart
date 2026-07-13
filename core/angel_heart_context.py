@@ -45,11 +45,8 @@ class AngelHeartContext:
             astr_context=astr_context
         )
 
-        # 门牌管理（兼容保留；群聊主路径已不再依赖单槽门锁做消息收集）
-        self.processing_chats: Dict[str, tuple[float, Any]] = {}  # chat_id -> (开始分析时间, event对象)
-        self.processing_lock: asyncio.Lock = asyncio.Lock()  # 门牌操作锁
-        # 门锁冷却时间：归还门锁后需要等待的时间
-        self.lock_cooldown_until: Dict[str, float] = {}  # chat_id -> 冷却结束时间
+        # 调度：群聊双防抖；旧单槽门锁已退役
+        # （processing_chats / acquire_chat_processing 已删除）
 
         # 耐心计时器：主脑思考时，定期发送安抚消息
         self.patience_timers: Dict[str, asyncio.Task] = {}
@@ -78,15 +75,6 @@ class AngelHeartContext:
         # 主动应答管理器
         self.proactive_manager = ProactiveManager(self)
 
-    def _get_processing_stale_threshold(self) -> float:
-        """
-        获取会话处理僵尸占用阈值（秒）。
-
-        设计目标：使用独立的 LLM 超时配置，最大不超过 300 秒。
-        """
-        llm_timeout = max(0.0, float(self.config_manager.llm_timeout))
-        return min(llm_timeout, 300.0)
-
     def _get_plain_chat_id(self, chat_id: str) -> str:
         """从 unified_msg_origin 中提取纯净的聊天 ID。"""
         parts = chat_id.split(":")
@@ -100,138 +88,6 @@ class AngelHeartContext:
         plain_chat_id = self._get_plain_chat_id(chat_id)
         whitelist = {str(cid) for cid in self.config_manager.chat_ids}
         return plain_chat_id in whitelist
-
-    # ========== 门牌管理 ==========
-
-    async def is_chat_processing(self, chat_id: str) -> bool:
-        """
-        检查该会话是否正在被处理（v3: 包含冷却期检查与事件存活检测）。
-        只有当既不在处理中，也不在冷却期时，才返回 False（表示空闲）。
-
-        Args:
-            chat_id (str): 会话ID。
-
-        Returns:
-            bool: 如果正忙（处理中或冷却中）返回 True，完全空闲返回 False。
-        """
-        async with self.processing_lock:
-            current_time = time.time()
-
-            # 1. 检查冷却期 (冷却期也视为正忙)
-            cooldown_end = self.lock_cooldown_until.get(chat_id, 0)
-            if current_time < cooldown_end:
-                return True
-
-            # 2. 检查实际处理情况
-            if chat_id not in self.processing_chats:
-                return False
-
-            start_time, occupant_event = self.processing_chats[chat_id]
-
-            # 3. 实时探活：检查占用者事件是否已停止
-            if occupant_event and hasattr(occupant_event, 'is_stopped') and occupant_event.is_stopped():
-                # 事件停止，立即转入冷却期
-                cooldown_duration = self.config_manager.waiting_time
-                self.lock_cooldown_until[chat_id] = current_time + cooldown_duration
-                logger.info(f"AngelHeart[{chat_id}]: 检测到占用门牌的事件已停止，清理并进入 {cooldown_duration} 秒冷却期。")
-                self.processing_chats.pop(chat_id, None)
-                return True # 现在转为冷却了，依然算“正忙”
-
-            # 4. 硬超时：检查是否卡死（超过 min(waiting_time, 300) 秒）
-            stale_threshold = self._get_processing_stale_threshold()
-            if current_time - start_time > stale_threshold:
-                # 卡死清理也强制进入冷却，保证节奏
-                cooldown_duration = self.config_manager.waiting_time
-                self.lock_cooldown_until[chat_id] = current_time + cooldown_duration
-                logger.warning(
-                    f"AngelHeart[{chat_id}]: 检测到卡死的门牌 (超过{stale_threshold:.1f}秒)，自动清理并进入冷却。"
-                )
-                self.processing_chats.pop(chat_id, None)
-                return True
-
-            return True
-
-    async def acquire_chat_processing(self, chat_id: str, event: Any) -> tuple[bool, str, float]:
-        """
-        原子性地尝试获取会话处理权（挂上门牌）。
-        包含冷却机制和占用者存活检测。
-
-        Args:
-            chat_id (str): 会话ID。
-            event (Any): 当前尝试获取锁的事件对象。
-
-        Returns:
-            tuple[bool, str, float]: (是否成功, 失败原因, 剩余时间)
-                - 成功时返回 (True, "SUCCESS", 0.0)
-                - 冷却期失败时返回 (False, "COOLDOWN", 剩余秒数)
-                - 被占用失败时返回 (False, "LOCKED", 0.0)
-        """
-        async with self.processing_lock:
-            current_time = time.time()
-
-            # 1. 检查冷却期
-            cooldown_end = self.lock_cooldown_until.get(chat_id, 0)
-            if current_time < cooldown_end:
-                remaining = cooldown_end - current_time
-                logger.debug(f"AngelHeart[{chat_id}]: 门锁在冷却期，剩余 {remaining:.1f} 秒")
-                return False, "COOLDOWN", remaining
-
-            # 自动清理过期的冷却记录
-            if chat_id in self.lock_cooldown_until and current_time >= cooldown_end:
-                del self.lock_cooldown_until[chat_id]
-
-            # 2. 检查门牌占用情况
-            if chat_id in self.processing_chats:
-                start_time, occupant_event = self.processing_chats[chat_id]
-
-                # 2.1. 实时探活：检查占用者事件是否已停止
-                if occupant_event and hasattr(occupant_event, 'is_stopped') and occupant_event.is_stopped():
-                    # 前任死了，但我们要等它“断气”完（进入冷却期）
-                    cooldown_duration = self.config_manager.waiting_time
-                    self.lock_cooldown_until[chat_id] = current_time + cooldown_duration
-                    logger.info(f"AngelHeart[{chat_id}]: 检测到占用门牌的事件已停止，清理并进入 {cooldown_duration} 秒冷却。")
-                    self.processing_chats.pop(chat_id, None)
-                    return False, "COOLDOWN", cooldown_duration
-
-                # 2.2. 硬超时：检查是否卡死（超过 min(waiting_time, 300) 秒）
-                stale_threshold = self._get_processing_stale_threshold()
-                if current_time - start_time > stale_threshold:
-                    cooldown_duration = self.config_manager.waiting_time
-                    self.lock_cooldown_until[chat_id] = current_time + cooldown_duration
-                    logger.warning(
-                        f"AngelHeart[{chat_id}]: 检测到会话处理卡死(>{stale_threshold:.1f}s)，强制进入冷却清理。"
-                    )
-                    self.processing_chats.pop(chat_id, None)
-                    return False, "COOLDOWN", cooldown_duration
-
-                # 2.3. 门牌正被活跃事件占用
-                logger.debug(f"AngelHeart[{chat_id}]: 门牌已被活跃事件占用 (开始时间: {start_time})")
-                return False, "LOCKED", 0.0
-
-            # 3. 如果门牌不存在，则挂上新门牌
-            self.processing_chats[chat_id] = (current_time, event)
-            logger.debug(f"AngelHeart[{chat_id}]: 已挂上门牌 (开始处理时间: {current_time}, 事件: {id(event)})")
-            return True, "SUCCESS", 0.0
-
-    async def release_chat_processing(self, chat_id: str, set_cooldown: bool = True, duration: Optional[float] = None):
-        """
-        原子性地释放会话处理权（收起门牌）。
-        可选择是否设置冷却期，防止立即重新获取。
-
-        Args:
-            chat_id (str): 会话ID。
-            set_cooldown (bool): 是否设置冷却期，默认True
-            duration (Optional[float]): 自定义冷却时长（秒）。如果未提供，则使用默认的 waiting_time。
-        """
-        async with self.processing_lock:
-            if self.processing_chats.pop(chat_id, None) is not None:
-                if set_cooldown:
-                    # 如果未指定时长，则使用默认的回复后冷却时长
-                    cooldown_duration = duration if duration is not None else self.config_manager.waiting_time
-                    self.lock_cooldown_until[chat_id] = time.time() + cooldown_duration
-                    logger.debug(f"AngelHeart[{chat_id}]: 已收起门牌，进入 {cooldown_duration:.2f} 秒冷却期")
-                else:
-                    logger.debug(f"AngelHeart[{chat_id}]: 已收起门牌，不设置冷却期")
 
     # ========== Patience Timer ==========
 
