@@ -344,10 +344,13 @@ class DebounceManager:
         return future
 
     async def _kill_record(self, record: DebounceRecord, reason: str) -> None:
-        if record.timer and not record.timer.done():
-            record.timer.cancel()
+        timer = record.timer
+        if timer and not timer.done():
+            timer.cancel()
         if record.future and not record.future.done():
             record.future.set_result(KILL)
+        if timer:
+            await asyncio.gather(timer, return_exceptions=True)
         logger.debug(
             f"AngelHeart[{record.chat_id}]: 旧{record.kind}事件已 KILL "
             f"(sender={record.sender_id}, reason={reason}, version={record.version})"
