@@ -158,6 +158,8 @@ class LLMAnalyzer:
 
         for attempt in range(max_retries + 1):
             try:
+                # Provider 请求的超时/取消以上游及用户配置为单一真相；插件不再套本地 wait_for。
+                # 上游正常抛错后由本层重试，最终仍失败则交给 analyze_and_decide 降级为不回复。
                 token = await provider.text_chat(prompt=prompt)
                 response_text = token.completion_text.strip()
 

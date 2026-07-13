@@ -4,6 +4,7 @@ import io
 import sys
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from PIL import Image
@@ -424,6 +425,40 @@ class TestCacheCleanupIntegration:
 
         assert Path(referenced_path).exists()
         assert not Path(orphan_path).exists()
+
+
+class TestCaptionProviderErrors:
+    @pytest.mark.asyncio
+    async def test_provider_error_writes_broken_caption_and_returns(self, ledger, monkeypatch):
+        chat_id = "chat_1"
+        ledger.add_message(chat_id, {
+            "role": "user",
+            "content": [{"type": "image_url", "image_url": {"url": "https://example.test/a.jpg"}}],
+            "timestamp": 1.0,
+        })
+
+        async def load_image_bytes(_url):
+            return _make_test_image()
+
+        class FailingProvider:
+            async def text_chat(self, **_kwargs):
+                raise RuntimeError("upstream failed")
+
+        astr_context = SimpleNamespace(
+            get_provider_by_id=lambda _provider_id: FailingProvider()
+        )
+        monkeypatch.setattr(ledger, "_load_image_bytes", load_image_bytes)
+
+        processed = await ledger.generate_captions_for_chat(
+            chat_id,
+            "caption-provider",
+            astr_context,
+        )
+
+        assert processed == 1
+        message = ledger.get_all_messages(chat_id)[0]
+        assert message["image_caption"] == ledger.BROKEN_IMAGE_CAPTION
+        assert not any(item.get("type") == "image_url" for item in message["content"])
 
 
 class TestFileFilterLogic:

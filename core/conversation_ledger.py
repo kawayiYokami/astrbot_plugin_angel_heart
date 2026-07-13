@@ -1162,6 +1162,8 @@ class ConversationLedger:
                                 processed_count += 1
                             continue
 
+                        # 超时/取消遵循上游 Provider 配置，不在插件侧另设时钟。
+                        # 上游返回错误时由本消息的异常分支写入坏图降级转述，随后继续主流程。
                         llm_resp = await caption_provider.text_chat(
                             prompt=img_cap_prompt,
                             image_urls=[caption_input_url],
@@ -1206,7 +1208,13 @@ class ConversationLedger:
 
             except Exception as e:
                 logger.error(f"AngelHeart[{chat_id}]: 图片转述失败: {e}")
-                # 继续处理下一张图片
+                # 上游已按自身配置结束并返回错误：本地写入降级转述，避免同一坏图反复请求。
+                if self._apply_broken_image_caption(chat_id, message["timestamp"]):
+                    processed_count += 1
+                else:
+                    logger.warning(
+                        f"AngelHeart[{chat_id}]: 图片转述异常后无法写入降级转述"
+                    )
                 continue
 
         if processed_count > 0:
