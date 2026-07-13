@@ -537,6 +537,51 @@ class TestCacheHitEffectiveness:
         # 至少有一些消息在某个分区中
         assert len(historical) + len(recent) > 0
 
+    def test_context_snapshot_stops_at_message_id(self, temp_dir):
+        from core.conversation_ledger import ConversationLedger
+        from core.utils.context_utils import partition_dialogue_raw
+
+        ledger = ConversationLedger(MockConfigManager(max_conversation_tokens=10000), temp_dir)
+        chat_id = "message_boundary"
+        for index, message_id in enumerate(("m1", "m2", "m3"), start=1):
+            ledger.add_message(
+                chat_id,
+                {
+                    "role": "user",
+                    "content": f"消息{index}",
+                    "source_message_id": message_id,
+                    "timestamp": float(index),
+                },
+            )
+
+        _, recent, _ = ledger.get_context_snapshot(chat_id, "m2")
+        _, raw_recent, _ = partition_dialogue_raw(ledger, chat_id, "m2")
+
+        assert [message["source_message_id"] for message in recent] == ["m1", "m2"]
+        assert [message["source_message_id"] for message in raw_recent] == ["m1", "m2"]
+
+    def test_missing_message_boundary_refuses_to_expand(self, temp_dir):
+        from core.conversation_ledger import ConversationLedger
+
+        ledger = ConversationLedger(MockConfigManager(max_conversation_tokens=10000), temp_dir)
+        ledger.add_message(
+            "missing_boundary",
+            {
+                "role": "user",
+                "content": "不应越界",
+                "source_message_id": "m1",
+                "timestamp": 1.0,
+            },
+        )
+
+        historical, recent, boundary = ledger.get_context_snapshot(
+            "missing_boundary", "missing"
+        )
+
+        assert historical == []
+        assert recent == []
+        assert boundary == 0.0
+
     def test_mark_processed_after_compression(self, temp_dir):
         """is_processed 已退役：mark_as_processed 为空操作且不抛错。"""
         from core.conversation_ledger import ConversationLedger

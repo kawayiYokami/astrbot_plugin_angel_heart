@@ -65,6 +65,7 @@ class DummyEvent:
     def __init__(self, name: str, message_str: str = "hello", chat_id: str = "group:1"):
         self.name = name
         self.message_str = message_str
+        self.message_obj = types.SimpleNamespace(message_id=name)
         self.unified_msg_origin = chat_id
         self.extras = {}
         self._stopped = False
@@ -150,7 +151,7 @@ class TestDebounceManagerBoundaries:
             chat_id="g1",
             event=e,
             sender_id="a",
-            event_id="1",
+            message_id="1",
             is_wake=False,
             is_present=False,
         )
@@ -165,7 +166,7 @@ class TestDebounceManagerBoundaries:
             chat_id="g1",
             event=e,
             sender_id="a",
-            event_id="2",
+            message_id="2",
             is_wake=True,
             is_present=False,
         )
@@ -182,7 +183,7 @@ class TestDebounceManagerBoundaries:
             chat_id="g1",
             event=e1,
             sender_id="a",
-            event_id="1",
+            message_id="1",
             is_wake=True,
             is_present=True,
         )
@@ -191,7 +192,7 @@ class TestDebounceManagerBoundaries:
             chat_id="g1",
             event=e2,
             sender_id="b",
-            event_id="2",
+            message_id="2",
             is_wake=False,
             is_present=True,
         )
@@ -207,7 +208,7 @@ class TestDebounceManagerBoundaries:
             chat_id="g1",
             event=e,
             sender_id="a",
-            event_id="1",
+            message_id="1",
             is_wake=False,
             is_present=True,
         )
@@ -224,7 +225,7 @@ class TestDebounceManagerBoundaries:
             chat_id="g1",
             event=e1,
             sender_id="a",
-            event_id="1",
+            message_id="1",
             is_wake=False,
             is_present=True,
         )
@@ -233,7 +234,7 @@ class TestDebounceManagerBoundaries:
             chat_id="g1",
             event=e2,
             sender_id="b",
-            event_id="2",
+            message_id="2",
             is_wake=True,
             is_present=True,
         )
@@ -249,7 +250,7 @@ class TestDebounceManagerBoundaries:
             chat_id="g1",
             event=e1,
             sender_id="a",
-            event_id="1",
+            message_id="1",
             is_wake=True,
             is_present=True,
         )
@@ -258,14 +259,14 @@ class TestDebounceManagerBoundaries:
             chat_id="g1",
             event=e2,
             sender_id="a",
-            event_id="2",
+            message_id="2",
             is_wake=False,
             is_present=True,
         )
         assert await f1 == KILL
         assert await f2 == PROCESS
-        assert e2.extras.get("angelheart_debounce_end_event_id") == "2"
-        assert e2.extras.get("angelheart_debounce_start_event_id") == "1"
+        assert e2.extras.get("angelheart_debounce_end_message_id") == "2"
+        assert e2.extras.get("angelheart_debounce_start_message_id") == "1"
 
     @pytest.mark.asyncio
     async def test_multi_sender_assistant_parallel(self, dm):
@@ -275,7 +276,7 @@ class TestDebounceManagerBoundaries:
             chat_id="g1",
             event=ea,
             sender_id="A",
-            event_id="a1",
+            message_id="a1",
             is_wake=True,
             is_present=False,
         )
@@ -283,7 +284,7 @@ class TestDebounceManagerBoundaries:
             chat_id="g1",
             event=eb,
             sender_id="B",
-            event_id="b1",
+            message_id="b1",
             is_wake=True,
             is_present=True,
         )
@@ -300,7 +301,7 @@ class TestDebounceManagerBoundaries:
             chat_id="g1",
             event=e1,
             sender_id="A",
-            event_id="1",
+            message_id="1",
             is_wake=True,
             is_present=True,
         )
@@ -311,7 +312,7 @@ class TestDebounceManagerBoundaries:
             chat_id="g1",
             event=e2,
             sender_id="B",
-            event_id="2",
+            message_id="2",
             is_wake=False,
             is_present=True,
         )
@@ -328,7 +329,7 @@ class TestDebounceManagerBoundaries:
             chat_id="g1",
             event=e1,
             sender_id="a",
-            event_id="1",
+            message_id="1",
             is_wake=True,
             is_present=True,
         )
@@ -338,7 +339,7 @@ class TestDebounceManagerBoundaries:
             chat_id="g1",
             event=e2,
             sender_id="a",
-            event_id="2",
+            message_id="2",
             is_wake=True,
             is_present=True,
         )
@@ -389,6 +390,7 @@ class TestSecretaryActivation:
         angel.is_present.return_value = True
         angel.debounce_manager.get_must_reply.return_value = True
         angel.debounce_manager.get_debounce_kind.return_value = "assistant"
+        angel.debounce_manager.get_end_message_id.return_value = "boundary-2"
         angel.conversation_ledger.get_context_snapshot.return_value = (
             [{"role": "user", "content": "hist"}],
             [{"role": "user", "content": "new"}],
@@ -412,6 +414,10 @@ class TestSecretaryActivation:
 
         event = DummyEvent("s", message_str="草王帮我看下")
         decision = await secretary.handle_message_by_state(event)
+        angel.conversation_ledger.get_context_snapshot.assert_called_once_with(
+            event.unified_msg_origin, "boundary-2"
+        )
+        assert event.get_extra("angelheart_decision_context")["boundary_message_id"] == "boundary-2"
         assert decision.should_reply is True
         assert decision.reply_strategy == "必须回应"
 
@@ -471,6 +477,73 @@ class TestSecretaryActivation:
         assert decision.reply_strategy == "无新消息"
 
 
+class TestMessageIdFlow:
+    @pytest.mark.asyncio
+    async def test_cache_uses_astrbot_message_id(self):
+        from astrbot_plugin_angel_heart.roles.front_desk import FrontDesk
+
+        angel = MagicMock()
+        angel.astr_context = MagicMock()
+        angel.conversation_ledger.add_message = MagicMock()
+        fd = FrontDesk(make_config(), angel)
+        event = DummyEvent("native-message-id")
+
+        await fd.cache_message("group:1", event)
+
+        cached = angel.conversation_ledger.add_message.call_args.args[1]
+        assert cached["source_message_id"] == "native-message-id"
+        assert not hasattr(event, "angelheart_event_id")
+
+    def test_missing_astrbot_message_id_gets_fallback_on_message_object(self):
+        from astrbot_plugin_angel_heart.roles.front_desk import FrontDesk
+
+        angel = MagicMock()
+        angel.astr_context = MagicMock()
+        fd = FrontDesk(make_config(), angel)
+        event = DummyEvent("")
+
+        message_id = fd._ensure_message_id(event)
+
+        assert message_id
+        assert event.message_obj.message_id == message_id
+        assert not hasattr(event, "angelheart_event_id")
+
+    @pytest.mark.asyncio
+    async def test_execute_decision_reuses_frozen_context(self):
+        from astrbot_plugin_angel_heart.roles.front_desk import FrontDesk
+
+        angel = MagicMock()
+        angel.astr_context = MagicMock()
+        fd = FrontDesk(make_config(), angel)
+        event = DummyEvent("m2", chat_id="aiocqhttp:GroupMessage:1")
+        decision = SecretaryDecision(
+            should_reply=True,
+            reply_strategy="回复",
+            topic="t",
+            entities=[],
+            facts=[],
+            keywords=[],
+        )
+        recent = [{"source_message_id": "m2", "content": "当前消息"}]
+        historical = [{"role": "system", "content": "摘要"}]
+        fd._get_decision_context_for_rewrite = MagicMock(
+            return_value=(recent, historical, 2.0)
+        )
+        fd._process_decision_result = AsyncMock()
+
+        await fd._execute_secretary_decision(decision, event, event.unified_msg_origin)
+
+        angel.conversation_ledger.get_context_snapshot.assert_not_called()
+        fd._process_decision_result.assert_awaited_once_with(
+            decision,
+            recent,
+            historical,
+            2.0,
+            event,
+            event.unified_msg_origin,
+        )
+
+
 class TestFrontDeskPrivateAndGroupRouting:
     @pytest.mark.asyncio
     async def test_private_skips_debounce(self):
@@ -488,7 +561,7 @@ class TestFrontDeskPrivateAndGroupRouting:
         fd.cache_message = AsyncMock()
         fd._schedule_group_debounce = AsyncMock()
         fd._is_private_chat = lambda chat_id: True
-        fd._ensure_internal_event_id = lambda event: "eid"
+        fd._ensure_message_id = lambda event: "eid"
 
         event = DummyEvent("p1", chat_id="FriendMessage:1")
         event.get_message_outline = lambda: "私聊内容"
@@ -517,7 +590,7 @@ class TestFrontDeskPrivateAndGroupRouting:
         fd = FrontDesk(config, angel)
         fd.cache_message = AsyncMock()
         fd._is_private_chat = lambda chat_id: False
-        fd._ensure_internal_event_id = lambda event: "eid"
+        fd._ensure_message_id = lambda event: "eid"
         fd.status_checker.is_event_wake = lambda event: False
         fd._activate_group_event = AsyncMock()
 
@@ -551,7 +624,7 @@ class TestFrontDeskPrivateAndGroupRouting:
         fd = FrontDesk(config, angel)
         fd.cache_message = AsyncMock()
         fd._is_private_chat = lambda chat_id: False
-        fd._ensure_internal_event_id = lambda event: "wake-1"
+        fd._ensure_message_id = lambda event: "wake-1"
         fd.status_checker.is_event_wake = lambda event: True
         fd._activate_group_event = AsyncMock()
         fd._ensure_minimum_context = AsyncMock()
@@ -650,7 +723,7 @@ class TestRuntimeCleanup:
             chat_id="g1",
             event=DummyEvent("cleanup"),
             sender_id="u1",
-            event_id="e1",
+            message_id="e1",
             is_wake=True,
             is_present=False,
         )

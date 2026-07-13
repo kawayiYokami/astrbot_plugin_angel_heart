@@ -420,13 +420,11 @@ class ConversationLedger:
         with self._lock:
             ledger["messages"] = messages.copy()  # 保存副本避免外部修改
 
-    def get_context_snapshot(self, chat_id: str) -> Tuple[List[Dict], List[Dict], float]:
-        """
-        获取用于分析的上下文快照。
-        现在调用外部工具函数来实现逻辑分离。
-        """
-        # 直接调用新的、独立的工具函数
-        return utils.partition_dialogue(self, chat_id)
+    def get_context_snapshot(
+        self, chat_id: str, boundary_message_id: str = ""
+    ) -> Tuple[List[Dict], List[Dict], float]:
+        """获取截至指定消息 ID 的分析上下文快照。"""
+        return utils.partition_dialogue(self, chat_id, boundary_message_id)
 
     def get_formal_context(self, chat_id: str) -> List[Dict]:
         """正式上下文：当前摘要 + 当前连续消息块。"""

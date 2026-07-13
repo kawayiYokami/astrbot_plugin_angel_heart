@@ -92,19 +92,26 @@ class FrontDesk:
         self._private_compression_tasks: Dict[str, asyncio.Task] = {}
 
     def _get_event_message_id(self, event: AstrMessageEvent) -> str:
-        """
-        获取内部事件ID（仅使用 AngelHeart 自生成ID）。
-        仅返回字符串，不抛异常。
-        """
-        return str(getattr(event, "angelheart_event_id", "") or "")
+        """读取 AstrBot 当前入站消息 ID。"""
+        try:
+            return str(getattr(event.message_obj, "message_id", "") or "")
+        except Exception:
+            return ""
+
+    def _ensure_message_id(self, event: AstrMessageEvent) -> str:
+        """确保 AstrBotMessage 带有消息 ID；仅在上游缺失时生成兜底 UUID。"""
+        message_id = self._get_event_message_id(event)
+        if message_id:
+            return message_id
+        try:
+            message_id = uuid.uuid4().hex
+            event.message_obj.message_id = message_id
+            return message_id
+        except Exception:
+            return ""
 
     def _normalize_sender_name(self, sender_id: Any, *name_candidates: Any) -> str:
-        """
-        规范化发送者显示名。
-
-        有真实 ID 但显示名为空白时，使用明确标签标记这种真实状态；
-        没有有效 ID 的消息不伪装成正常用户。
-        """
+        """规范化发送者显示名。"""
         for candidate in name_candidates:
             if candidate is None:
                 continue
@@ -116,30 +123,6 @@ class FrontDesk:
         if normalized_sender_id.lower() not in self.INVALID_SENDER_IDS:
             return self.BLANK_SENDER_NAME
         return ""
-
-    def _ensure_internal_event_id(self, event: AstrMessageEvent) -> str:
-        """
-        为当前事件确保一个可用的内部ID，并挂载到 event。
-        不抛异常，失败时返回空字符串。
-        """
-        try:
-            existing_id = str(getattr(event, "angelheart_event_id", "") or "")
-            if existing_id:
-                return existing_id
-
-            internal_id = f"ah-{uuid.uuid4().hex}"
-            setattr(event, "angelheart_event_id", internal_id)
-
-            # 尽量也挂到 extra（如果框架支持），便于跨阶段读取
-            if hasattr(event, "set_extra"):
-                try:
-                    event.set_extra("angelheart_event_id", internal_id)
-                except Exception:
-                    pass
-
-            return internal_id
-        except Exception:
-            return ""
 
     def _file_name_from_url(self, url: str) -> str:
         try:
@@ -341,7 +324,7 @@ class FrontDesk:
             content_list.append({"type": "text", "text": ""})
 
         # 6. 构建完整的消息字典
-        source_event_id = self._get_event_message_id(event)
+        source_message_id = self._get_event_message_id(event)
 
         # 检测是否为@自己的消息
         is_at_self = False
@@ -362,8 +345,8 @@ class FrontDesk:
                 event.get_sender_id(),
                 event.get_sender_name(),
             ),
-            # 事件消息ID：用于后续“补历史”阶段精确过滤当前这条消息
-            "source_event_id": source_event_id,
+            # 当前消息 ID：用于精确定位 ledger 边界并排除请求中的重复当前消息
+            "source_message_id": source_message_id,
             "is_at_self": is_at_self,
             "timestamp": (
                 event.get_timestamp()
@@ -384,7 +367,7 @@ class FrontDesk:
         message_content = event.get_message_outline()
 
         try:
-            self._ensure_internal_event_id(event)
+            self._ensure_message_id(event)
 
             # 优先进行超时检查
             await self._check_and_handle_timeout(chat_id, current_time)
@@ -485,7 +468,7 @@ class FrontDesk:
         """群聊双防抖调度：账本自管，等待挂在事件上。"""
         chat_id = event.unified_msg_origin
         sender_id = str(event.get_sender_id() or "")
-        event_id = self._ensure_internal_event_id(event)
+        message_id = self._ensure_message_id(event)
 
         # 在场超时检查（离场）
         await self._check_and_handle_timeout(chat_id, time.time())
@@ -521,7 +504,7 @@ class FrontDesk:
             chat_id=chat_id,
             event=event,
             sender_id=sender_id,
-            event_id=event_id,
+            message_id=message_id,
             is_wake=is_wake,
             is_present=is_present,
         )
@@ -566,14 +549,12 @@ class FrontDesk:
 
         # 登记工作账本：本事件对应一套活
         try:
-            work_id = self._ensure_internal_event_id(event)
+            work_id = self._ensure_message_id(event)
             trigger_message_id = ""
             trigger_summary = ""
             try:
                 if hasattr(event, "get_extra"):
-                    trigger_message_id = str(
-                        event.get_extra("angelheart_debounce_end_event_id", "") or ""
-                    )
+                    trigger_message_id = self.context.debounce_manager.get_end_message_id(event)
             except Exception:
                 trigger_message_id = ""
             if not trigger_message_id:
@@ -752,15 +733,15 @@ class FrontDesk:
             # 不回复时停止事件，避免继续进入主脑
             event.stop_event()
         except Exception as e:
-            event_id = self._get_event_message_id(event)
+            message_id = self._get_event_message_id(event)
             logger.error(
-                f"AngelHeart[{chat_id}]: 调用秘书异常 (event_id={event_id}): {e}",
+                f"AngelHeart[{chat_id}]: 调用秘书异常 (message_id={message_id}): {e}",
                 exc_info=True,
             )
             try:
                 self.context.work_ledger.complete_work(
                     chat_id,
-                    event_id,
+                    message_id,
                     status="failed",
                     result_summary="秘书处理异常",
                 )
@@ -780,12 +761,11 @@ class FrontDesk:
             chat_id: 会话ID
         """
         try:
-            # 获取上下文
-            historical_context, recent_dialogue, boundary_ts = (
-                self.context.conversation_ledger.get_context_snapshot(chat_id)
-            )
+            frozen_context = self._get_decision_context_for_rewrite(chat_id, event)
+            if not frozen_context:
+                raise RuntimeError("秘书决策上下文缺失")
+            recent_dialogue, historical_context, boundary_ts = frozen_context
 
-            # 处理决策结果
             await self._process_decision_result(
                 decision,
                 recent_dialogue,
@@ -1223,7 +1203,7 @@ class FrontDesk:
                 "content": content,
                 "sender_id": sender_id,
                 "sender_name": sender_name,
-                "source_event_id": str(raw_msg.get("message_id", "") or ""),
+                "source_message_id": str(raw_msg.get("message_id", "") or ""),
                 "timestamp": timestamp,
                 "source": "qq_api",
             }
@@ -1381,14 +1361,12 @@ class FrontDesk:
         parts = chat_id.split(":")
         return len(parts) >= 3 and parts[1] == "FriendMessage"
 
-    def _get_conversation_data_from_ledger(self, chat_id: str):
-        """
-        从 ConversationLedger 取历史重写数据。
-
-        不依赖秘书决策缓存：决策只注入 event，历史只认账本。
-        """
+    def _get_conversation_data_from_ledger(
+        self, chat_id: str, boundary_message_id: str = ""
+    ):
+        """从 ConversationLedger 取得截至边界消息的历史重写数据。"""
         historical_context, recent_dialogue, boundary_ts = partition_dialogue_raw(
-            self.context.conversation_ledger, chat_id
+            self.context.conversation_ledger, chat_id, boundary_message_id
         )
         return recent_dialogue, historical_context, boundary_ts
 
@@ -1420,8 +1398,10 @@ class FrontDesk:
                 return None
             return recent, historical, boundary_ts
 
-        # 私聊：无秘书切片，仍从账本读
-        return self._get_conversation_data_from_ledger(chat_id)
+        # 私聊：无秘书切片，按当前入站消息 ID 从账本截断。
+        return self._get_conversation_data_from_ledger(
+            chat_id, self._get_event_message_id(event)
+        )
 
     def _generate_final_prompt(
         self, recent_dialogue: List[Dict], decision: Any, alias: str
@@ -1529,7 +1509,7 @@ class FrontDesk:
         historical_context: List[Dict],
         recent_dialogue: List[Dict],
         chat_id: str,
-        current_event_id: str,
+        current_message_id: str,
         scene_hint: str | None = None,
     ) -> List[Dict]:
         """使用 MessageProcessor 构建上下文列表"""
@@ -1548,9 +1528,9 @@ class FrontDesk:
             processed_msg = processor.process_message(msg)
             new_contexts.append(processed_msg)
 
-        # 2) 最新消息（重建时按当前事件ID过滤，避免与 req.prompt 对应的新消息重复）
+        # 2) 最新消息（按当前消息 ID 过滤，避免与 req.prompt 对应的新消息重复）
         for msg in recent_dialogue:
-            if current_event_id and str(msg.get("source_event_id", "") or "") == current_event_id:
+            if current_message_id and str(msg.get("source_message_id", "") or "") == current_message_id:
                 continue
             processed_msg = processor.process_message(msg)
             new_contexts.append(processed_msg)
@@ -1558,22 +1538,22 @@ class FrontDesk:
         return new_contexts
 
     def _collect_non_current_image_urls(
-        self, recent_dialogue: List[Dict], current_event_id: str
+        self, recent_dialogue: List[Dict], current_message_id: str
     ) -> List[str]:
-        """收集阻塞聚合中非当前事件的图片。"""
-        return self._collect_image_urls_by_event(
+        """收集阻塞聚合中非当前消息的图片。"""
+        return self._collect_image_urls_by_message(
             recent_dialogue,
-            current_event_id,
+            current_message_id,
             include_current=False,
         )
 
     def _collect_current_image_urls(
-        self, recent_dialogue: List[Dict], current_event_id: str
+        self, recent_dialogue: List[Dict], current_message_id: str
     ) -> List[str]:
         """收集当前事件中已落入插件缓存的图片路径，用于替换 req.image_urls。"""
-        return self._collect_image_urls_by_event(
+        return self._collect_image_urls_by_message(
             recent_dialogue,
-            current_event_id,
+            current_message_id,
             include_current=True,
         )
 
@@ -1590,19 +1570,19 @@ class FrontDesk:
                 return url
         return ""
 
-    def _collect_image_urls_by_event(
+    def _collect_image_urls_by_message(
         self,
         recent_dialogue: List[Dict],
-        current_event_id: str,
+        current_message_id: str,
         include_current: bool,
     ) -> List[str]:
-        if not current_event_id:
+        if not current_message_id:
             return []
 
         image_urls = []
         seen = set()
         for msg in recent_dialogue:
-            is_current = str(msg.get("source_event_id", "") or "") == current_event_id
+            is_current = str(msg.get("source_message_id", "") or "") == current_message_id
             if include_current != is_current:
                 continue
             content = msg.get("content")
@@ -1619,7 +1599,7 @@ class FrontDesk:
         return image_urls
 
     def _append_extra_image_urls_to_request(self, req: Any, image_urls: List[str]):
-        """把非当前事件的 ledger 图片追加为当前请求的额外多模态块。"""
+        """把非当前消息的 ledger 图片追加为当前请求的额外多模态块。"""
         if not image_urls:
             return
 
@@ -1682,7 +1662,7 @@ class FrontDesk:
         logger.debug(f"AngelHeart[{chat_id}]: 开始重构LLM请求体...")
 
         alias = self.config_manager.alias
-        current_event_id = self._get_event_message_id(event)
+        current_message_id = self._get_event_message_id(event)
         should_mark_processed = False
         scene_hint = None
         scene_prompt = None
@@ -1728,15 +1708,15 @@ class FrontDesk:
         processor = MessageProcessor(alias)
         new_contexts = self._build_contexts_with_processor(
             processor, historical_context, [] if self._is_group_chat(chat_id) else recent_dialogue,
-            chat_id, current_event_id, scene_hint
+            chat_id, current_message_id, scene_hint
         )
         extra_image_urls = (
-            self._collect_non_current_image_urls(recent_dialogue, current_event_id)
+            self._collect_non_current_image_urls(recent_dialogue, current_message_id)
             if preserve_current_image_urls
             else []
         )
         current_image_urls = (
-            self._collect_current_image_urls(recent_dialogue, current_event_id)
+            self._collect_current_image_urls(recent_dialogue, current_message_id)
             if preserve_current_image_urls
             else []
         )
