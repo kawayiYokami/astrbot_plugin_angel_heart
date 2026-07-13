@@ -493,15 +493,17 @@ class FrontDesk:
         # 离场唤醒：先标记进场，再进入助理防抖
         if is_wake and not is_present:
             # 入场整理：收口离场历史（规则整理，不主动 LLM 摘要）
+            # 与补种二选一：做过入场整理后，激活路径禁止再补种
             try:
                 keep_ts = None
-                # 尽量从当前事件对应消息取时间戳
                 all_msgs = self.context.conversation_ledger.get_all_messages(chat_id)
                 if all_msgs:
                     keep_ts = all_msgs[-1].get("timestamp")
                 self.context.conversation_ledger.organize_on_group_enter(
                     chat_id, keep_from_timestamp=keep_ts
                 )
+                if hasattr(event, "set_extra"):
+                    event.set_extra("angelheart_group_enter_organized", True)
             except Exception as e:
                 logger.warning(f"AngelHeart[{chat_id}]: 入场整理失败: {e}")
 
@@ -839,11 +841,35 @@ class FrontDesk:
 
     async def _ensure_minimum_context(self, chat_id: str, event: AstrMessageEvent):
         """
-        确保会话至少有7条消息
-        历史消息标记为已处理，新消息保持未处理状态
+        冷启动补种：连续块过短时从历史库补充。
+
+        与入场整理二选一：
+        - 已有 current_summary / 本事件做过入场整理 → 禁止补种（补种=整理的一种，互斥）
+        - 仅真空/冷启动场景才补种
         """
         try:
             ledger = self.context.conversation_ledger
+
+            # 入场整理与补种互斥
+            try:
+                if hasattr(event, "get_extra") and event.get_extra(
+                    "angelheart_group_enter_organized", False
+                ):
+                    logger.debug(
+                        f"AngelHeart[{chat_id}]: 本事件已入场整理，跳过补种"
+                    )
+                    return
+            except Exception:
+                pass
+            try:
+                if str(ledger.get_current_summary(chat_id) or "").strip():
+                    logger.debug(
+                        f"AngelHeart[{chat_id}]: 已有当前摘要，跳过补种（与整理互斥）"
+                    )
+                    return
+            except Exception:
+                pass
+
             current_messages = ledger.get_all_messages(chat_id)
 
             # 统计总消息数（包括图片等无文本消息）
@@ -879,8 +905,6 @@ class FrontDesk:
 
                 # 使用公共方法更新消息列表
                 ledger.set_messages(chat_id, all_messages)
-
-
 
         except Exception as e:
             logger.error(f"AngelHeart[{chat_id}]: 补充历史消息失败: {e}")
