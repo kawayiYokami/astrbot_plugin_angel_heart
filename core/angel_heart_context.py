@@ -75,38 +75,6 @@ class AngelHeartContext:
         # 助理工作账本：正在/已经处理哪一套活
         self.work_ledger = WorkLedger()
 
-        # 整理开始：上下文炸了，立刻禁调度并清掉全部防抖
-        def _on_organize_start(chat_id: str):
-            try:
-                import asyncio
-
-                self.debounce_manager.set_schedule_blocked(chat_id, True)
-
-                async def _clear():
-                    await self.debounce_manager.clear_chat(
-                        chat_id, reason="context_organize_start"
-                    )
-
-                try:
-                    loop = asyncio.get_running_loop()
-                    loop.create_task(_clear())
-                except RuntimeError:
-                    try:
-                        asyncio.run(_clear())
-                    except Exception:
-                        pass
-            except Exception as e:
-                logger.warning(f"AngelHeart[{chat_id}]: 整理开始关闭防抖失败: {e}")
-
-        def _on_organize_end(chat_id: str):
-            try:
-                self.debounce_manager.set_schedule_blocked(chat_id, False)
-            except Exception as e:
-                logger.warning(f"AngelHeart[{chat_id}]: 整理结束恢复防抖调度失败: {e}")
-
-        self.conversation_ledger.on_before_organize = _on_organize_start
-        self.conversation_ledger.on_after_organize = _on_organize_end
-
         # 主动应答管理器
         self.proactive_manager = ProactiveManager(self)
 

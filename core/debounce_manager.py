@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import asyncio
 import time
-import threading
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional, Tuple
 
@@ -53,26 +52,10 @@ class DebounceManager:
         self._assistant: Dict[Tuple[str, str], DebounceRecord] = {}
         self._secretary: Dict[str, DebounceRecord] = {}
         self._version_seq = 0
-        # 整理中：上下文不可调度，禁止新建防抖
-        self._block_lock = threading.Lock()
-        self._schedule_blocked: Dict[str, bool] = {}
 
     def _next_version(self) -> int:
         self._version_seq += 1
         return self._version_seq
-
-    def set_schedule_blocked(self, chat_id: str, blocked: bool) -> None:
-        """整理开始/结束：同步标记是否禁止防抖调度。"""
-        chat_id = str(chat_id or "")
-        with self._block_lock:
-            if blocked:
-                self._schedule_blocked[chat_id] = True
-            else:
-                self._schedule_blocked.pop(chat_id, None)
-
-    def is_schedule_blocked(self, chat_id: str) -> bool:
-        with self._block_lock:
-            return bool(self._schedule_blocked.get(str(chat_id or ""), False))
 
     def _assistant_delay(self) -> float:
         return max(0.05, float(getattr(self.config_manager, "assistant_debounce_time", 1.0)))
@@ -115,13 +98,6 @@ class DebounceManager:
             Future: 调用方应 await；结果为 PROCESS / KILL。
             None: 本事件只入库，不进入后续请求。
         """
-        if self.is_schedule_blocked(chat_id):
-            logger.info(
-                f"AngelHeart[{chat_id}]: 上下文整理中，禁止防抖调度 "
-                f"(sender={sender_id}, wake={is_wake})"
-            )
-            return None
-
         sender_id = str(sender_id or "")
         event_id = str(event_id or "")
 

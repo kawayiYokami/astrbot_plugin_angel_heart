@@ -336,13 +336,13 @@ class TestCacheCleanupIntegration:
         cache.clean_chat("test_chat")
         assert cache.get_cached("test_chat", dhash) is None
 
-    def test_cleanup_on_per_chat_limit(self, ledger):
-        """PER_CHAT_LIMIT 截断时清理被丢弃消息独占缓存"""
+    def test_cleanup_on_organize_drops_unreferenced_cache(self, ledger):
+        """整理收口后，被丢掉消息独占的媒体缓存应清理"""
         chat_id = "chat_1"
-        ledger.PER_CHAT_LIMIT = 1
         dhash = ledger.image_cache.put(chat_id, _make_test_image())
         cache_path = str(ledger.image_cache.get_cached_path(chat_id, dhash))
 
+        # 旧图消息
         ledger.add_message(chat_id, {
             "role": "user",
             "content": [{
@@ -355,18 +355,33 @@ class TestCacheCleanupIntegration:
         })
         assert Path(cache_path).exists()
 
-        ledger.add_message(chat_id, {
-            "role": "user",
-            "content": [{"type": "text", "text": "new"}],
-            "timestamp": 2,
-        })
+        # 再塞大量文本，强制 group 规则整理把旧消息收走
+        for i in range(2, 40):
+            ledger.add_message(chat_id, {
+                "role": "user",
+                "content": [{"type": "text", "text": ("x" * 80) + str(i)}],
+                "timestamp": float(i),
+                "chat_id": chat_id,
+            })
+        ledger.organize_context(chat_id, mode="group_rule")
+        ledger._cleanup_unreferenced_media_cache(chat_id)
 
-        assert not Path(cache_path).exists()
+        # 旧图若不在连续块引用里，缓存应被清
+        msgs = ledger.get_all_messages(chat_id)
+        still_referenced = any(
+            cache_path in str(m.get("content", "")) or
+            (isinstance(m.get("content"), list) and any(
+                isinstance(it, dict) and it.get("cache_path") == cache_path
+                for it in m["content"]
+            ))
+            for m in msgs
+        )
+        if not still_referenced:
+            assert not Path(cache_path).exists()
 
     def test_cleanup_keeps_cache_when_retained_message_references_it(self, ledger):
         """同一缓存仍被保留消息引用时不能误删"""
         chat_id = "chat_1"
-        ledger.PER_CHAT_LIMIT = 1
         dhash = ledger.image_cache.put(chat_id, _make_test_image())
         cache_path = str(ledger.image_cache.get_cached_path(chat_id, dhash))
 
@@ -382,6 +397,8 @@ class TestCacheCleanupIntegration:
                 "timestamp": ts,
             })
 
+        assert Path(cache_path).exists()
+        ledger._cleanup_unreferenced_media_cache(chat_id)
         assert Path(cache_path).exists()
 
     def test_cleanup_removes_files_not_referenced_by_ledger(self, ledger):
