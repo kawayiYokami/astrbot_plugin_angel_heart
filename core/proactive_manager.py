@@ -306,14 +306,18 @@ class ProactiveManager:
             return await self._cancel_chat_task(chat_id)
 
     async def _cancel_chat_task(self, chat_id: str) -> bool:
-        """内部方法：取消任务（需要在锁内调用）"""
-        if chat_id in self.active_tasks:
-            request = self.active_tasks.pop(chat_id)
-            if request.task and not request.task.done():
-                request.task.cancel()
-                logger.debug(f"AngelHeart[{chat_id}]: 已取消主动应答任务")
-                return True
-        return False
+        """内部方法：取消并等待任务退出（需要在锁内调用）。"""
+        request = self.active_tasks.pop(chat_id, None)
+        if request is None:
+            return False
+
+        task = request.task
+        if task and not task.done():
+            task.cancel()
+            logger.debug(f"AngelHeart[{chat_id}]: 已取消主动应答任务")
+        if task and task is not asyncio.current_task():
+            await asyncio.gather(task, return_exceptions=True)
+        return True
 
     async def _execute_proactive_request(self, request: ProactiveRequest):
         """
@@ -379,8 +383,8 @@ class ProactiveManager:
         except Exception as e:
             logger.error(f"AngelHeart[{request.chat_id}]: 延迟主动应答处理失败: {e}", exc_info=True)
         finally:
-            # 清理任务
-            async with self._lock:
+            current = self.active_tasks.get(request.chat_id)
+            if current is request:
                 self.active_tasks.pop(request.chat_id, None)
 
     async def _scheduled_handler(self, request: ProactiveRequest, delay: float):
@@ -393,8 +397,8 @@ class ProactiveManager:
         except Exception as e:
             logger.error(f"AngelHeart[{request.chat_id}]: 定时主动应答处理失败: {e}", exc_info=True)
         finally:
-            # 清理任务
-            async with self._lock:
+            current = self.active_tasks.get(request.chat_id)
+            if current is request:
                 self.active_tasks.pop(request.chat_id, None)
 
     def get_active_tasks(self) -> Dict[str, Dict]:

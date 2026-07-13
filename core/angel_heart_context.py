@@ -50,6 +50,7 @@ class AngelHeartContext:
 
         # 耐心计时器：主脑思考时，定期发送安抚消息
         self.patience_timers: Dict[str, asyncio.Task] = {}
+        self._patience_lock = asyncio.Lock()
 
         # 时序控制
         self.last_analysis_time: Dict[str, float] = {}  # chat_id -> 上次分析时间
@@ -125,32 +126,42 @@ class AngelHeartContext:
                 f"AngelHeart[{chat_id}]: 安抚出错: {e}", exc_info=True
             )
     async def start_patience_timer(self, chat_id: str):
-        """启动或重置指定来访者的安抚机制"""
-        # 先停止之前的安抚
-        await self.cancel_patience_timer(chat_id)
+        """串行重置并启动指定来访者的安抚机制。"""
+        async with self._patience_lock:
+            await self._cancel_patience_timer_unlocked(chat_id)
 
-        if not self._is_patience_timer_allowed(chat_id):
-            logger.debug(f"AngelHeart[{chat_id}]: 当前会话不满足安抚白名单条件，跳过安抚启动")
-            return
+            if not self._is_patience_timer_allowed(chat_id):
+                logger.debug(f"AngelHeart[{chat_id}]: 当前会话不满足安抚白名单条件，跳过安抚启动")
+                return
 
-        # 开始新的安抚
-        self.patience_timers[chat_id] = asyncio.create_task(
-            self._patience_timer_handler(chat_id)
-        )
-        comfort_words_raw = self.config_manager.comfort_words
-        if not comfort_words_raw:
-            logger.warning(f"AngelHeart[{chat_id}]: comfort_words 配置为空，跳过安抚启动")
-            return
-        comfort_words = comfort_words_raw.split('|')
-        logger.info(f"AngelHeart[{chat_id}]: 已启动安抚机制（{len(comfort_words)}次安抚，每隔{self.config_manager.patience_interval}秒一次）")
+            comfort_words_raw = self.config_manager.comfort_words
+            if not comfort_words_raw:
+                logger.warning(f"AngelHeart[{chat_id}]: comfort_words 配置为空，跳过安抚启动")
+                return
+
+            self.patience_timers[chat_id] = asyncio.create_task(
+                self._patience_timer_handler(chat_id)
+            )
+            comfort_words = comfort_words_raw.split('|')
+            logger.info(f"AngelHeart[{chat_id}]: 已启动安抚机制（{len(comfort_words)}次安抚，每隔{self.config_manager.patience_interval}秒一次）")
 
     async def cancel_patience_timer(self, chat_id: str):
-        """停止指定来访者的安抚机制"""
-        if chat_id in self.patience_timers:
-            timer_task = self.patience_timers.pop(chat_id)
-            if not timer_task.done():
-                timer_task.cancel()
-                logger.debug(f"AngelHeart[{chat_id}]: 已停止安抚（老板已经有答案了）")
+        """停止并等待指定来访者的安抚机制退出。"""
+        async with self._patience_lock:
+            await self._cancel_patience_timer_unlocked(chat_id)
+
+    async def _cancel_patience_timer_unlocked(self, chat_id: str) -> None:
+        timer_task = self.patience_timers.get(chat_id)
+        if timer_task is None:
+            return
+        if not timer_task.done():
+            timer_task.cancel()
+            logger.debug(f"AngelHeart[{chat_id}]: 已停止安抚（老板已经有答案了）")
+        try:
+            await asyncio.gather(timer_task, return_exceptions=True)
+        finally:
+            if timer_task.done() and self.patience_timers.get(chat_id) is timer_task:
+                self.patience_timers.pop(chat_id, None)
 
     async def cleanup(self) -> None:
         """清理全局运行态：后台任务、调度账本、状态内存与持久连接。"""

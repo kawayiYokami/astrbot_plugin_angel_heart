@@ -35,6 +35,7 @@ from .roles.secretary import Secretary
 from .core.utils import strip_markdown
 from .core.utils.message_utils import serialize_message_chain
 from .core.angel_heart_context import AngelHeartContext
+from .core.runtime_task_tracker import RuntimeTaskTracker, track_runtime_handler
 
 # 在框架加载 schema 之前执行配置迁移
 run_migration()
@@ -49,6 +50,7 @@ class AngelHeartPlugin(Star):
         self.config_manager = ConfigManager(config or {})
         self.context = context
         self._whitelist_cache = self._prepare_whitelist()
+        self._runtime_tasks = RuntimeTaskTracker()
 
         # -- 获取插件数据目录 --
         plugin_data_dir = StarTools.get_data_dir("astrbot_plugin_angel_heart")
@@ -73,6 +75,7 @@ class AngelHeartPlugin(Star):
         filter.EventMessageType.GROUP_MESSAGE | filter.EventMessageType.PRIVATE_MESSAGE,
         priority=-10,
     )
+    @track_runtime_handler
     async def smart_reply_handler(
         self, event: AstrMessageEvent, *args: Any, **kwargs: Any
     ) -> None:
@@ -87,6 +90,7 @@ class AngelHeartPlugin(Star):
         await self.front_desk.handle_event(event)
 
     @filter.on_llm_request(priority=0)
+    @track_runtime_handler
     async def inject_oneshot_decision_on_llm_request(
         self, event: AstrMessageEvent, req: ProviderRequest
     ):
@@ -118,6 +122,7 @@ class AngelHeartPlugin(Star):
                 )
 
     @filter.on_llm_request(priority=50)
+    @track_runtime_handler
     async def delegate_prompt_rewriting(
         self, event: AstrMessageEvent, req: ProviderRequest
     ):
@@ -147,6 +152,7 @@ class AngelHeartPlugin(Star):
 
     # 捕获工具调用结果
     @register_on_llm_response()
+    @track_runtime_handler
     async def capture_tool_results(
         self, event: AstrMessageEvent, response: LLMResponse
     ):
@@ -366,6 +372,7 @@ class AngelHeartPlugin(Star):
             return False  # 异常时保守处理，不处理消息
 
     @filter.on_decorating_result(priority=200)
+    @track_runtime_handler
     async def strip_markdown_on_decorating_result(
         self, event: AstrMessageEvent, *args, **kwargs
     ):
@@ -479,6 +486,7 @@ class AngelHeartPlugin(Star):
             # 不重新抛出异常，避免影响消息发送流程
 
     @filter.after_message_sent(priority=100)
+    @track_runtime_handler
     async def handle_message_sent(self, event: AstrMessageEvent):
         """
         消息发送后处理：取消耐心计时器、状态转换、释放处理锁
@@ -609,5 +617,6 @@ class AngelHeartPlugin(Star):
 
     async def terminate(self):
         """插件被卸载/停用时调用"""
+        await self._runtime_tasks.stop()
         await self._cleanup_all_waiting_resources()
         logger.info("💖 AngelHeart 插件已终止")

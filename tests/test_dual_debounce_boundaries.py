@@ -745,3 +745,169 @@ class TestRuntimeCleanup:
         assert context.conversation_ledger._compression_locks == {}
         assert context.conversation_ledger.db_conn is None
         assert context.conversation_ledger.db_cursor is None
+
+    @pytest.mark.asyncio
+    async def test_cancel_patience_timer_waits_until_task_exits(self):
+        from astrbot_plugin_angel_heart.core.angel_heart_context import AngelHeartContext
+
+        released = asyncio.Event()
+
+        async def blocked():
+            try:
+                await asyncio.Event().wait()
+            finally:
+                await asyncio.sleep(0)
+                released.set()
+
+        task = asyncio.create_task(blocked())
+        await asyncio.sleep(0)
+        context = object.__new__(AngelHeartContext)
+        context.patience_timers = {"g1": task}
+        context._patience_lock = asyncio.Lock()
+
+        await context.cancel_patience_timer("g1")
+
+        assert task.done()
+        assert released.is_set()
+        assert context.patience_timers == {}
+
+    @pytest.mark.asyncio
+    async def test_concurrent_patience_restarts_are_serialized(self):
+        from astrbot_plugin_angel_heart.core.angel_heart_context import AngelHeartContext
+
+        cancellation_started = asyncio.Event()
+        allow_old_exit = asyncio.Event()
+
+        async def old_timer():
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancellation_started.set()
+                await allow_old_exit.wait()
+
+        async def new_timer(_chat_id):
+            await asyncio.Event().wait()
+
+        context = object.__new__(AngelHeartContext)
+        context.patience_timers = {"g1": asyncio.create_task(old_timer())}
+        context._patience_lock = asyncio.Lock()
+        context.config_manager = types.SimpleNamespace(
+            comfort_words="稍等",
+            patience_interval=60,
+        )
+        context._is_patience_timer_allowed = lambda _chat_id: True
+        context._patience_timer_handler = new_timer
+        await asyncio.sleep(0)
+
+        first = asyncio.create_task(context.start_patience_timer("g1"))
+        await cancellation_started.wait()
+        second = asyncio.create_task(context.start_patience_timer("g1"))
+        await asyncio.sleep(0)
+
+        assert not first.done()
+        assert not second.done()
+
+        allow_old_exit.set()
+        await asyncio.gather(first, second)
+
+        final_timer = context.patience_timers["g1"]
+        assert not final_timer.done()
+        await context.cancel_patience_timer("g1")
+        assert final_timer.done()
+        assert context.patience_timers == {}
+
+    @pytest.mark.asyncio
+    async def test_debounce_replacement_waits_until_old_timer_exits(self, dm):
+        released = asyncio.Event()
+
+        async def blocked():
+            try:
+                await asyncio.Event().wait()
+            finally:
+                await asyncio.sleep(0)
+                released.set()
+
+        event = DummyEvent("old")
+        future = asyncio.get_running_loop().create_future()
+        from astrbot_plugin_angel_heart.core.debounce_manager import DebounceRecord
+
+        record = DebounceRecord(
+            kind="assistant",
+            chat_id="g1",
+            sender_id="u1",
+            event=event,
+            future=future,
+            version=1,
+            must_reply=True,
+            start_message_id="m1",
+            end_message_id="m1",
+            delay=60,
+            timer=asyncio.create_task(blocked()),
+        )
+        await asyncio.sleep(0)
+
+        await dm._kill_record(record, "test")
+
+        assert record.timer.done()
+        assert released.is_set()
+        assert future.done() and future.result() == KILL
+
+    @pytest.mark.asyncio
+    async def test_proactive_replacement_keeps_new_task_registered(self):
+        from astrbot_plugin_angel_heart.core.proactive_manager import ProactiveManager
+
+        manager = ProactiveManager(MagicMock())
+        assert await manager.trigger_delayed("g1", "old", "old", 60)
+        old_task = manager.active_tasks["g1"].task
+        await asyncio.sleep(0)
+
+        assert await manager.trigger_delayed("g1", "new", "new", 60)
+        new_request = manager.active_tasks["g1"]
+        new_task = new_request.task
+        await asyncio.sleep(0)
+
+        assert old_task.done()
+        assert manager.active_tasks["g1"] is new_request
+        assert not new_task.done()
+
+        await manager.cleanup()
+
+        assert new_task.done()
+        assert manager.active_tasks == {}
+
+    @pytest.mark.asyncio
+    async def test_runtime_tracker_cancels_inflight_and_rejects_new_handlers(self):
+        from astrbot_plugin_angel_heart.core.runtime_task_tracker import (
+            RuntimeTaskTracker,
+            track_runtime_handler,
+        )
+
+        class RuntimeOwner:
+            def __init__(self):
+                self._runtime_tasks = RuntimeTaskTracker()
+                self.started = asyncio.Event()
+                self.released = asyncio.Event()
+                self.calls = 0
+
+            @track_runtime_handler
+            async def handler(self):
+                self.calls += 1
+                self.started.set()
+                try:
+                    await asyncio.Event().wait()
+                finally:
+                    await asyncio.sleep(0)
+                    self.released.set()
+
+        owner = RuntimeOwner()
+        task = asyncio.create_task(owner.handler())
+        await owner.started.wait()
+
+        await owner._runtime_tasks.stop()
+
+        assert task.done()
+        assert owner.released.is_set()
+        assert owner._runtime_tasks._tasks == set()
+
+        assert await owner.handler() is None
+        assert owner.calls == 1
