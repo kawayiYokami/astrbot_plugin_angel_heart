@@ -55,8 +55,9 @@ class ConversationLedger:
         self._last_compression_time: Dict[str, float] = {}
         # 压缩锁：整理期间互斥，防止半成品外泄
         self._compression_locks: Dict[str, threading.Lock] = {}
-        # 可选：整理开始时关闭防抖的回调 chat_id -> awaitable/callable
+        # 可选：整理开始/结束回调 chat_id -> awaitable/callable
         self.on_before_organize = None
+        self.on_after_organize = None
 
         # 初始化 SQLite 数据库用于图片转述缓存
         db_path = data_dir / "caption_cache.db"
@@ -277,13 +278,18 @@ class ConversationLedger:
         return self._compression_locks[chat_id]
 
     def _notify_before_organize(self, chat_id: str) -> None:
-        """整理开始：关掉该会话全部防抖。"""
-        cb = self.on_before_organize
+        """整理开始：关掉该会话全部防抖，并禁止新调度。"""
+        self._invoke_organize_hook(self.on_before_organize, chat_id, "整理前")
+
+    def _notify_after_organize(self, chat_id: str) -> None:
+        """整理结束：恢复防抖调度。"""
+        self._invoke_organize_hook(self.on_after_organize, chat_id, "整理后")
+
+    def _invoke_organize_hook(self, cb, chat_id: str, phase: str) -> None:
         if not cb:
             return
         try:
             result = cb(chat_id)
-            # 同步回调直接返回；异步回调在无运行 loop 时忽略等待
             if asyncio.iscoroutine(result):
                 try:
                     loop = asyncio.get_running_loop()
@@ -291,7 +297,7 @@ class ConversationLedger:
                 except RuntimeError:
                     pass
         except Exception as e:
-            logger.warning(f"AngelHeart[{chat_id}]: 整理前关闭防抖失败: {e}")
+            logger.warning(f"AngelHeart[{chat_id}]: {phase}钩子失败: {e}")
 
     def _extract_message_text(self, msg: Dict) -> str:
         content = msg.get("content", "")
@@ -485,7 +491,7 @@ class ConversationLedger:
             return False
 
         try:
-            # 整理期间关掉所有防抖
+            # 整理期间：上下文不可调度
             self._notify_before_organize(chat_id)
 
             keep_tools = is_private and mode in ("private_llm", "private_fallback")
@@ -512,7 +518,10 @@ class ConversationLedger:
                 reason="group_rule",
             )
         finally:
-            lock.release()
+            try:
+                self._notify_after_organize(chat_id)
+            finally:
+                lock.release()
 
     def organize_on_group_enter(
         self, chat_id: str, keep_from_timestamp: float | None = None
@@ -602,7 +611,10 @@ class ConversationLedger:
                 reason="private_llm",
             )
         finally:
-            lock.release()
+            try:
+                self._notify_after_organize(chat_id)
+            finally:
+                lock.release()
 
     def _build_private_summary_prompt(self, old_summary: str, discarded: List[Dict]) -> str:
         lines = []

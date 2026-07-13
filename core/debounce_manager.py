@@ -40,7 +40,6 @@ class DebounceRecord:
     start_event_id: str
     end_event_id: str
     delay: float
-    generation: int = 0
     created_at: float = field(default_factory=time.time)
     timer: Optional[asyncio.Task] = None
 
@@ -54,25 +53,26 @@ class DebounceManager:
         self._assistant: Dict[Tuple[str, str], DebounceRecord] = {}
         self._secretary: Dict[str, DebounceRecord] = {}
         self._version_seq = 0
-        # 同步代际：整理开始时 bump，后续 schedule 用新代际，clear 只杀旧代际
-        self._generation_lock = threading.Lock()
-        self._generation: Dict[str, int] = {}
+        # 整理中：上下文不可调度，禁止新建防抖
+        self._block_lock = threading.Lock()
+        self._schedule_blocked: Dict[str, bool] = {}
 
     def _next_version(self) -> int:
         self._version_seq += 1
         return self._version_seq
 
-    def current_generation(self, chat_id: str) -> int:
-        with self._generation_lock:
-            return int(self._generation.get(str(chat_id or ""), 0))
-
-    def bump_generation(self, chat_id: str) -> int:
-        """整理开始：代际 +1，返回旧代际（clear 只杀 <= 旧代际）。"""
+    def set_schedule_blocked(self, chat_id: str, blocked: bool) -> None:
+        """整理开始/结束：同步标记是否禁止防抖调度。"""
         chat_id = str(chat_id or "")
-        with self._generation_lock:
-            old = int(self._generation.get(chat_id, 0))
-            self._generation[chat_id] = old + 1
-            return old
+        with self._block_lock:
+            if blocked:
+                self._schedule_blocked[chat_id] = True
+            else:
+                self._schedule_blocked.pop(chat_id, None)
+
+    def is_schedule_blocked(self, chat_id: str) -> bool:
+        with self._block_lock:
+            return bool(self._schedule_blocked.get(str(chat_id or ""), False))
 
     def _assistant_delay(self) -> float:
         return max(0.05, float(getattr(self.config_manager, "assistant_debounce_time", 1.0)))
@@ -89,41 +89,15 @@ class DebounceManager:
     def has_secretary_debounce(self, chat_id: str) -> bool:
         return chat_id in self._secretary
 
-    async def clear_chat(
-        self,
-        chat_id: str,
-        reason: str = "",
-        *,
-        only_upto_generation: int | None = None,
-    ) -> None:
-        """清除某会话防抖。
-
-        only_upto_generation 有值时，只杀 generation <= 该值的记录，
-        避免整理回调误杀整理后新建的 ticket。
-        """
+    async def clear_chat(self, chat_id: str, reason: str = "") -> None:
+        """清除某会话全部防抖，旧事件全部 KILL。"""
         async with self._lock:
             assistant_keys = [key for key in self._assistant if key[0] == chat_id]
             for key in assistant_keys:
-                record = self._assistant.get(key)
-                if record is None:
-                    continue
-                if (
-                    only_upto_generation is not None
-                    and int(getattr(record, "generation", 0)) > only_upto_generation
-                ):
-                    continue
-                await self._kill_record(
-                    self._assistant.pop(key), reason or "clear_chat"
-                )
-            record = self._secretary.get(chat_id)
-            if record is not None:
-                if (
-                    only_upto_generation is None
-                    or int(getattr(record, "generation", 0)) <= only_upto_generation
-                ):
-                    await self._kill_record(
-                        self._secretary.pop(chat_id), reason or "clear_chat"
-                    )
+                await self._kill_record(self._assistant.pop(key), reason or "clear_chat")
+            record = self._secretary.pop(chat_id, None)
+            if record:
+                await self._kill_record(record, reason or "clear_chat")
 
     async def schedule(
         self,
@@ -141,6 +115,13 @@ class DebounceManager:
             Future: 调用方应 await；结果为 PROCESS / KILL。
             None: 本事件只入库，不进入后续请求。
         """
+        if self.is_schedule_blocked(chat_id):
+            logger.info(
+                f"AngelHeart[{chat_id}]: 上下文整理中，禁止防抖调度 "
+                f"(sender={sender_id}, wake={is_wake})"
+            )
+            return None
+
         sender_id = str(sender_id or "")
         event_id = str(event_id or "")
 
@@ -316,7 +297,6 @@ class DebounceManager:
             start_event_id=event_id,
             end_event_id=event_id,
             delay=delay,
-            generation=self.current_generation(chat_id),
         )
         record.timer = asyncio.create_task(self._timer_handler(record))
         if store == "assistant":
@@ -359,7 +339,6 @@ class DebounceManager:
             start_event_id=old.start_event_id if keep_start else event_id,
             end_event_id=event_id,
             delay=delay,
-            generation=self.current_generation(chat_id),
         )
         record.timer = asyncio.create_task(self._timer_handler(record))
         if store == "assistant":
