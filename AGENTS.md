@@ -25,13 +25,13 @@ AngelHeart 是一个专为 AstrBot 平台设计的智能群聊交互插件，采
 
 状态转换由 [`StatusTransitionManager`](core/angel_heart_status.py:313) 管理，支持自动超时降级。
 
-### 3. 事件扣押与门锁机制
+### 3. 事件扣押与双防抖调度
 
-实现并发控制的核心机制：
+实现并发控制的核心机制（旧单槽门锁已退役）：
 
-- **门牌管理**：通过 [`acquire_chat_processing()`](core/angel_heart_context.py:116) 和 [`release_chat_processing()`](core/angel_heart_context.py:174) 控制会话处理权
-- **事件扣押**：通过 [`hold_and_start_observation()`](core/angel_heart_context.py:196) 实现事件排队和超时处理
-- **耐心计时器**：通过 [`start_patience_timer()`](core/angel_heart_context.py:390) 提供用户等待反馈
+- **双防抖**：助理防抖 + 秘书防抖；旧事件 KILL，只放行最后边界事件
+- **事件扣押**：等待挂在事件 Future 上，由 `DebounceManager` 调度
+- **耐心计时器**：通过 [`start_patience_timer()`](core/angel_heart_context.py) 提供用户等待反馈
 
 ### 4. 分层架构设计
 
@@ -129,7 +129,7 @@ AngelHeart 是一个专为 AstrBot 平台设计的智能群聊交互插件，采
 ### 并发安全
 
 1. **锁使用**：所有共享状态访问必须通过相应的锁保护
-2. **原子操作**：状态转换和门锁操作必须是原子的
+2. **原子操作**：状态转换与防抖账本操作必须是原子的
 3. **异常处理**：确保在异常情况下正确释放资源
 
 ### 性能考虑

@@ -538,16 +538,7 @@ class AngelHeartPlugin(Star):
                     pass
         except Exception as e:
             logger.error(f"AngelHeart[{chat_id}]: after_message_sent处理异常: {e}", exc_info=True)
-        finally:
-            try:
-                # 3. 释放处理锁（设置冷却期）
-                await self.angel_context.release_chat_processing(chat_id, set_cooldown=True)
-                logger.info(f"AngelHeart[{chat_id}]: 任务处理完成，已在消息发送后释放处理锁。")
-            except Exception as release_error:
-                logger.error(
-                    f"AngelHeart[{chat_id}]: after_message_sent 释放处理锁异常: {release_error}",
-                    exc_info=True,
-                )
+        # 旧单槽门锁已退役；发送后收口只做状态/工作账本，调度只认双防抖
 
     def _prepare_whitelist(self) -> set:
         """预处理白名单，将其转换为 set 以获得 O(1) 的查找性能。"""
@@ -624,14 +615,6 @@ class AngelHeartPlugin(Star):
                     timer.cancel()
                     logger.debug(f"AngelHeart[{chat_id}]: 已在terminate时取消耐心计时器")
             self.angel_context.patience_timers.clear()
-
-            # 清理门牌占用记录
-            self.angel_context.processing_chats.clear()
-            logger.debug("AngelHeart: 已在terminate时清理所有门牌占用记录")
-
-            # 清理冷却期记录
-            self.angel_context.lock_cooldown_until.clear()
-            logger.debug("AngelHeart: 已在terminate时清理所有冷却期记录")
 
             logger.info("AngelHeart: 所有等待资源已清理完成")
 
