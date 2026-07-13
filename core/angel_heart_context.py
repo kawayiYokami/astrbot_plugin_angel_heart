@@ -75,18 +75,16 @@ class AngelHeartContext:
         # 助理工作账本：正在/已经处理哪一套活
         self.work_ledger = WorkLedger()
 
-        # 整理开始时关闭防抖：先 bump 代际，clear 只杀整理前的 ticket
-        def _close_debounce_on_organize(chat_id: str):
+        # 整理开始：上下文炸了，立刻禁调度并清掉全部防抖
+        def _on_organize_start(chat_id: str):
             try:
                 import asyncio
 
-                old_gen = self.debounce_manager.bump_generation(chat_id)
+                self.debounce_manager.set_schedule_blocked(chat_id, True)
 
                 async def _clear():
                     await self.debounce_manager.clear_chat(
-                        chat_id,
-                        reason="context_organize",
-                        only_upto_generation=old_gen,
+                        chat_id, reason="context_organize_start"
                     )
 
                 try:
@@ -98,9 +96,16 @@ class AngelHeartContext:
                     except Exception:
                         pass
             except Exception as e:
-                logger.warning(f"AngelHeart[{chat_id}]: 整理时关闭防抖失败: {e}")
+                logger.warning(f"AngelHeart[{chat_id}]: 整理开始关闭防抖失败: {e}")
 
-        self.conversation_ledger.on_before_organize = _close_debounce_on_organize
+        def _on_organize_end(chat_id: str):
+            try:
+                self.debounce_manager.set_schedule_blocked(chat_id, False)
+            except Exception as e:
+                logger.warning(f"AngelHeart[{chat_id}]: 整理结束恢复防抖调度失败: {e}")
+
+        self.conversation_ledger.on_before_organize = _on_organize_start
+        self.conversation_ledger.on_after_organize = _on_organize_end
 
         # 主动应答管理器
         self.proactive_manager = ProactiveManager(self)

@@ -214,3 +214,68 @@ class TestCompressionLock:
             assert ok is False
         finally:
             lock.release()
+
+
+class TestOrganizeBlocksDebounceSchedule:
+    @pytest.mark.asyncio
+    async def test_schedule_blocked_during_organize_hooks(self, tmp_path):
+        from astrbot_plugin_angel_heart.core.debounce_manager import DebounceManager
+
+        config = DummyConfig()
+        dm = DebounceManager(config)
+        calls = {"start": 0, "end": 0}
+
+        ledger = ConversationLedger(config, tmp_path, astr_context=None)
+
+        def on_start(chat_id: str):
+            calls["start"] += 1
+            dm.set_schedule_blocked(chat_id, True)
+
+        def on_end(chat_id: str):
+            calls["end"] += 1
+            dm.set_schedule_blocked(chat_id, False)
+
+        ledger.on_before_organize = on_start
+        ledger.on_after_organize = on_end
+
+        chat_id = "GroupMessage:block"
+        for i in range(1, 15):
+            ledger.add_message(chat_id, _msg(i, f"x{i}" * 40, chat_id=chat_id))
+
+        # 入库阶段可能已触发整理；只测显式 organize 的起止钩子
+        calls["start"] = 0
+        calls["end"] = 0
+        dm.set_schedule_blocked(chat_id, False)
+
+        class E:
+            def __init__(self):
+                self.extras = {}
+
+            def set_extra(self, k, v):
+                self.extras[k] = v
+
+            def get_extra(self, k, d=None):
+                return self.extras.get(k, d)
+
+        # 整理前可调度
+        assert dm.is_schedule_blocked(chat_id) is False
+
+        ok = ledger.organize_context(chat_id, mode="group_rule")
+        # 可能因阈值未再触发实质整理返回 False，但钩子只在真正进入整理临界区时触发
+        if ok:
+            assert calls["start"] == 1
+            assert calls["end"] == 1
+        assert dm.is_schedule_blocked(chat_id) is False
+
+        # 手动模拟整理中：禁止 schedule
+        dm.set_schedule_blocked(chat_id, True)
+        ticket = await dm.schedule(
+            chat_id=chat_id,
+            event=E(),
+            sender_id="u1",
+            event_id="e1",
+            is_wake=True,
+            is_present=True,
+        )
+        assert ticket is None
+        dm.set_schedule_blocked(chat_id, False)
