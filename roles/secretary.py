@@ -94,6 +94,20 @@ class Secretary:
                 entities=[], facts=[], keywords=[]
             )
 
+        # 钉死秘书判断点：主脑 rewrite 必须用同一份切片，禁止组请求时再全量扩窗
+        try:
+            if hasattr(event, "set_extra"):
+                event.set_extra(
+                    "angelheart_decision_context",
+                    {
+                        "historical_context": historical_context,
+                        "recent_dialogue": recent_dialogue,
+                        "boundary_ts": boundary_ts,
+                    },
+                )
+        except Exception as e:
+            logger.warning(f"AngelHeart[{chat_id}]: 固化决策上下文失败: {e}")
+
         decision = await self.perform_analysis(
             recent_dialogue, historical_context, chat_id, event=event
         )

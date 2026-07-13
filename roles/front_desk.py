@@ -1354,6 +1354,37 @@ class FrontDesk:
         )
         return recent_dialogue, historical_context, boundary_ts
 
+    def _get_decision_context_for_rewrite(
+        self, chat_id: str, event: AstrMessageEvent
+    ):
+        """
+        主脑重写用的上下文：群聊必须等于秘书判断点，不得二次全量扩窗。
+
+        Returns:
+            (recent_dialogue, historical_context, boundary_ts) 或 None（群聊无固化切片时）
+        """
+        if self._is_group_chat(chat_id):
+            frozen = None
+            try:
+                if hasattr(event, "get_extra"):
+                    frozen = event.get_extra("angelheart_decision_context", None)
+            except Exception:
+                frozen = None
+            if not isinstance(frozen, dict):
+                logger.debug(
+                    f"AngelHeart[{chat_id}]: 群聊无固化决策上下文，跳过重写以免扩窗"
+                )
+                return None
+            recent = frozen.get("recent_dialogue") or []
+            historical = frozen.get("historical_context") or []
+            boundary_ts = frozen.get("boundary_ts", 0.0)
+            if not recent and not historical:
+                return None
+            return recent, historical, boundary_ts
+
+        # 私聊：无秘书切片，仍从账本读
+        return self._get_conversation_data_from_ledger(chat_id)
+
     def _generate_final_prompt(
         self, recent_dialogue: List[Dict], decision: Any, alias: str
     ) -> str:
@@ -1628,12 +1659,18 @@ class FrontDesk:
                 f"AngelHeart[{chat_id}]: 组请求前已补齐 {caption_count} 条图片转述"
             )
 
-        # 历史重写只认 ConversationLedger；秘书决策已注入 event，不再从会话缓存读取。
+        # 历史重写：
+        # - 群聊：必须用秘书判断点固化的切片（秘书点=主脑点）
+        # - 私聊：无秘书，从 ledger 读；可冷启动补种
         # 助理临时注入只留工作账本。
         if self._is_private_chat(chat_id):
             await self._ensure_minimum_context(chat_id, event)
 
-        recent_dialogue, historical_context, _ = self._get_conversation_data_from_ledger(chat_id)
+        conv = self._get_decision_context_for_rewrite(chat_id, event)
+        if not conv:
+            logger.debug(f"AngelHeart[{chat_id}]: 暂无可用上下文，跳过重构。")
+            return
+        recent_dialogue, historical_context, _ = conv
         if not recent_dialogue and not historical_context:
             logger.debug(f"AngelHeart[{chat_id}]: 暂无可用上下文，跳过重构。")
             return
