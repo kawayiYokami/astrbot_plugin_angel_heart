@@ -715,9 +715,7 @@ class TestRuntimeCleanup:
             {"role": "user", "content": "hello", "timestamp": 1.0},
         )
         patience = asyncio.create_task(asyncio.sleep(60))
-        degradation = asyncio.create_task(asyncio.sleep(60))
         context.patience_timers["g1"] = patience
-        context.status_transition_manager.degradation_timers["g1"] = degradation
         context.proactive_manager.custom_triggers["test"] = lambda *_args: True
         ticket = await context.debounce_manager.schedule(
             chat_id="g1",
@@ -731,14 +729,13 @@ class TestRuntimeCleanup:
         await context.cleanup()
 
         assert ticket.done() and ticket.result() == KILL
-        assert patience.done() and degradation.done()
+        assert patience.done()
         assert context.patience_timers == {}
         assert context.last_analysis_time == {}
         assert context.silenced_until == {}
         assert context.familiarity_cooldown_until == {}
         assert context.current_states == {}
         assert context.status_transition_manager.status_start_times == {}
-        assert context.status_transition_manager.degradation_timers == {}
         assert context.work_ledger._items == {}
         assert context.proactive_manager.active_tasks == {}
         assert context.proactive_manager.custom_triggers == {}

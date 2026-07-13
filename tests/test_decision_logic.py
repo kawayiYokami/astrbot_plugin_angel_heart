@@ -1,7 +1,7 @@
 """
 钉死决策逻辑：should_reply AND (is_questioned OR is_interesting OR reply_even)
 
-覆盖 analyzer 正向条件过滤 + secretary force_reply 带理由约束。
+覆盖 analyzer 正向条件过滤 + secretary 统一激活入口的 force_reply 约束。
 """
 
 from __future__ import annotations
@@ -126,7 +126,7 @@ class TestAnalyzerForwardCondition:
 
 class TestForceReplyWithReason:
     """
-    测试 Secretary._handle_summoned_reply 的带理由强制回复。
+    测试 Secretary.handle_message_by_state 的带理由强制回复。
 
     force_reply=true 时，只在 (is_questioned OR is_interesting OR reply_even) 满足时才覆盖。
     """
@@ -165,7 +165,7 @@ class TestForceReplyWithReason:
             keywords=[],
         )
 
-        # 模拟 _handle_summoned_reply 中的 force_reply 逻辑
+        # 模拟统一激活入口中的 force_reply 逻辑
         if config.force_reply_when_summoned:
             has_reason = (
                 decision.is_questioned

@@ -5,7 +5,6 @@ import aiohttp
 import io
 import base64
 import os
-import asyncio
 from PIL import Image
 from pathlib import Path
 from typing import List, Dict, Tuple, Optional
@@ -53,10 +52,6 @@ class ConversationLedger:
         self._last_compression_time: Dict[str, float] = {}
         # 压缩锁：整理期间互斥，防止半成品外泄
         self._compression_locks: Dict[str, threading.Lock] = {}
-        # 可选：整理开始/结束回调 chat_id -> awaitable/callable
-        self.on_before_organize = None
-        self.on_after_organize = None
-
         # 初始化 SQLite 数据库用于图片转述缓存
         db_path = data_dir / "caption_cache.db"
         self.db_conn = sqlite3.connect(db_path, check_same_thread=False)
@@ -275,28 +270,6 @@ class ConversationLedger:
         self._get_or_create_ledger(chat_id)
         return self._compression_locks[chat_id]
 
-    def _notify_before_organize(self, chat_id: str) -> None:
-        """整理开始：关掉该会话全部防抖，并禁止新调度。"""
-        self._invoke_organize_hook(self.on_before_organize, chat_id, "整理前")
-
-    def _notify_after_organize(self, chat_id: str) -> None:
-        """整理结束：恢复防抖调度。"""
-        self._invoke_organize_hook(self.on_after_organize, chat_id, "整理后")
-
-    def _invoke_organize_hook(self, cb, chat_id: str, phase: str) -> None:
-        if not cb:
-            return
-        try:
-            result = cb(chat_id)
-            if asyncio.iscoroutine(result):
-                try:
-                    loop = asyncio.get_running_loop()
-                    loop.create_task(result)
-                except RuntimeError:
-                    pass
-        except Exception as e:
-            logger.warning(f"AngelHeart[{chat_id}]: {phase}钩子失败: {e}")
-
     def _extract_message_text(self, msg: Dict) -> str:
         content = msg.get("content", "")
         if isinstance(content, str):
@@ -476,10 +449,6 @@ class ConversationLedger:
             return False
 
         try:
-            # 整理期间：上下文不可调度
-            self._notify_before_organize(chat_id)
-
-            keep_tools = is_private and mode in ("private_llm", "private_fallback")
             if mode == "private_llm":
                 return self._commit_summary_and_block(
                     chat_id,
@@ -503,10 +472,7 @@ class ConversationLedger:
                 reason="group_rule",
             )
         finally:
-            try:
-                self._notify_after_organize(chat_id)
-            finally:
-                lock.release()
+            lock.release()
 
     def organize_on_group_enter(
         self, chat_id: str, keep_from_timestamp: float | None = None
@@ -536,7 +502,6 @@ class ConversationLedger:
             return False
 
         try:
-            self._notify_before_organize(chat_id)
             formal = self.get_formal_context(chat_id)
             if len(formal) < self.MIN_RETAIN_COUNT:
                 return False
@@ -596,10 +561,7 @@ class ConversationLedger:
                 reason="private_llm",
             )
         finally:
-            try:
-                self._notify_after_organize(chat_id)
-            finally:
-                lock.release()
+            lock.release()
 
     def _build_private_summary_prompt(self, old_summary: str, discarded: List[Dict]) -> str:
         lines = []
@@ -779,10 +741,6 @@ class ConversationLedger:
             )
         self._cleanup_unreferenced_media_cache(chat_id)
         return True
-
-    def mark_as_processed(self, chat_id: str, boundary_timestamp: float = 0.0):
-        """兼容旧接口：is_processed 已退役，空操作。"""
-        return
 
     def _cleanup_cache_for_message(self, chat_id: str, msg: dict):
         """兼容旧调用：按当前账本引用清理未使用的媒体缓存。"""
@@ -1406,10 +1364,6 @@ class ConversationLedger:
         else:
             return (time.time() - last_time) > forgetting_timeout
 
-    def _compress_context(self, chat_id: str):
-        """兼容旧入口：转交 organize_context。"""
-        self.organize_context(chat_id, mode="auto")
-
     def _count_message_tokens(self, msg: Dict) -> int:
         """
         估算单条消息的Token数量。
@@ -1440,47 +1394,6 @@ class ConversationLedger:
                 total += self._count_tokens_in_text(value)
 
         return total
-
-    def _prune_to_essentials(self, chat_id: str):
-        """
-        精简会话消息，仅保留最新的7条非工具消息。
-        这是一个兜底的极端清理方法，当 _compress_context 不足以控制内存时使用。
-
-        Args:
-            chat_id: 会话ID
-        """
-        ledger = self._get_or_create_ledger(chat_id)
-        with self._lock:
-            # 1. 获取当前会话的所有消息
-            all_messages = ledger["messages"]
-
-            # 2. 筛选出所有非工具消息（role不为tool且不含tool_calls）
-            non_tool_messages = []
-            for msg in all_messages:
-                is_tool = msg.get("role") == "tool"
-                has_tool_calls = bool(msg.get("tool_calls"))
-                if not is_tool and not has_tool_calls:
-                    non_tool_messages.append(msg)
-
-            # 3. 如果非工具消息数量大于7，则只保留时间戳最新的7条
-            if len(non_tool_messages) > 7:
-                # 按时间戳降序排序（最新的在前）
-                non_tool_messages.sort(key=lambda m: m.get("timestamp", 0), reverse=True)
-                # 只保留最新的7条
-                essential_messages = non_tool_messages[:7]
-                # 按时间戳升序排序（恢复原始顺序）
-                essential_messages.sort(key=lambda m: m.get("timestamp", 0))
-
-                # 4. 用这批"精华消息"完全替换内存中该会话的整个消息列表
-                ledger["messages"] = essential_messages
-                should_cleanup_cache = True
-                logger.info(f"AngelHeart[{chat_id}]: 已精简会话消息，保留最新的7条非工具消息")
-
-            # 更新压缩时间戳
-            self._last_compression_time[chat_id] = time.time()
-
-        if should_cleanup_cache:
-            self._cleanup_unreferenced_media_cache(chat_id)
 
     def _estimate_tokens(self, chat_id: str) -> int:
         """
@@ -1561,8 +1474,6 @@ class ConversationLedger:
             self._ledgers.clear()
             self._last_compression_time.clear()
             self._compression_locks.clear()
-            self.on_before_organize = None
-            self.on_after_organize = None
 
         with self._db_lock:
             cursor = self.db_cursor

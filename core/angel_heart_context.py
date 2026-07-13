@@ -164,9 +164,7 @@ class AngelHeartContext:
             logger.error(f"AngelHeart: 清理双防抖任务失败: {e}", exc_info=True)
 
         timers = list(self.patience_timers.values())
-        timers.extend(self.status_transition_manager.degradation_timers.values())
         self.patience_timers.clear()
-        self.status_transition_manager.degradation_timers.clear()
         for timer in timers:
             if not timer.done():
                 timer.cancel()

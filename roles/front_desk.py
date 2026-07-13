@@ -1413,10 +1413,6 @@ class FrontDesk:
         """检查重建后的当前提示词是否有有效内容。"""
         return isinstance(prompt, str) and bool(prompt.strip())
 
-    def _build_temporary_decision_context(self, chat_id: str, decision: Any) -> Dict[str, Any] | None:
-        """兼容旧接口：秘书决策临时注入已废弃。"""
-        return None
-
     def _build_temporary_work_ledger_context(
         self, chat_id: str, event: AstrMessageEvent | None = None
     ) -> Dict[str, Any] | None:
