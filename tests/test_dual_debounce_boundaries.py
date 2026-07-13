@@ -589,3 +589,89 @@ class TestStatusSemantics:
         checker._is_summoned = lambda chat_id: False
         status = await checker.determine_status("g1")
         assert status == AngelHeartStatus.NOT_PRESENT
+
+
+class TestRuntimeCleanup:
+    @pytest.mark.asyncio
+    async def test_front_desk_cancels_registered_private_compression(self):
+        from astrbot_plugin_angel_heart.roles.front_desk import FrontDesk
+
+        angel = MagicMock()
+        angel.astr_context = MagicMock()
+        fd = FrontDesk(make_config(), angel)
+        released = asyncio.Event()
+
+        async def blocked(_chat_id):
+            try:
+                await asyncio.Event().wait()
+            finally:
+                released.set()
+
+        fd._maybe_private_llm_compress = blocked
+        fd._schedule_private_compression("FriendMessage:1")
+        fd._schedule_private_compression("FriendMessage:1")
+        await asyncio.sleep(0)
+
+        assert len(fd._private_compression_tasks) == 1
+        await fd.cleanup_background_tasks()
+
+        assert released.is_set()
+        assert fd._private_compression_tasks == {}
+
+    @pytest.mark.asyncio
+    async def test_context_cleanup_releases_all_runtime_state(self, tmp_path):
+        from astrbot_plugin_angel_heart.core.angel_heart_context import AngelHeartContext
+
+        context = AngelHeartContext(make_config(), MagicMock(), tmp_path)
+        context.last_analysis_time["g1"] = 1.0
+        context.silenced_until["g1"] = 2.0
+        context.familiarity_cooldown_until["g1"] = 3.0
+        context.current_states["g1"] = AngelHeartStatus.OBSERVATION
+        context.status_transition_manager.status_start_times["g1"] = (
+            AngelHeartStatus.OBSERVATION,
+            1.0,
+        )
+        context.work_ledger.start_work(
+            chat_id="g1",
+            work_id="w1",
+            trigger_message_id="m1",
+            trigger_summary="测试任务",
+        )
+        context.conversation_ledger.add_message(
+            "g1",
+            {"role": "user", "content": "hello", "timestamp": 1.0},
+        )
+        patience = asyncio.create_task(asyncio.sleep(60))
+        degradation = asyncio.create_task(asyncio.sleep(60))
+        context.patience_timers["g1"] = patience
+        context.status_transition_manager.degradation_timers["g1"] = degradation
+        context.proactive_manager.custom_triggers["test"] = lambda *_args: True
+        ticket = await context.debounce_manager.schedule(
+            chat_id="g1",
+            event=DummyEvent("cleanup"),
+            sender_id="u1",
+            event_id="e1",
+            is_wake=True,
+            is_present=False,
+        )
+
+        await context.cleanup()
+
+        assert ticket.done() and ticket.result() == KILL
+        assert patience.done() and degradation.done()
+        assert context.patience_timers == {}
+        assert context.last_analysis_time == {}
+        assert context.silenced_until == {}
+        assert context.familiarity_cooldown_until == {}
+        assert context.current_states == {}
+        assert context.status_transition_manager.status_start_times == {}
+        assert context.status_transition_manager.degradation_timers == {}
+        assert context.work_ledger._items == {}
+        assert context.proactive_manager.active_tasks == {}
+        assert context.proactive_manager.custom_triggers == {}
+        assert context.debounce_manager._assistant == {}
+        assert context.debounce_manager._secretary == {}
+        assert context.conversation_ledger._ledgers == {}
+        assert context.conversation_ledger._compression_locks == {}
+        assert context.conversation_ledger.db_conn is None
+        assert context.conversation_ledger.db_cursor is None
