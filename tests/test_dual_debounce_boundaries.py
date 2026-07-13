@@ -416,7 +416,8 @@ class TestSecretaryActivation:
         assert decision.reply_strategy == "必须回应"
 
     @pytest.mark.asyncio
-    async def test_empty_message_without_must_reply_skips(self):
+    async def test_empty_message_str_no_longer_short_circuits(self):
+        """正文只认 ledger/outline；秘书不再用 message_str 判空短路。"""
         from astrbot_plugin_angel_heart.roles.secretary import Secretary
 
         config = make_config()
@@ -426,15 +427,29 @@ class TestSecretaryActivation:
         angel.debounce_manager.get_must_reply.return_value = False
         angel.debounce_manager.get_debounce_kind.return_value = "secretary"
         angel.status_transition_manager.transition_to_status = AsyncMock()
+        angel.conversation_ledger.get_context_snapshot.return_value = (
+            [],
+            [{"role": "user", "content": "@bot"}],
+            1.0,
+        )
+        angel.work_ledger.format_for_secretary.return_value = ""
 
         secretary = Secretary(config, MagicMock(), angel)
-        secretary.perform_analysis = AsyncMock()
+        secretary.perform_analysis = AsyncMock(
+            return_value=SecretaryDecision(
+                should_reply=False,
+                reply_strategy="继续观察",
+                topic="t",
+                entities=[],
+                facts=[],
+                keywords=[],
+            )
+        )
 
         event = DummyEvent("empty", message_str="   ")
         decision = await secretary.handle_message_by_state(event)
-        assert decision.should_reply is False
-        assert decision.reply_strategy == "空消息"
-        secretary.perform_analysis.assert_not_called()
+        assert decision.reply_strategy == "继续观察"
+        secretary.perform_analysis.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_no_recent_dialogue_skips(self):

@@ -87,29 +87,28 @@ class AngelHeartPlugin(Star):
         # 如果是需要处理的消息，则委托给前台缓存
         await self.front_desk.handle_event(event)
 
-    @filter.on_llm_request(priority=0)  # 默认优先级
+    @filter.on_llm_request(priority=0)
     async def inject_oneshot_decision_on_llm_request(
         self, event: AstrMessageEvent, req: ProviderRequest
     ):
-        """读取上游注入的 AngelHeart 上下文，供日志与后续钩子使用"""
+        """读取本事件 angelheart_context，供日志与后续钩子使用（不写回 req）"""
         chat_id = event.unified_msg_origin
 
         if hasattr(event, "angelheart_context"):
             try:
                 context = json.loads(event.angelheart_context)
-                # 检查上下文是否包含错误信息
                 if context.get("error"):
                     logger.warning(
                         f"AngelHeart[{chat_id}]: 上下文包含错误: {context['error']}"
                     )
 
-                # 安全地提取数据
                 chat_records = context.get("chat_records", [])
                 secretary_decision = context.get("secretary_decision", {})
                 needs_search = context.get("needs_search", False)
 
                 logger.debug(
-                    f"AngelHeart[{chat_id}]: 读取到上下文 - 记录数: {len(chat_records)}, 决策: {secretary_decision.get('reply_strategy', '未知')}, 需搜索: {needs_search}"
+                    f"AngelHeart[{chat_id}]: 读取到上下文 - 记录数: {len(chat_records)}, "
+                    f"决策: {secretary_decision.get('reply_strategy', '未知')}, 需搜索: {needs_search}"
                 )
             except json.JSONDecodeError as e:
                 logger.warning(
@@ -120,7 +119,7 @@ class AngelHeartPlugin(Star):
                     f"AngelHeart[{chat_id}]: 处理 angelheart_context 时发生意外错误: {e}"
                 )
 
-    @filter.on_llm_request(priority=50)  # 在决策注入之后，日志之前执行
+    @filter.on_llm_request(priority=50)
     async def delegate_prompt_rewriting(
         self, event: AstrMessageEvent, req: ProviderRequest
     ):
@@ -260,8 +259,12 @@ class AngelHeartPlugin(Star):
             if not provider_wake_prefix:
                 return False
 
-            message_str = (getattr(event, "message_str", "") or "").strip()
-            return not message_str.startswith(provider_wake_prefix)
+            message_outline = ""
+            try:
+                message_outline = (event.get_message_outline() or "").strip()
+            except Exception:
+                message_outline = ""
+            return not message_outline.startswith(provider_wake_prefix)
         except Exception as e:
             logger.warning(
                 f"AngelHeart[{event.unified_msg_origin}]: 判断额外聊天唤醒前缀拦截失败: {e}"
@@ -523,6 +526,8 @@ class AngelHeartPlugin(Star):
                     work_id = ""
                     if hasattr(event, "get_extra"):
                         work_id = str(event.get_extra("angelheart_work_id", "") or "")
+                    if not work_id:
+                        work_id = self.front_desk._get_event_message_id(event)
                     if work_id:
                         self.angel_context.work_ledger.complete_work(
                             chat_id,

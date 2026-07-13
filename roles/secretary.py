@@ -8,9 +8,7 @@ import json
 from typing import Dict, List
 from enum import Enum
 
-# 导入公共工具函数
 from ..core.utils import json_serialize_context
-
 from ..core.llm_analyzer import LLMAnalyzer
 from ..models.analysis_result import SecretaryDecision
 from ..core.angel_heart_status import StatusChecker, AngelHeartStatus
@@ -85,14 +83,6 @@ class Secretary:
                 chat_id, AngelHeartStatus.OBSERVATION, "防抖激活，确保在场"
             )
 
-        # 纯 @ 空消息：不单独开回复，等后续实质边界事件
-        if not event.message_str.strip() and not must_reply:
-            logger.info(f"AngelHeart[{chat_id}]: 空消息且非必须回应，跳过回复")
-            return SecretaryDecision(
-                should_reply=False, reply_strategy="空消息", topic="无",
-                entities=[], facts=[], keywords=[]
-            )
-
         # 激活时重建上下文后再分析
         historical_context, recent_dialogue, boundary_ts = (
             self.angel_context.conversation_ledger.get_context_snapshot(chat_id)
@@ -104,7 +94,9 @@ class Secretary:
                 entities=[], facts=[], keywords=[]
             )
 
-        decision = await self.perform_analysis(recent_dialogue, historical_context, chat_id)
+        decision = await self.perform_analysis(
+            recent_dialogue, historical_context, chat_id, event=event
+        )
 
         # 必须回应：助理防抖 / 加速秘书防抖
         if must_reply:
@@ -159,7 +151,11 @@ class Secretary:
         )
 
     async def perform_analysis(
-        self, recent_dialogue: List[Dict], db_history: List[Dict], chat_id: str
+        self,
+        recent_dialogue: List[Dict],
+        db_history: List[Dict],
+        chat_id: str,
+        event: AstrMessageEvent | None = None,
     ) -> SecretaryDecision:
         """
         秘书职责：分析缓存内容并做出决策。
@@ -169,6 +165,7 @@ class Secretary:
             recent_dialogue (List[Dict]): 剪枝后的新消息列表。
             db_history (List[Dict]): 数据库中的历史记录。
             chat_id (str): 会话ID。
+            event: 当前激活事件；用于排除本轮 work_id。
 
         Returns:
             SecretaryDecision: 分析后得出的决策对象。
@@ -178,7 +175,19 @@ class Secretary:
         try:
             work_ledger_text = ""
             try:
-                work_ledger_text = self.angel_context.work_ledger.format_for_secretary(chat_id)
+                current_work_id = ""
+                if event is not None and hasattr(event, "get_extra"):
+                    current_work_id = str(event.get_extra("angelheart_work_id", "") or "")
+                if not current_work_id and event is not None:
+                    try:
+                        current_work_id = str(
+                            getattr(event, "angelheart_internal_event_id", "") or ""
+                        )
+                    except Exception:
+                        current_work_id = ""
+                work_ledger_text = self.angel_context.work_ledger.format_for_secretary(
+                    chat_id, current_work_id=current_work_id
+                )
             except Exception:
                 work_ledger_text = ""
 
@@ -198,34 +207,9 @@ class Secretary:
         except Exception as e:
             return self._handle_analysis_error(e, "秘书处理过程", chat_id)
 
-    def get_decision(self, chat_id: str) -> SecretaryDecision | None:
-        """获取指定会话的决策"""
-        return self.angel_context.get_decision(chat_id)
-
     async def update_last_event_time(self, chat_id: str):
         """在 LLM 成功响应后，更新最后一次事件（回复）的时间戳"""
         await self.angel_context.update_last_analysis_time(chat_id)
-
-    async def clear_decision(self, chat_id: str):
-        """清除指定会话的决策"""
-        await self.angel_context.clear_decision(chat_id)
-
-
-    def get_cached_decisions_for_display(self) -> list:
-        """获取用于状态显示的缓存决策列表"""
-        cached_items = list(self.angel_context.analysis_cache.items())
-        display_list = []
-        for chat_id, result in reversed(cached_items[-5:]): # 显示最近的5条
-            if result:
-                topic = result.topic
-                display_list.append(f"- {chat_id}:")
-                display_list.append(f"  - 话题: {topic}")
-            else:
-                display_list.append(f"- {chat_id}: (分析数据不完整)")
-        return display_list
-
-
-
 
     @property
     def config_manager(self):
@@ -282,7 +266,9 @@ class Secretary:
                 return
 
             # 2. 执行分析
-            decision = await self.perform_analysis(recent_dialogue, historical_context, chat_id)
+            decision = await self.perform_analysis(
+                recent_dialogue, historical_context, chat_id, event=event
+            )
 
             # 3. 处理决策结果
             await self._handle_analysis_result(decision, recent_dialogue, historical_context, boundary_ts, event, chat_id)
@@ -316,13 +302,11 @@ class Secretary:
             if caption_count > 0:
                 logger.info(f"AngelHeart[{chat_id}]: 已为 {caption_count} 张图片生成转述")
 
-            # 存储决策
-            await self.angel_context.update_analysis_cache(chat_id, decision, reason="分析完成")
-
             # 启动耐心计时器
             await self.angel_context.start_patience_timer(chat_id)
 
-            # 注入上下文
+            # 旁路上下文：聊天记录 + 决策 + needs_search 挂到本事件，供日志/下游钩子读
+            # 不写会话共享缓存；主脑 req 临时注入仍只留工作账本
             full_snapshot = historical_context + recent_dialogue
             try:
                 event.angelheart_context = json_serialize_context(full_snapshot, decision)
@@ -336,15 +320,28 @@ class Secretary:
                     "error": "注入失败"
                 }, ensure_ascii=False)
 
-            # 唤醒主脑
+            # 决策门闩：要回就唤醒主脑
             if not self.config_manager.debug_mode:
                 event.is_at_or_wake_command = True
             else:
                 logger.info(f"AngelHeart[{chat_id}]: 调试模式已启用，阻止了实际唤醒。")
+                try:
+                    work_id = ""
+                    if hasattr(event, "get_extra"):
+                        work_id = str(event.get_extra("angelheart_work_id", "") or "")
+                    if not work_id:
+                        work_id = str(getattr(event, "angelheart_internal_event_id", "") or "")
+                    if work_id:
+                        self.angel_context.work_ledger.complete_work(
+                            chat_id,
+                            work_id,
+                            status="done",
+                            result_summary="debug跳过发送",
+                        )
+                except Exception:
+                    pass
 
         elif decision:
             logger.info(f"AngelHeart[{chat_id}]: 决策为'不参与'。原因: {decision.reply_strategy}")
-            await self.angel_context.clear_decision(chat_id)
         else:
             logger.warning(f"AngelHeart[{chat_id}]: 分析失败，无决策结果")
-            await self.angel_context.clear_decision(chat_id)

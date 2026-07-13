@@ -561,24 +561,7 @@ class ConversationLedger:
                     break
             retained.reverse()
             retained_ids = {id(m) for m in retained}
-            # formal 是 copy，用 timestamp+role+text 近似匹配丢弃段
-            retained_keys = {
-                (
-                    m.get("timestamp", 0),
-                    m.get("role"),
-                    self._extract_message_text(m)[:80],
-                )
-                for m in retained
-            }
-            discarded = []
-            for m in formal:
-                key = (
-                    m.get("timestamp", 0),
-                    m.get("role"),
-                    self._extract_message_text(m)[:80],
-                )
-                if key not in retained_keys:
-                    discarded.append(m)
+            discarded = [m for m in formal if id(m) not in retained_ids]
 
             if not discarded:
                 return False
@@ -602,12 +585,20 @@ class ConversationLedger:
                     reason="private_llm_failed_fallback",
                 )
 
-            keep_from = retained[0].get("timestamp", 0) if retained else None
+            # retained 来自 formal 尾部预算，提交时按条数保留后缀，避免 timestamp 下界误捞
+            keep_count = len(
+                [
+                    m
+                    for m in retained
+                    if m.get("kind")
+                    not in ("context_summary", "summary_context", "context_compaction")
+                ]
+            )
             return self._commit_summary_and_block(
                 chat_id,
                 summary_text=summary_text,
                 keep_tools=True,
-                keep_from_timestamp=keep_from,
+                keep_count=keep_count,
                 reason="private_llm",
             )
         finally:
@@ -694,25 +685,19 @@ class ConversationLedger:
                 and len(retained) < self.MIN_RETAIN_COUNT
                 and len(messages) >= self.MIN_RETAIN_COUNT
             ):
-                retained = messages[-self.MIN_RETAIN_COUNT :]
+                if keep_tools:
+                    retained = messages[-self.MIN_RETAIN_COUNT :]
+                else:
+                    # 群聊不记工具：fallback 也只取非 tool
+                    non_tools = [m for m in messages if not self._is_tool_message(m)]
+                    retained = (
+                        non_tools[-self.MIN_RETAIN_COUNT :]
+                        if non_tools
+                        else []
+                    )
 
-            retained_keys = {
-                (
-                    m.get("timestamp", 0),
-                    m.get("role"),
-                    self._extract_message_text(m)[:80],
-                )
-                for m in retained
-            }
-            discarded = []
-            for m in messages:
-                key = (
-                    m.get("timestamp", 0),
-                    m.get("role"),
-                    self._extract_message_text(m)[:80],
-                )
-                if key not in retained_keys:
-                    discarded.append(m)
+            retained_ids = {id(m) for m in retained}
+            discarded = [m for m in messages if id(m) not in retained_ids]
 
             if not discarded and not old_summary:
                 return False
@@ -746,6 +731,7 @@ class ConversationLedger:
         summary_text: str,
         keep_tools: bool,
         keep_from_timestamp: float | None = None,
+        keep_count: int | None = None,
         reason: str = "summary",
     ) -> bool:
         summary_text = (summary_text or "").strip()
@@ -760,16 +746,22 @@ class ConversationLedger:
         ledger = self._get_or_create_ledger(chat_id)
         with self._lock:
             messages = list(ledger.get("messages") or [])
-            if keep_from_timestamp is not None:
+            summary_kinds = ("context_summary", "summary_context", "context_compaction")
+            base_messages = [m for m in messages if m.get("kind") not in summary_kinds]
+
+            if keep_count is not None:
+                # 私聊 LLM 摘要：保留尾部 N 条，避免 timestamp 下界误捞
+                n = max(0, int(keep_count))
+                retained = base_messages[-n:] if n else []
+            elif keep_from_timestamp is not None:
                 retained = [
-                    m for m in messages if m.get("timestamp", 0) >= keep_from_timestamp
+                    m for m in base_messages if m.get("timestamp", 0) >= keep_from_timestamp
                 ]
             else:
-                # 默认保留最近正文预算
                 content_budget = self.config_manager.context_content_retain_tokens
                 retained = []
                 used = 0
-                for msg in reversed(messages):
+                for msg in reversed(base_messages):
                     if not keep_tools and self._is_tool_message(msg):
                         continue
                     tokens = self._count_message_tokens(msg)
@@ -780,12 +772,6 @@ class ConversationLedger:
                         break
                 retained.reverse()
 
-            retained = [
-                m
-                for m in retained
-                if m.get("kind")
-                not in ("context_summary", "summary_context", "context_compaction")
-            ]
             ts = retained[0].get("timestamp", time.time()) if retained else time.time()
             ledger["current_summary"] = summary_text
             ledger["messages"] = [self._make_summary_message(summary_text, ts)] + retained

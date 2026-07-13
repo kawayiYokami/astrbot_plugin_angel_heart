@@ -186,17 +186,14 @@ print(f"当前状态: {summary['current_status']}")
 print(f"持续时间: {summary['duration_seconds']}秒")
 ```
 
-### 决策缓存
+### 决策归属
 
-通过 [`AngelHeartContext.get_decision()`](core/angel_heart_context.py:437) 获取最新决策：
-
-```python
-decision = angel_context.get_decision(chat_id)
-if decision:
-    print(f"决策: {'回复' if decision.should_reply else '不回复'}")
-    print(f"策略: {decision.reply_strategy}")
-    print(f"话题: {decision.topic}")
-```
+秘书决策：
+1. **门闩**：只决定「回不回」
+   - `should_reply=True` → 唤醒主脑
+   - `should_reply=False` → 停止事件
+2. **旁路**：可挂到本事件 `event.angelheart_context`（chat_records + secretary_decision + needs_search），给日志/下游钩子看
+3. **不进主脑请求体**：`req.contexts` 临时注入只留工作账本；历史重写只认 `ConversationLedger`
 
 ## 常见问题
 

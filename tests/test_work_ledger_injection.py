@@ -34,7 +34,7 @@ from astrbot_plugin_angel_heart.core.llm_analyzer import LLMAnalyzer
 
 
 class TestWorkLedgerFormat:
-    def test_secretary_third_person(self):
+    def test_secretary_third_person_other_running(self):
         wl = WorkLedger()
         wl.start_work(
             chat_id="g1",
@@ -43,13 +43,28 @@ class TestWorkLedgerFormat:
             trigger_summary="解释双防抖",
             kind="assistant",
         )
-        text = wl.format_for_secretary("g1")
+        # 另一事件看账本：应提示避让
+        text = wl.format_for_secretary("g1", current_work_id="w2")
         assert "助理工作账本" in text
         assert "助理正在处理" in text
         assert "不要让助理处理重复的问题" in text
         assert "解释双防抖" in text
 
-    def test_assistant_second_person(self):
+    def test_secretary_current_work_not_blocked(self):
+        wl = WorkLedger()
+        wl.start_work(
+            chat_id="g1",
+            work_id="w1",
+            trigger_message_id="m1",
+            trigger_summary="解释双防抖",
+            kind="assistant",
+        )
+        text = wl.format_for_secretary("g1", current_work_id="w1")
+        assert "本轮待处理" in text
+        assert "可以继续决策" in text
+        assert "不要让助理处理重复的问题" not in text
+
+    def test_assistant_current_work_is_this_round(self):
         wl = WorkLedger()
         wl.start_work(
             chat_id="g1",
@@ -59,9 +74,22 @@ class TestWorkLedgerFormat:
             kind="assistant",
         )
         text = wl.format_for_assistant("g1", current_work_id="w1")
-        assert "您已经在处理" in text
-        assert "请不要重复回答" in text
-        assert "解释双防抖" in text
+        assert "这是您本轮任务" in text
+        assert "请正常回答" in text
+        assert "请不要重复回答" not in text
+
+    def test_assistant_other_running_avoids_duplicate(self):
+        wl = WorkLedger()
+        wl.start_work(
+            chat_id="g1",
+            work_id="w1",
+            trigger_message_id="m1",
+            trigger_summary="解释双防抖",
+            kind="assistant",
+        )
+        text = wl.format_for_assistant("g1", current_work_id="w2")
+        assert "另有工作运行中" in text
+        assert "请勿重复回答同一套问题" in text
 
     def test_complete_work_status(self):
         wl = WorkLedger()
@@ -128,5 +156,6 @@ class TestTemporaryWorkContext:
         assert ctx["_no_save"] is True
         assert ctx["is_temporary_context"] is True
         text = ctx["content"][0]["text"]
-        assert "您已经在处理" in text
-        assert "请不要重复回答" in text
+        assert "这是您本轮任务" in text
+        assert "请正常回答" in text
+        assert "请不要重复回答" not in text

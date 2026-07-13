@@ -228,17 +228,12 @@ class StatusChecker:
             except Exception:
                 pass
 
-            # 唤醒词 / 昵称：只看当前事件正文
+            # 唤醒词 / 昵称：只看当前事件 outline
             content = ""
             try:
                 content = event.get_message_outline() or ""
             except Exception:
-                content = getattr(event, "message_str", "") or ""
-            if not content:
-                try:
-                    content = getattr(event, "message_str", "") or ""
-                except Exception:
-                    content = ""
+                content = ""
             return self._detect_wake_word(chat_id, content)
         except Exception as e:
             logger.debug(f"AngelHeart: 当前事件唤醒判定失败: {e}")
