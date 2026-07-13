@@ -8,7 +8,6 @@ AngelHeart插件 - 天使心智能群聊/私聊交互插件
 - 私聊：只缓存，主框架队列（无法向运行中子代理注入消息）
 """
 
-import asyncio
 import time
 import json
 from typing import Any
@@ -596,37 +595,19 @@ class AngelHeartPlugin(Star):
         )
 
     async def _cleanup_all_waiting_resources(self):
-        """清理所有等待中的资源和任务"""
+        """清理插件创建的全部后台任务、运行态内存与持久连接。"""
         try:
-            # 清理双防抖账本：旧事件全部 KILL
-            for chat_id in list(self.angel_context.current_states.keys()):
-                try:
-                    await self.angel_context.debounce_manager.clear_chat(
-                        chat_id, reason="terminate"
-                    )
-                except Exception as e:
-                    logger.debug(
-                        f"AngelHeart[{chat_id}]: terminate 清理防抖失败: {type(e).__name__}: {e}"
-                    )
-
-            # 取消所有耐心计时器
-            for chat_id, timer in self.angel_context.patience_timers.items():
-                if not timer.done():
-                    timer.cancel()
-                    logger.debug(f"AngelHeart[{chat_id}]: 已在terminate时取消耐心计时器")
-            self.angel_context.patience_timers.clear()
-
-            logger.info("AngelHeart: 所有等待资源已清理完成")
-
+            # 先取消私聊摘要，确保整理锁释放且不再访问即将关闭的 ledger。
+            await self.front_desk.cleanup_background_tasks()
         except Exception as e:
-            logger.error(f"AngelHeart: terminate时清理资源异常: {e}", exc_info=True)
+            logger.error(f"AngelHeart: 清理前台后台任务失败: {e}", exc_info=True)
+        try:
+            await self.angel_context.cleanup()
+        except Exception as e:
+            logger.error(f"AngelHeart: 清理全局运行态失败: {e}", exc_info=True)
+        logger.info("AngelHeart: 全部后台任务、运行态内存与持久连接已清理")
 
     async def terminate(self):
         """插件被卸载/停用时调用"""
-        # 清理主动应答任务
-        await self.angel_context.proactive_manager.cleanup()
-
-        # 清理所有等待中的事件和任务
         await self._cleanup_all_waiting_resources()
-
         logger.info("💖 AngelHeart 插件已终止")

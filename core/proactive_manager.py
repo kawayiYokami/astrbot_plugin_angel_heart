@@ -417,8 +417,18 @@ class ProactiveManager:
         return result
 
     async def cleanup(self):
-        """清理所有任务"""
+        """取消并等待全部主动任务退出，清空任务与触发器注册表。"""
         async with self._lock:
-            for chat_id in list(self.active_tasks.keys()):
-                await self._cancel_chat_task(chat_id)
-            logger.info("AngelHeart: 主动应答管理器已清理所有任务")
+            tasks = [
+                request.task
+                for request in self.active_tasks.values()
+                if request.task is not None
+            ]
+            self.active_tasks.clear()
+            self.custom_triggers.clear()
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        logger.info("AngelHeart: 主动应答管理器已清理所有任务和触发器")

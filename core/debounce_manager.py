@@ -82,6 +82,22 @@ class DebounceManager:
             if record:
                 await self._kill_record(record, reason or "clear_chat")
 
+    async def cleanup(self) -> None:
+        """取消全部计时任务，唤醒所有被扣押事件，并清空防抖账本。"""
+        async with self._lock:
+            records = list(self._assistant.values()) + list(self._secretary.values())
+            self._assistant.clear()
+            self._secretary.clear()
+            timers = []
+            for record in records:
+                if record.timer and not record.timer.done():
+                    record.timer.cancel()
+                    timers.append(record.timer)
+                if record.future and not record.future.done():
+                    record.future.set_result(KILL)
+        if timers:
+            await asyncio.gather(*timers, return_exceptions=True)
+
     async def schedule(
         self,
         *,

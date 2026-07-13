@@ -206,6 +206,9 @@ class WorkLedger:
     def clear_chat(self, chat_id: str) -> None:
         self._items.pop(str(chat_id or ""), None)
 
+    def clear(self) -> None:
+        self._items.clear()
+
     def _trim(self, chat_id: str) -> None:
         bucket = self._items.get(chat_id) or {}
         if not bucket:

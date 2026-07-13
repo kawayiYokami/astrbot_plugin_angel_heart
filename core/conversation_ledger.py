@@ -1556,5 +1556,31 @@ class ConversationLedger:
         tokens = chinese_chars * 0.6 + english_chars * 0.3
 
         return int(tokens) + (1 if tokens % 1 > 0 else 0)
+
+    def close(self) -> None:
+        """释放全部内存账本与 SQLite 句柄；允许重复调用。"""
+        with self._lock:
+            self._ledgers.clear()
+            self._last_compression_time.clear()
+            self._compression_locks.clear()
+            self.on_before_organize = None
+            self.on_after_organize = None
+
+        with self._db_lock:
+            cursor = self.db_cursor
+            connection = self.db_conn
+            self.db_cursor = None
+            self.db_conn = None
+            if cursor is not None:
+                try:
+                    cursor.close()
+                except sqlite3.Error:
+                    pass
+            if connection is not None:
+                try:
+                    connection.close()
+                except sqlite3.Error:
+                    pass
+
     BROKEN_IMAGE_CAPTION = "图裂了，图片无法打开，可能是网络问题或者格式不支持"
     EXPIRED_IMAGE_CAPTION = "因为时间问题，图片缓存内容已经丢失"

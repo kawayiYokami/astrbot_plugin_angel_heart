@@ -88,6 +88,9 @@ class FrontDesk:
         # secretary 引用将由 main.py 设置
         self.secretary = None
 
+        # 私聊摘要是插件自建后台任务，必须登记，供去重与 terminate 完整取消。
+        self._private_compression_tasks: Dict[str, asyncio.Task] = {}
+
     def _get_event_message_id(self, event: AstrMessageEvent) -> str:
         """
         获取内部事件ID（仅使用 AngelHeart 自生成ID）。
@@ -462,10 +465,10 @@ class FrontDesk:
                 logger.debug(
                     f"AngelHeart[{chat_id}]: 私聊消息已缓存，跳过秘书与双防抖，等待主框架队列/直接响应。"
                 )
-                # 私聊摘要后台跑，不阻塞前台返回
+                # 私聊摘要后台跑，不阻塞前台返回；同会话只保留一个已登记任务。
                 try:
                     if self.context.conversation_ledger._should_compress(chat_id):
-                        asyncio.create_task(self._maybe_private_llm_compress(chat_id))
+                        self._schedule_private_compression(chat_id)
                 except Exception as e:
                     logger.warning(f"AngelHeart[{chat_id}]: 调度私聊摘要失败: {e}")
                 return
@@ -598,6 +601,40 @@ class FrontDesk:
         # 不再用旧单槽扣押队列收集消息；并发由多个被放行事件自然形成。
         await self._call_secretary_and_execute(event, chat_id)
 
+    def _schedule_private_compression(self, chat_id: str) -> None:
+        """登记私聊摘要后台任务；同会话已有任务时不重复创建。"""
+        current = self._private_compression_tasks.get(chat_id)
+        if current and not current.done():
+            return
+
+        task = asyncio.create_task(self._maybe_private_llm_compress(chat_id))
+        self._private_compression_tasks[chat_id] = task
+
+        def _done(done_task: asyncio.Task) -> None:
+            if self._private_compression_tasks.get(chat_id) is done_task:
+                self._private_compression_tasks.pop(chat_id, None)
+            try:
+                done_task.result()
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:
+                logger.error(
+                    f"AngelHeart[{chat_id}]: 私聊摘要后台任务异常: {e}",
+                    exc_info=True,
+                )
+
+        task.add_done_callback(_done)
+
+    async def cleanup_background_tasks(self) -> None:
+        """取消并等待前台创建的全部后台任务退出。"""
+        tasks = list(self._private_compression_tasks.values())
+        self._private_compression_tasks.clear()
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
     async def _maybe_private_llm_compress(self, chat_id: str):
         """私聊主动 LLM 摘要压缩。"""
         ledger = self.context.conversation_ledger
@@ -620,6 +657,7 @@ class FrontDesk:
             return
 
         async def _text_chat(prompt: str) -> str:
+            # 超时/取消遵循上游 Provider 配置；异常向外抛给 ledger，触发规则摘要回退。
             token = await provider.text_chat(prompt=prompt)
             return (token.completion_text or "").strip()
 

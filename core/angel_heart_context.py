@@ -152,6 +152,35 @@ class AngelHeartContext:
                 timer_task.cancel()
                 logger.debug(f"AngelHeart[{chat_id}]: 已停止安抚（老板已经有答案了）")
 
+    async def cleanup(self) -> None:
+        """清理全局运行态：后台任务、调度账本、状态内存与持久连接。"""
+        try:
+            await self.proactive_manager.cleanup()
+        except Exception as e:
+            logger.error(f"AngelHeart: 清理主动应答任务失败: {e}", exc_info=True)
+        try:
+            await self.debounce_manager.cleanup()
+        except Exception as e:
+            logger.error(f"AngelHeart: 清理双防抖任务失败: {e}", exc_info=True)
+
+        timers = list(self.patience_timers.values())
+        timers.extend(self.status_transition_manager.degradation_timers.values())
+        self.patience_timers.clear()
+        self.status_transition_manager.degradation_timers.clear()
+        for timer in timers:
+            if not timer.done():
+                timer.cancel()
+        if timers:
+            await asyncio.gather(*timers, return_exceptions=True)
+
+        self.last_analysis_time.clear()
+        self.silenced_until.clear()
+        self.familiarity_cooldown_until.clear()
+        self.current_states.clear()
+        self.status_transition_manager.status_start_times.clear()
+        self.work_ledger.clear()
+        self.conversation_ledger.close()
+
     # ========== 时序控制 ==========
 
     async def update_last_analysis_time(self, chat_id: str):
