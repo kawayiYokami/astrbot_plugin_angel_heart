@@ -352,13 +352,6 @@ class ProactiveManager:
                 keywords=[request.topic]  # 核心搜索词
             )
 
-            # 存储决策
-            await self.angel_context.update_analysis_cache(
-                chat_id,
-                decision,
-                reason="主动应答"
-            )
-
             # 更新分析时间
             await self.angel_context.update_last_analysis_time(chat_id)
 

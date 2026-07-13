@@ -118,6 +118,24 @@ class TestGroupRuleOrganize:
         body = [m for m in msgs if m.get("kind") != "context_summary"]
         assert all(m.get("timestamp", 0) >= 8.0 for m in body)
 
+    def test_group_min_retain_fallback_drops_tools(self, ledger):
+        """正文不足 MIN_RETAIN 时 fallback 也不得把 tool 塞回连续块。"""
+        chat_id = "GroupMessage:toolfb"
+        # 只有 3 条正文 + 若干 tool，触发 fallback
+        for i in range(1, 4):
+            ledger.add_message(chat_id, _msg(i, f"u{i}", chat_id=chat_id))
+            ledger.add_message(
+                chat_id, _msg(100 + i, f"tool{i}", tool=True, chat_id=chat_id)
+            )
+        ok = ledger.organize_context(chat_id, mode="group_rule")
+        # 可能因预算/摘要条件返回 True/False，但 messages 不得含 tool
+        msgs = [
+            m
+            for m in ledger.get_all_messages(chat_id)
+            if m.get("kind") != "context_summary"
+        ]
+        assert all(m.get("role") != "tool" for m in msgs)
+
 
 class TestPrivateLlmCompress:
     @pytest.mark.asyncio

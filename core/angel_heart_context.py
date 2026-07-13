@@ -6,7 +6,6 @@ AngelHeart 插件 - 全局上下文管理器
 import time
 import asyncio
 from typing import Dict, Optional, Any
-from collections import OrderedDict
 
 try:
     from astrbot.api import logger
@@ -17,7 +16,6 @@ except ImportError:
 from astrbot.core.star.context import Context
 from astrbot.api.event import MessageChain
 from astrbot.core.message.components import Plain
-from ..models.analysis_result import SecretaryDecision
 from ..core.conversation_ledger import ConversationLedger
 from ..core.angel_heart_status import AngelHeartStatus, StatusTransitionManager
 from ..core.proactive_manager import ProactiveManager
@@ -63,10 +61,6 @@ class AngelHeartContext:
         # 混脸熟冷却控制（兼容保留；混脸熟不再作为进场条件）
         self.familiarity_cooldown_until: Dict[str, float] = {}  # chat_id -> 混脸熟冷却结束时间
 
-        # 决策缓存
-        self.analysis_cache: OrderedDict[str, SecretaryDecision] = OrderedDict()
-        self.CACHE_MAX_SIZE = 100  # 缓存最大尺寸
-
         # ========== 群聊参与状态 ==========
         # 当前状态跟踪：chat_id -> AngelHeartStatus
         # 现行语义：NOT_PRESENT=离场，OBSERVATION=在场
@@ -81,20 +75,24 @@ class AngelHeartContext:
         # 助理工作账本：正在/已经处理哪一套活
         self.work_ledger = WorkLedger()
 
-        # 整理开始时关闭防抖
+        # 整理开始时关闭防抖：先 bump 代际，clear 只杀整理前的 ticket
         def _close_debounce_on_organize(chat_id: str):
             try:
-                # 同步调度清理；debounce clear 是 async
                 import asyncio
 
+                old_gen = self.debounce_manager.bump_generation(chat_id)
+
                 async def _clear():
-                    await self.debounce_manager.clear_chat(chat_id, reason="context_organize")
+                    await self.debounce_manager.clear_chat(
+                        chat_id,
+                        reason="context_organize",
+                        only_upto_generation=old_gen,
+                    )
 
                 try:
                     loop = asyncio.get_running_loop()
                     loop.create_task(_clear())
                 except RuntimeError:
-                    # 无事件循环时尽力同步跑
                     try:
                         asyncio.run(_clear())
                     except Exception:
@@ -324,38 +322,6 @@ class AngelHeartContext:
             if not timer_task.done():
                 timer_task.cancel()
                 logger.debug(f"AngelHeart[{chat_id}]: 已停止安抚（老板已经有答案了）")
-
-    # ========== 决策缓存管理 ==========
-
-    async def update_analysis_cache(
-        self, chat_id: str, result: SecretaryDecision, reason: str = "分析完成"
-    ):
-        """
-        更新分析缓存。
-
-        Args:
-            chat_id (str): 会话ID。
-            result (SecretaryDecision): 决策结果。
-            reason (str): 更新原因（用于日志）。
-        """
-        self.analysis_cache[chat_id] = result
-
-        # 如果缓存超过最大尺寸，则移除最旧的条目
-        if len(self.analysis_cache) > self.CACHE_MAX_SIZE:
-            self.analysis_cache.popitem(last=False)
-
-        logger.info(
-            f"AngelHeart[{chat_id}]: {reason}，已更新缓存。决策: {'回复' if result.should_reply else '不回复'} | 策略: {result.reply_strategy} | 话题: {result.topic} | 目标: {result.reply_target}"
-        )
-
-    def get_decision(self, chat_id: str) -> Optional[SecretaryDecision]:
-        """获取指定会话的决策"""
-        return self.analysis_cache.get(chat_id)
-
-    async def clear_decision(self, chat_id: str):
-        """清除指定会话的决策"""
-        if self.analysis_cache.pop(chat_id, None) is not None:
-            logger.debug(f"AngelHeart[{chat_id}]: 已从缓存中移除一次性决策。")
 
     # ========== 时序控制 ==========
 

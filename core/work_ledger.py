@@ -105,39 +105,62 @@ class WorkLedger:
         items.sort(key=lambda w: w.started_at, reverse=True)
         return items[: max(1, int(limit))]
 
-    def format_for_secretary(self, chat_id: str) -> str:
-        """第三人称：给秘书。"""
+    def format_for_secretary(self, chat_id: str, current_work_id: str = "") -> str:
+        """第三人称：给秘书。
+
+        本轮 current_work_id 可展示，但不说「不要让助理处理这个问题」。
+        避让话术只针对其他 running 工作。
+        """
         works = self.get_recent_works(chat_id)
         if not works:
             return "助理工作账本：当前无登记中的工作。"
 
+        current_work_id = str(current_work_id or "")
         lines = ["助理工作账本："]
+        current = None
+        others_running = []
         for w in works:
             status_cn = {
                 "running": "运行中",
                 "done": "已完成",
                 "failed": "失败",
             }.get(w.status, w.status)
+            is_current = bool(current_work_id and w.work_id == current_work_id)
+            if is_current:
+                current = w
+                tag = "本轮"
+            else:
+                tag = status_cn
+                if w.status == "running":
+                    others_running.append(w)
             line = (
-                f"- [{status_cn}] 触发锚点={w.trigger_message_id or '未知'}；"
+                f"- [{tag}] 触发锚点={w.trigger_message_id or '未知'}；"
                 f"任务={w.trigger_summary}"
             )
             if w.result_summary:
                 line += f"；结果={w.result_summary}"
             lines.append(line)
 
-        active = [w for w in works if w.status == "running"]
-        if active:
-            names = "；".join(w.trigger_summary for w in active)
+        if current and current.status == "running":
+            lines.append(
+                f"本轮待处理：{current.trigger_summary}。这是当前事件对应的工作，可以继续决策。"
+            )
+
+        if others_running:
+            names = "；".join(w.trigger_summary for w in others_running)
             lines.append(
                 f"助理正在处理：{names}。不要让助理处理重复的问题。"
             )
-        else:
+        elif not (current and current.status == "running"):
             lines.append("当前没有运行中的助理工作。")
         return "\n".join(lines)
 
     def format_for_assistant(self, chat_id: str, current_work_id: str = "") -> str:
-        """第二人称：给助理临时注入。"""
+        """第二人称：给助理临时注入。
+
+        本轮任务：说明「这是您本轮任务」，不说「请不要重复回答」。
+        勿重复只针对其他 running / 已完成工作。
+        """
         works = self.get_recent_works(chat_id)
         if not works:
             return "工作提醒：当前没有其他已登记工作。"
@@ -153,8 +176,8 @@ class WorkLedger:
 
         if current and current.status == "running":
             lines.append(
-                f"您已经在处理「{current.trigger_summary}」"
-                f"（触发锚点={current.trigger_message_id or '未知'}），请不要重复回答。"
+                f"这是您本轮任务：「{current.trigger_summary}」"
+                f"（触发锚点={current.trigger_message_id or '未知'}）。请正常回答。"
             )
         elif current:
             lines.append(
@@ -168,7 +191,6 @@ class WorkLedger:
                     f"（触发锚点={w.trigger_message_id or '未知'}）。请勿重复回答同一套问题。"
                 )
         elif not current:
-            # 没有 current，也没有 running，给最近完成摘要
             latest = works[0]
             status_cn = {
                 "running": "运行中",
