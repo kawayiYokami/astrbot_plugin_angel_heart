@@ -134,7 +134,7 @@ AngelHeart 是一个专为 AstrBot 平台设计的智能群聊交互插件，采
 
 ### 性能考虑
 
-1. **消息限制**：通过 `PER_CHAT_LIMIT` 和 `TOTAL_MESSAGE_LIMIT` 控制内存使用
+1. **消息限制**：通过上下文整理（token / 超时）与 `TOTAL_MESSAGE_LIMIT` 控制内存使用
 2. **缓存策略**：图片转述结果使用 dHash 缓存避免重复处理
 3. **异步优化**：所有IO操作必须异步执行
 
@@ -192,8 +192,9 @@ print(f"持续时间: {summary['duration_seconds']}秒")
 1. **门闩**：只决定「回不回」
    - `should_reply=True` → 唤醒主脑
    - `should_reply=False` → 停止事件
-2. **旁路**：可挂到本事件 `event.angelheart_context`（chat_records + secretary_decision + needs_search），给日志/下游钩子看
+2. **旁路**：挂到本事件 `event.angelheart_context`（`chat_records` + `secretary_decision`），给日志/下游钩子看
 3. **不进主脑请求体**：`req.contexts` 临时注入只留工作账本；历史重写只认 `ConversationLedger`
+4. **过时字段**：不再注入 `needs_search`
 
 ## 常见问题
 

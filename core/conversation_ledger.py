@@ -41,9 +41,7 @@ class ConversationLedger:
         # 会话账本是内存态，重启后无法可靠关联旧媒体引用，启动时清空运行期缓存。
         self.image_cache.clean_all()
 
-        # 每个会话的最大消息数量
-        self.PER_CHAT_LIMIT = 1000
-        # 总消息数量上限
+        # 总消息数量上限（跨会话保险丝；单会话条数由上下文整理/token 限制收口）
         self.TOTAL_MESSAGE_LIMIT = 100000
         # 最小保留消息数量（即使过期也保留）
         self.MIN_RETAIN_COUNT = 7
@@ -372,7 +370,6 @@ class ConversationLedger:
         """
         # 1. 添加新消息
         ledger = self._get_or_create_ledger(chat_id)
-        should_cleanup_cache = False
         with self._lock:
             # is_processed 已退役，写入时清理旧字段
             message.pop("is_processed", None)
@@ -385,16 +382,6 @@ class ConversationLedger:
                 message,
                 key=lambda m: m.get("timestamp", 0)
             )
-
-            # 限制每个会话的消息数量
-            if len(ledger["messages"]) > self.PER_CHAT_LIMIT:
-                excess = len(ledger["messages"]) - self.PER_CHAT_LIMIT
-                # 保留最新的PER_CHAT_LIMIT条消息
-                ledger["messages"] = ledger["messages"][-self.PER_CHAT_LIMIT:]
-                should_cleanup_cache = True
-
-        if should_cleanup_cache:
-            self._cleanup_unreferenced_media_cache(chat_id)
 
         # 2. 判断是否需要压缩/整理
         # 私聊：留给上层主动 LLM 摘要，不在入库同步路径里抢先规则收口

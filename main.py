@@ -104,11 +104,10 @@ class AngelHeartPlugin(Star):
 
                 chat_records = context.get("chat_records", [])
                 secretary_decision = context.get("secretary_decision", {})
-                needs_search = context.get("needs_search", False)
 
                 logger.debug(
                     f"AngelHeart[{chat_id}]: 读取到上下文 - 记录数: {len(chat_records)}, "
-                    f"决策: {secretary_decision.get('reply_strategy', '未知')}, 需搜索: {needs_search}"
+                    f"决策: {secretary_decision.get('reply_strategy', '未知')}"
                 )
             except json.JSONDecodeError as e:
                 logger.warning(
