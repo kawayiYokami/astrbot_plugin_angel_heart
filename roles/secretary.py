@@ -83,9 +83,15 @@ class Secretary:
                 chat_id, AngelHeartStatus.OBSERVATION, "防抖激活，确保在场"
             )
 
-        # 激活时重建上下文后再分析
+        boundary_message_id = self.angel_context.debounce_manager.get_end_message_id(event)
+        if not boundary_message_id:
+            boundary_message_id = str(
+                getattr(getattr(event, "message_obj", None), "message_id", "") or ""
+            )
         historical_context, recent_dialogue, boundary_ts = (
-            self.angel_context.conversation_ledger.get_context_snapshot(chat_id)
+            self.angel_context.conversation_ledger.get_context_snapshot(
+                chat_id, boundary_message_id
+            )
         )
         if not recent_dialogue:
             logger.info(f"AngelHeart[{chat_id}]: 无新消息需要分析。")
@@ -103,6 +109,7 @@ class Secretary:
                         "historical_context": historical_context,
                         "recent_dialogue": recent_dialogue,
                         "boundary_ts": boundary_ts,
+                        "boundary_message_id": boundary_message_id,
                     },
                 )
         except Exception as e:

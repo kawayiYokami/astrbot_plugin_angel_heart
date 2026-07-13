@@ -226,14 +226,14 @@ def test_appends_non_current_aggregated_images_as_extra_content_parts():
     req = _request(["file:///tmp/current.png"])
     recent_dialogue = [
         {
-            "source_event_id": "old-event",
+            "source_message_id": "old-event",
             "content": [
                 {"type": "text", "text": "前一条"},
                 _image("data:image/png;base64,OLD_IMAGE"),
             ],
         },
         {
-            "source_event_id": "current-event",
+            "source_message_id": "current-event",
             "content": [
                 {"type": "text", "text": "当前条"},
                 _image("data:image/png;base64,CURRENT_LEDGER_IMAGE"),

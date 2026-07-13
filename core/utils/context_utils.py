@@ -75,9 +75,24 @@ def json_serialize_context(
         return json.dumps(fallback_context, ensure_ascii=False)
 
 
+def _slice_messages_through_id(
+    messages: List[Dict], boundary_message_id: str
+) -> List[Dict]:
+    """按消息 ID 包含式截断；找不到明确边界时拒绝扩窗。"""
+    boundary_message_id = str(boundary_message_id or "")
+    if not boundary_message_id:
+        return messages
+    for index, message in enumerate(messages):
+        if str(message.get("source_message_id", "") or "") == boundary_message_id:
+            return messages[: index + 1]
+    logger.warning(f"上下文边界消息不存在: {boundary_message_id}")
+    return []
+
+
 def partition_dialogue(
     ledger: 'ConversationLedger',
-    chat_id: str
+    chat_id: str,
+    boundary_message_id: str = "",
 ) -> Tuple[List[Dict], List[Dict], float]:
     """
     正式上下文切分（秘书轻量分析用）：
@@ -85,7 +100,9 @@ def partition_dialogue(
     - 当前连续消息块整体作为 recent（不再用 is_processed）
     - boundary 为块尾时间戳
     """
-    all_messages = ledger.get_all_messages(chat_id)
+    all_messages = _slice_messages_through_id(
+        ledger.get_all_messages(chat_id), boundary_message_id
+    )
     summary = ""
     try:
         summary = ledger.get_current_summary(chat_id)
@@ -176,7 +193,8 @@ def _generate_tool_description(tool_name: str, tool_args: Dict) -> str:
 
 def partition_dialogue_raw(
     ledger: 'ConversationLedger',
-    chat_id: str
+    chat_id: str,
+    boundary_message_id: str = "",
 ) -> Tuple[List[Dict], List[Dict], float]:
     """
     正式上下文切分（主脑完整上下文）：
@@ -185,7 +203,9 @@ def partition_dialogue_raw(
     - 保留工具结构
     - 不再使用 is_processed
     """
-    all_messages = ledger.get_all_messages(chat_id)
+    all_messages = _slice_messages_through_id(
+        ledger.get_all_messages(chat_id), boundary_message_id
+    )
     summary = ""
     try:
         summary = ledger.get_current_summary(chat_id)

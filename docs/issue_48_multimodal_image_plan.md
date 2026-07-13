@@ -176,7 +176,7 @@ AngelHeart 自己需要处理的是进入 ledger 的历史消息。
   ],
   "sender_id": "123456",
   "sender_name": "小明",
-  "source_event_id": "ah-event-1",
+  "source_message_id": "message-uuid-1",
   "timestamp": 1780000000.0,
   "chat_id": "aiocqhttp:FriendMessage:123456",
   "is_processed": false
@@ -306,7 +306,7 @@ AngelHeart 重写后应类似：
    - 不再无条件清空 `req.image_urls`
    - provider 不支持图片时清空当前图片
    - provider 支持图片时，保留原始 `req.image_urls`
-   - 聚合消息中非当前事件的图片作为 `ImageURLPart` 追加到 `extra_user_content_parts`
+   - 聚合消息中非当前消息的图片作为 `ImageURLPart` 追加到 `extra_user_content_parts`
 
 4. 保持历史 contexts 行为。
    - 历史消息继续由 `MessageProcessor` 构建。

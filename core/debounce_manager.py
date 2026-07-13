@@ -36,8 +36,8 @@ class DebounceRecord:
     future: asyncio.Future
     version: int
     must_reply: bool
-    start_event_id: str
-    end_event_id: str
+    start_message_id: str
+    end_message_id: str
     delay: float
     created_at: float = field(default_factory=time.time)
     timer: Optional[asyncio.Task] = None
@@ -104,7 +104,7 @@ class DebounceManager:
         chat_id: str,
         event: Any,
         sender_id: str,
-        event_id: str,
+        message_id: str,
         is_wake: bool,
         is_present: bool,
     ) -> Optional[asyncio.Future]:
@@ -115,7 +115,7 @@ class DebounceManager:
             None: 本事件只入库，不进入后续请求。
         """
         sender_id = str(sender_id or "")
-        event_id = str(event_id or "")
+        message_id = str(message_id or "")
 
         async with self._lock:
             if is_wake:
@@ -123,14 +123,14 @@ class DebounceManager:
                     chat_id=chat_id,
                     event=event,
                     sender_id=sender_id,
-                    event_id=event_id,
+                    message_id=message_id,
                     is_present=is_present,
                 )
             return await self._schedule_non_wake(
                 chat_id=chat_id,
                 event=event,
                 sender_id=sender_id,
-                event_id=event_id,
+                message_id=message_id,
                 is_present=is_present,
             )
 
@@ -140,7 +140,7 @@ class DebounceManager:
         chat_id: str,
         event: Any,
         sender_id: str,
-        event_id: str,
+        message_id: str,
         is_present: bool,
     ) -> Optional[asyncio.Future]:
         key = (chat_id, sender_id)
@@ -153,7 +153,7 @@ class DebounceManager:
                 chat_id=chat_id,
                 event=event,
                 sender_id=sender_id,
-                event_id=event_id,
+                message_id=message_id,
                 kind="assistant",
                 delay=self._accelerate_delay(),
                 must_reply=True,
@@ -170,7 +170,7 @@ class DebounceManager:
                 chat_id=chat_id,
                 event=event,
                 sender_id=sender_id,
-                event_id=event_id,
+                message_id=message_id,
                 kind="secretary",
                 delay=self._accelerate_delay(),
                 must_reply=True,
@@ -185,7 +185,7 @@ class DebounceManager:
             chat_id=chat_id,
             event=event,
             sender_id=sender_id,
-            event_id=event_id,
+            message_id=message_id,
             kind="assistant",
             delay=self._assistant_delay(),
             must_reply=True,
@@ -198,7 +198,7 @@ class DebounceManager:
         chat_id: str,
         event: Any,
         sender_id: str,
-        event_id: str,
+        message_id: str,
         is_present: bool,
     ) -> Optional[asyncio.Future]:
         key = (chat_id, sender_id)
@@ -212,7 +212,7 @@ class DebounceManager:
                 chat_id=chat_id,
                 event=event,
                 sender_id=sender_id,
-                event_id=event_id,
+                message_id=message_id,
                 kind="assistant",
                 delay=self._assistant_delay(),
                 must_reply=existing_assistant.must_reply,
@@ -241,7 +241,7 @@ class DebounceManager:
                 chat_id=chat_id,
                 event=event,
                 sender_id=sender_id,
-                event_id=event_id,
+                message_id=message_id,
                 kind="secretary",
                 delay=self._secretary_delay(),
                 must_reply=existing_secretary.must_reply,
@@ -255,7 +255,7 @@ class DebounceManager:
             chat_id=chat_id,
             event=event,
             sender_id=sender_id,
-            event_id=event_id,
+            message_id=message_id,
             kind="secretary",
             delay=self._secretary_delay(),
             must_reply=False,
@@ -270,7 +270,7 @@ class DebounceManager:
         chat_id: str,
         event: Any,
         sender_id: str,
-        event_id: str,
+        message_id: str,
         kind: str,
         delay: float,
         must_reply: bool,
@@ -286,8 +286,8 @@ class DebounceManager:
             future=future,
             version=version,
             must_reply=must_reply,
-            start_event_id=event_id,
-            end_event_id=event_id,
+            start_message_id=message_id,
+            end_message_id=message_id,
             delay=delay,
         )
         record.timer = asyncio.create_task(self._timer_handler(record))
@@ -310,7 +310,7 @@ class DebounceManager:
         chat_id: str,
         event: Any,
         sender_id: str,
-        event_id: str,
+        message_id: str,
         kind: str,
         delay: float,
         must_reply: bool,
@@ -328,8 +328,8 @@ class DebounceManager:
             future=future,
             version=version,
             must_reply=must_reply,
-            start_event_id=old.start_event_id if keep_start else event_id,
-            end_event_id=event_id,
+            start_message_id=old.start_message_id if keep_start else message_id,
+            end_message_id=message_id,
             delay=delay,
         )
         record.timer = asyncio.create_task(self._timer_handler(record))
@@ -369,10 +369,10 @@ class DebounceManager:
                             record.event.set_extra("angelheart_must_reply", record.must_reply)
                             record.event.set_extra("angelheart_debounce_kind", record.kind)
                             record.event.set_extra(
-                                "angelheart_debounce_start_event_id", record.start_event_id
+                                "angelheart_debounce_start_message_id", record.start_message_id
                             )
                             record.event.set_extra(
-                                "angelheart_debounce_end_event_id", record.end_event_id
+                                "angelheart_debounce_end_message_id", record.end_message_id
                             )
                     except Exception:
                         pass
@@ -419,6 +419,16 @@ class DebounceManager:
         try:
             if hasattr(event, "get_extra"):
                 return str(event.get_extra("angelheart_debounce_kind", "") or "")
+        except Exception:
+            pass
+        return ""
+
+    def get_end_message_id(self, event: Any) -> str:
+        try:
+            if hasattr(event, "get_extra"):
+                return str(
+                    event.get_extra("angelheart_debounce_end_message_id", "") or ""
+                )
         except Exception:
             pass
         return ""
