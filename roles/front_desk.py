@@ -29,6 +29,7 @@ from ..core.image_processor import ImageProcessor
 
 from ..core.fishing_direct_reply import FishingDirectReply
 from ..core.message_processor import MessageProcessor
+from ..core.utils.message_utils import serialize_content_parts
 
 # 导入状态枚举
 from ..core.angel_heart_status import AngelHeartStatus, StatusChecker
@@ -1044,21 +1045,19 @@ class FrontDesk:
                 continue
 
             role = record.get("role")
-            if role not in ("user", "assistant"):
-                continue
-
-            if record.get("tool_calls"):
+            if role not in ("user", "assistant", "tool"):
                 continue
 
             content = self._extract_text_from_astrbot_history_record(record)
-            if not content:
-                continue
-
             content_tokens = self._estimate_text_tokens(content)
             if used_tokens + content_tokens > self.ASTRBOT_HISTORY_TEXT_TOKEN_LIMIT:
                 break
 
-            selected_records.append((role, content))
+            normalized_record = self._convert_astrbot_history_record(record)
+            if normalized_record is None:
+                continue
+
+            selected_records.append(normalized_record)
             used_tokens += content_tokens
 
             if len(selected_records) >= message_limit:
@@ -1066,22 +1065,66 @@ class FrontDesk:
 
         selected_records.reverse()
 
-        converted_messages = []
         base_timestamp = time.time() - max(len(selected_records), 1)
+        for index, message in enumerate(selected_records):
+            message["timestamp"] = base_timestamp + index
 
-        for index, (role, content) in enumerate(selected_records):
-            converted_messages.append(
-                {
-                    "role": role,
-                    "content": content,
-                    "sender_id": "assistant" if role == "assistant" else "history_user",
-                    "sender_name": "assistant" if role == "assistant" else "user",
-                    "timestamp": base_timestamp + index,
-                    "source": "astrbot_conversation",
-                }
-            )
+        return selected_records
 
-        return converted_messages
+    def _convert_astrbot_history_record(self, record: Dict) -> Dict | None:
+        role = record.get("role")
+        if role == "user":
+            content = self._extract_text_from_astrbot_history_record(record)
+            if not content:
+                return None
+            return {
+                "role": "user",
+                "content": content,
+                "sender_id": "history_user",
+                "sender_name": "user",
+                "source": "astrbot_conversation",
+            }
+
+        if role == "assistant":
+            content = record.get("content", "")
+            tool_calls = record.get("tool_calls")
+            if content is None and not tool_calls:
+                return None
+
+            normalized_content = serialize_content_parts(content)
+            if isinstance(normalized_content, list) and not normalized_content:
+                normalized_content = []
+            elif normalized_content is None:
+                normalized_content = [] if tool_calls else ""
+
+            converted = {
+                "role": "assistant",
+                "content": normalized_content,
+                "sender_id": "assistant",
+                "sender_name": "assistant",
+                "source": "astrbot_conversation",
+            }
+            if tool_calls:
+                converted["tool_calls"] = serialize_content_parts(tool_calls)
+                converted["is_structured_toolcall"] = True
+            return converted
+
+        if role == "tool":
+            content = record.get("content", "")
+            normalized_content = serialize_content_parts(content)
+            if normalized_content is None:
+                normalized_content = ""
+            return {
+                "role": "tool",
+                "content": normalized_content,
+                "tool_call_id": record.get("tool_call_id"),
+                "sender_id": "tool",
+                "sender_name": "tool_result",
+                "source": "astrbot_conversation",
+                "is_structured_toolcall": True,
+            }
+
+        return None
 
     def _estimate_text_tokens(self, text: str) -> int:
         """粗略估算文本 token 数，与总账压缩估算保持同一量级。"""
@@ -1316,21 +1359,16 @@ class FrontDesk:
                         )
 
                 elif msg.get("role") == "assistant":
-                    # 对于 assistant 消息，强制将 content 转换为纯文本字符串
+                    # assistant 历史必须保留 think / text / tool_calls 等结构，只移除图片。
                     content = filtered_msg.get("content", [])
-                    assistant_text = ""
-
                     if isinstance(content, list):
+                        filtered_content = []
                         for item in content:
-                            # 只处理字典类型的文本组件
-                            if isinstance(item, dict) and item.get("type") == "text":
-                                assistant_text += item.get("text", "")
-                    elif isinstance(content, str):
-                        assistant_text = content
-                    else:
-                        assistant_text = str(content)
-
-                    filtered_msg["content"] = assistant_text
+                            if isinstance(item, dict) and item.get("type") == "image_url":
+                                images_filtered_count += 1
+                                continue
+                            filtered_content.append(item)
+                        filtered_msg["content"] = filtered_content
 
                 filtered_contexts.append(filtered_msg)
 

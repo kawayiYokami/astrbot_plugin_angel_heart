@@ -341,24 +341,39 @@ class ConversationLedger:
             message: 消息字典
             should_prune: 兼容旧参数，当前不再因离场状态强制压缩
         """
-        # 1. 添加新消息
+        self.add_messages(chat_id, [message], should_prune=should_prune)
+
+    def add_messages(
+        self, chat_id: str, messages: List[Dict], should_prune: bool = False
+    ):
+        """
+        向指定会话原子追加多条消息。
+
+        同一批消息在单次锁内全部可见，避免完成事件的 assistant/tool 链
+        被其他请求读成半截。
+        """
+        if not messages:
+            return
+
+        # 1. 同一把锁内写完整批，读者要么全见要么全不见
         ledger = self._get_or_create_ledger(chat_id)
         with self._lock:
-            # is_processed 已退役，写入时清理旧字段
-            message.pop("is_processed", None)
-            if "chat_id" not in message:
-                message["chat_id"] = chat_id
+            for message in messages:
+                # is_processed 已退役，写入时清理旧字段
+                message.pop("is_processed", None)
+                if "chat_id" not in message:
+                    message["chat_id"] = chat_id
 
-            # 使用 bisect.insort 在排序位置插入，避免全量排序
-            self._bisect.insort(
-                ledger["messages"],
-                message,
-                key=lambda m: m.get("timestamp", 0)
-            )
+                # 使用 bisect.insort 在排序位置插入，避免全量排序
+                self._bisect.insort(
+                    ledger["messages"],
+                    message,
+                    key=lambda m: m.get("timestamp", 0),
+                )
 
         # 2. 判断是否需要压缩/整理
         # 私聊：留给上层主动 LLM 摘要，不在入库同步路径里抢先规则收口
-        # 群聊：规则整理
+        # 群聊：规则整理（整批只整理一次）
         if self._should_compress(chat_id) and not self._is_private_chat_id(chat_id):
             self.organize_context(chat_id, mode="group_rule")
 

@@ -16,6 +16,7 @@ import copy
 from typing import Any, List, Dict
 
 from .utils import format_message_to_text
+from .utils.message_utils import serialize_content_parts
 
 
 class MessageProcessor:
@@ -81,6 +82,18 @@ class MessageProcessor:
 
     def _handle_regular_message(self, msg: Dict[str, Any]) -> Dict[str, Any]:
         """处理普通消息（使用已有的图片转述、文本格式化等）"""
+        role = msg.get("role", "user")
+
+        # assistant 常规消息必须保留原始结构，避免丢失 think / 多模态 parts。
+        if role == "assistant":
+            original_content = msg.get("content", [])
+            if isinstance(original_content, str):
+                return {"role": role, "content": original_content}
+            return {
+                "role": role,
+                "content": self._normalize_content(original_content),
+            }
+
         # 预处理消息内容：使用已有的图片转述和多模态内容
         processed_msg = copy.deepcopy(msg)
         original_content = processed_msg.get("content", [])
@@ -104,15 +117,8 @@ class MessageProcessor:
         image_ref_text = self._build_image_refs_text(image_components)
 
         # 构建最终内容
-        role = msg.get("role", "user")
-        # 强制规则：
-        # 1. 助理消息：无条件字符串
-        # 2. 用户消息：无图片 -> 字符串，有图片 -> 多模态列表
-        if role == "assistant":
-            final_content = xml_content  # 助理消息保持纯文本字符串
-            if image_ref_text:
-                final_content = f"{final_content}\n{image_ref_text}"
-        elif not image_components:
+        # 用户消息：无图片 -> 字符串，有图片 -> 多模态列表
+        if not image_components:
             final_content = [{"type": "text", "text": xml_content}]
             if image_ref_text:
                 final_content.append({"type": "text", "text": image_ref_text})
@@ -133,7 +139,8 @@ class MessageProcessor:
         if isinstance(content, str):
             return [{"type": "text", "text": content}]
         elif isinstance(content, list):
-            return content.copy()
+            normalized = serialize_content_parts(content)
+            return normalized if isinstance(normalized, list) else []
         else:
             return [{"type": "text", "text": str(content)}]
 

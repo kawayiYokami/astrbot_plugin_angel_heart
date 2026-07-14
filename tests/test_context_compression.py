@@ -89,14 +89,17 @@ def make_message(role: str, content: str, timestamp: float,
 
 
 def make_tool_result(content: str, timestamp: float,
-                     is_processed: bool = False) -> Dict:
+                     is_processed: bool = False, tool_call_id: str = "") -> Dict:
     """创建一条工具结果消息"""
-    return {
+    msg = {
         "role": "tool",
         "content": content,
         "timestamp": timestamp,
         "is_processed": is_processed,
     }
+    if tool_call_id:
+        msg["tool_call_id"] = tool_call_id
+    return msg
 
 
 def make_long_message(role: str, timestamp: float, char_count: int = 500,
@@ -454,6 +457,71 @@ class TestConcurrency:
         assert not errors, f"并发错误: {errors}"
         messages = ledger.get_all_messages(chat_id)
         assert len(messages) > 0, "应有消息被保留"
+
+    def test_add_messages_is_atomic_for_readers(self, temp_dir):
+        """批量入账在同一把锁内完成，释放锁时完整链已可见。"""
+        from core.conversation_ledger import ConversationLedger
+
+        config = MockConfigManager(
+            max_conversation_tokens=200000,
+            context_content_retain_tokens=50000,
+            context_tool_retain_tokens=50000,
+            # 关闭遗忘整理，避免本测试被群聊规则整理改写结果。
+            context_forgetting_timeout=0,
+        )
+        ledger = ConversationLedger(config, temp_dir)
+        # 使用私聊 ID，避免群聊规则整理在入库后丢 tool 链。
+        chat_id = "FriendMessage:atomic_batch_chat"
+        release_snapshots = []
+        real_lock = ledger._lock
+
+        class TrackingLock:
+            def acquire(self, blocking=True, timeout=-1):
+                return real_lock.acquire(blocking=blocking, timeout=timeout)
+
+            def release(self):
+                ledger_data = ledger._ledgers.get(chat_id)
+                if ledger_data is not None:
+                    release_snapshots.append(
+                        [m.get("role") for m in list(ledger_data["messages"])]
+                    )
+                return real_lock.release()
+
+            def __enter__(self):
+                self.acquire()
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                self.release()
+                return False
+
+        ledger._lock = TrackingLock()
+
+        batch = [
+            make_message(
+                "assistant",
+                "call tool",
+                1000.0,
+                tool_calls=[{"id": "call_1", "function": {"name": "search"}}],
+            ),
+            make_tool_result("tool result", 1000.001, tool_call_id="call_1"),
+            make_message("assistant", "final answer", 1000.002),
+        ]
+        ledger.add_messages(chat_id, batch)
+
+        messages = ledger.get_all_messages(chat_id)
+        assert [m.get("role") for m in messages] == ["assistant", "tool", "assistant"]
+        assert messages[0].get("tool_calls")
+        assert messages[1].get("tool_call_id") == "call_1"
+        assert messages[2].get("content") == "final answer"
+        # 释放锁时至少有一次看到完整链，且从未单独暴露半截 tool 链。
+        assert any(
+            roles == ["assistant", "tool", "assistant"] for roles in release_snapshots
+        )
+        assert not any(
+            roles in (["assistant"], ["assistant", "tool"])
+            for roles in release_snapshots
+        )
 
     def test_concurrent_compression_and_read(self, temp_dir):
         """压缩和读取并发不会崩溃"""
