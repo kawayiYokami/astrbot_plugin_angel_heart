@@ -240,8 +240,9 @@ A: 1. 在 [`MessageProcessor`](core/message_processor.py:21) 中添加特殊格�
 1. 完成功能修改后，先做基础检查（至少执行一次 `python -m compileall .` 或等效检查）。
 2. 查看变更：`git status --short`、`git diff`。
 3. 只提交本次相关文件：`git add <files...>`。
-4. 提交信息建议格式：`type(scope): summary`
-   - 示例：`fix(lock): ensure lock release on exception paths`
+4. 提交信息建议格式：`type(scope): 中文摘要`
+   - 示例：`fix(lock): 异常路径确保释放门锁`
    - 常用 type：`fix`、`feat`、`refactor`、`docs`、`chore`
+   - summary 使用中文；type 与 scope 保持英文小写
 5. 提交：`git commit -m "<message>"`。
 6. 若是发布提交，确认 `metadata.yaml` 已更新为目标版本后再提交。
