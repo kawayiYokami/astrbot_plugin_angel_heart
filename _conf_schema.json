@@ -267,26 +267,6 @@
     }
   },
 
-  "comfort": {
-    "type": "object",
-    "description": "[安抚机制] 耐心计时器配置",
-    "hint": "控制AI等待时的安抚行为。",
-    "items": {
-      "patience_interval": {
-        "type": "int",
-        "description": "久等间隔（秒）",
-        "hint": "耐心计时器各阶段之间的时间间隔。",
-        "default": 6000
-      },
-      "comfort_words": {
-        "type": "string",
-        "description": "安心词",
-        "hint": "耐心计时器各阶段发送的安慰话语。多个词请用 '|' 分隔。",
-        "default": ""
-      }
-    }
-  },
-
   "debug": {
     "type": "object",
     "description": "[调试功能] 调试与显示",

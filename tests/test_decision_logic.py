@@ -48,7 +48,6 @@ def make_config(reply_even: bool, force_reply: bool = True):
         "leave_reply": {},
         "access_control": {},
         "context_compression": {},
-        "comfort": {},
         "debug": {},
     })
 

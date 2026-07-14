@@ -31,7 +31,6 @@ AngelHeart 是一个专为 AstrBot 平台设计的智能群聊交互插件，采
 
 - **双防抖**：助理防抖 + 秘书防抖；旧事件 KILL，只放行最后边界事件
 - **事件扣押**：等待挂在事件 Future 上，由 `DebounceManager` 调度
-- **耐心计时器**：通过 [`start_patience_timer()`](core/angel_heart_context.py) 提供用户等待反馈
 
 ### 4. 分层架构设计
 

@@ -208,16 +208,6 @@ class ConfigManager:
             return grp["forgetting_timeout"]
         return self._config.get("context_forgetting_timeout", 86400)
 
-    # ========== comfort ==========
-
-    @property
-    def patience_interval(self) -> int:
-        return self._get_grouped("comfort", "patience_interval", 60)
-
-    @property
-    def comfort_words(self) -> str:
-        return self._get_grouped("comfort", "comfort_words", "要给")
-
     # ========== debug ==========
 
     @property

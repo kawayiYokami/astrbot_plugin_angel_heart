@@ -489,7 +489,7 @@ class AngelHeartPlugin(Star):
     @track_runtime_handler
     async def handle_message_sent(self, event: AstrMessageEvent):
         """
-        消息发送后处理：取消耐心计时器、状态转换、释放处理锁
+        消息发送后处理：状态转换、完成工作账本
 
         比 on_decorating_result 更可靠，因为即使消息链为空也会触发
         """
@@ -497,10 +497,7 @@ class AngelHeartPlugin(Star):
         try:
             logger.debug(f"AngelHeart[{chat_id}]: 消息发送完成，开始后处理...")
 
-            # 1. 取消耐心计时器
-            await self.angel_context.cancel_patience_timer(chat_id)
-
-            # 2. 状态转换：AI发送消息后转换到观测期
+            # 状态转换：AI发送消息后转换到观测期
             # 仅在消息链非空时才执行状态转换
             result = event.get_result()
             if result and result.chain:
