@@ -1,62 +1,108 @@
-"""插件 Handler 运行任务登记与终止收口。"""
+"""插件 Handler 调用与所属事件 pipeline 的生命周期收口。"""
 
 from __future__ import annotations
 
 import asyncio
-from contextlib import asynccontextmanager
 from functools import wraps
-from typing import AsyncIterator, Callable, TypeVar
+from typing import Awaitable, Callable, TypeVar
 
 
 _HandlerResult = TypeVar("_HandlerResult")
 
 
 class RuntimeTaskTracker:
-    """登记插件在途 Handler；停止时拒绝新任务并取消等待旧任务。"""
+    """以独立子任务运行 Handler，并等待其所属事件 pipeline 完整退出。"""
 
     def __init__(self) -> None:
         self._accepting = True
-        self._tasks: set[asyncio.Task] = set()
+        self._children: dict[asyncio.Task, object] = {}
+        self._pipelines: dict[asyncio.Task, object] = {}
 
-    @asynccontextmanager
-    async def track(self) -> AsyncIterator[bool]:
-        if not self._accepting:
-            yield False
+    @staticmethod
+    def _stop_event(event: object | None) -> None:
+        if event is None:
+            return
+        try:
+            event.stop_event()
+        except Exception:
+            pass
+
+    def _lease_pipeline(self, event: object | None) -> None:
+        pipeline = asyncio.current_task()
+        if pipeline is None or pipeline in self._pipelines:
             return
 
-        task = asyncio.current_task()
-        if task is not None:
-            self._tasks.add(task)
+        self._pipelines[pipeline] = event
+
+        def _release(done_task: asyncio.Task) -> None:
+            self._pipelines.pop(done_task, None)
+
+        pipeline.add_done_callback(_release)
+
+    async def run(
+        self,
+        event: object | None,
+        handler: Callable[[], Awaitable[_HandlerResult]],
+    ) -> _HandlerResult | None:
+        """登记事件 pipeline，并在独立子任务中执行一次 Handler。"""
+        if not self._accepting:
+            self._stop_event(event)
+            return None
+
+        self._lease_pipeline(event)
+        child = asyncio.create_task(handler())
+        self._children[child] = event
         try:
-            yield True
+            return await child
+        except asyncio.CancelledError:
+            if not self._accepting:
+                self._stop_event(event)
+                return None
+            raise
         finally:
-            if task is not None:
-                self._tasks.discard(task)
+            self._children.pop(child, None)
 
     async def stop(self) -> None:
-        """拒绝新 Handler，取消并等待当前全部在途 Handler。"""
+        """拒绝新 Handler，停止事件，取消子任务并等待旧 pipeline 退出。"""
         self._accepting = False
         current = asyncio.current_task()
-        tasks = [
+        children = [task for task in self._children if not task.done()]
+        pipelines = [
             task
-            for task in self._tasks
+            for task in self._pipelines
             if task is not current and not task.done()
         ]
-        for task in tasks:
+
+        events = {
+            event
+            for event in (*self._children.values(), *self._pipelines.values())
+            if event is not None
+        }
+        for event in events:
+            self._stop_event(event)
+
+        for task in children:
             task.cancel()
+        for task in pipelines:
+            task.cancel()
+
+        tasks = [*children, *pipelines]
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
-        self._tasks.clear()
+
+        self._children.clear()
+        self._pipelines.clear()
 
 
-def track_runtime_handler(method: Callable[..., _HandlerResult]):
-    """让 AstrBot Handler 自动登记到所属插件实例的运行任务表。"""
+def track_runtime_handler(method: Callable[..., Awaitable[_HandlerResult]]):
+    """让 AstrBot Handler 使用独立子任务并登记所属事件 pipeline。"""
 
     @wraps(method)
     async def wrapped(self, *args, **kwargs):
-        async with self._runtime_tasks.track() as accepted:
-            if not accepted:
-                return None
-            return await method(self, *args, **kwargs)
+        event = args[0] if args else kwargs.get("event")
+        return await self._runtime_tasks.run(
+            event,
+            lambda: method(self, *args, **kwargs),
+        )
 
     return wrapped
