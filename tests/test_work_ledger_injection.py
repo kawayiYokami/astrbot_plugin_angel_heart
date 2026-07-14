@@ -64,7 +64,7 @@ class TestWorkLedgerFormat:
         assert "可以继续决策" in text
         assert "不要让助理处理重复的问题" not in text
 
-    def test_assistant_current_work_is_this_round(self):
+    def test_assistant_current_work_is_excluded_from_temporary_reminder(self):
         wl = WorkLedger()
         wl.start_work(
             chat_id="g1",
@@ -74,9 +74,7 @@ class TestWorkLedgerFormat:
             kind="assistant",
         )
         text = wl.format_for_assistant("g1", current_work_id="w1")
-        assert "这是您本轮任务" in text
-        assert "请正常回答" in text
-        assert "请不要重复回答" not in text
+        assert text == "工作账本：当前没有其他已登记工作。"
 
     def test_assistant_other_running_avoids_duplicate(self):
         wl = WorkLedger()
@@ -88,8 +86,9 @@ class TestWorkLedgerFormat:
             kind="assistant",
         )
         text = wl.format_for_assistant("g1", current_work_id="w2")
-        assert "另有工作运行中" in text
-        assert "请勿重复回答同一套问题" in text
+        assert "工作账本：" in text
+        assert "解释双防抖" in text
+        assert "请勿重复处理其他运行中的工作。" in text
 
     def test_complete_work_status(self):
         wl = WorkLedger()
@@ -129,7 +128,7 @@ class TestAnalyzerPromptInjection:
 
 
 class TestTemporaryWorkContext:
-    def test_front_desk_builds_no_save_work_context(self):
+    def test_front_desk_builds_no_save_work_context_without_repeating_current_prompt(self):
         from astrbot_plugin_angel_heart.roles.front_desk import FrontDesk
 
         config = MagicMock()
@@ -141,6 +140,12 @@ class TestTemporaryWorkContext:
             work_id="e1",
             trigger_message_id="m1",
             trigger_summary="正在答群友问题",
+        )
+        angel.work_ledger.start_work(
+            chat_id="GroupMessage:1",
+            work_id="e2",
+            trigger_message_id="m2",
+            trigger_summary="另一个工作",
         )
         angel.astr_context = MagicMock()
         fd = FrontDesk(config, angel)
@@ -156,6 +161,7 @@ class TestTemporaryWorkContext:
         assert ctx["_no_save"] is True
         assert ctx["is_temporary_context"] is True
         text = ctx["content"][0]["text"]
-        assert "这是您本轮任务" in text
-        assert "请正常回答" in text
-        assert "请不要重复回答" not in text
+        assert "<system_reminder>" in text
+        assert "正在答群友问题" not in text
+        assert "另一个工作" in text
+        assert "请正常回答" not in text

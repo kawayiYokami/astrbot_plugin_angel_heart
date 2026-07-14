@@ -1400,6 +1400,23 @@ class FrontDesk:
             chat_id, self._get_event_message_id(event)
         )
 
+    def _split_recent_dialogue_at_current_message(
+        self, recent_dialogue: List[Dict], current_message_id: str
+    ) -> tuple[List[Dict], List[Dict]]:
+        """按当前上游消息 ID 拆分上下文与本轮 prompt，当前消息绝不进入 contexts。"""
+        if not current_message_id:
+            return list(recent_dialogue), []
+
+        context_messages = []
+        current_messages = []
+        for message in recent_dialogue:
+            source_message_id = str(message.get("source_message_id", "") or "")
+            if source_message_id == current_message_id:
+                current_messages.append(message)
+            else:
+                context_messages.append(message)
+        return context_messages, current_messages
+
     def _generate_final_prompt(
         self, recent_dialogue: List[Dict], decision: Any, alias: str
     ) -> str:
@@ -1429,11 +1446,11 @@ class FrontDesk:
             return None
 
         return {
-            "role": "system",
+            "role": "user",
             "content": [
                 {
                     "type": "text",
-                    "text": text.strip(),
+                    "text": f"<system_reminder>\n{text.strip()}\n</system_reminder>",
                 }
             ],
             "sender_id": "angelheart-work-ledger",
@@ -1686,7 +1703,10 @@ class FrontDesk:
             logger.debug(f"AngelHeart[{chat_id}]: 暂无可用上下文，跳过重构。")
             return
 
-        final_prompt_str = self._generate_final_prompt(recent_dialogue, None, alias)
+        context_recent_dialogue, prompt_recent_dialogue = self._split_recent_dialogue_at_current_message(
+            recent_dialogue, current_message_id
+        )
+        final_prompt_str = self._generate_final_prompt(prompt_recent_dialogue, None, alias)
         should_mark_processed = True
         if self._is_group_chat(chat_id):
             scene_hint = "这是一个群聊场景。"
@@ -1700,8 +1720,12 @@ class FrontDesk:
         # 3. 使用 MessageProcessor 构建上下文
         processor = MessageProcessor(alias)
         new_contexts = self._build_contexts_with_processor(
-            processor, historical_context, [] if self._is_group_chat(chat_id) else recent_dialogue,
-            chat_id, current_message_id, scene_hint
+            processor,
+            historical_context,
+            context_recent_dialogue,
+            chat_id,
+            current_message_id,
+            scene_hint,
         )
         extra_image_urls = (
             self._collect_non_current_image_urls(recent_dialogue, current_message_id)
