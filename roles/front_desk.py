@@ -806,9 +806,6 @@ class FrontDesk:
                     f"AngelHeart[{chat_id}]: 已为 {caption_count} 张图片生成转述"
                 )
 
-            # 启动耐心计时器
-            await self.context.start_patience_timer(chat_id)
-
             # 旁路上下文：聊天记录 + 决策 挂到本事件，供日志/下游钩子读
             # 不写会话共享缓存；主脑 req 临时注入仍只留工作账本
             from ..core.utils import json_serialize_context

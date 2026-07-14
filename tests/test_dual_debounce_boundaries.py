@@ -41,7 +41,7 @@ for _mod_path in (
 ):
     sys.modules.setdefault(_mod_path, types.ModuleType(_mod_path))
 
-# MessageChain / Plain 等给 patience 等兼容导入留桩
+# AstrBot 兼容导入留桩
 sys.modules["astrbot.api"].logger = MagicMock()
 sys.modules["astrbot.api.event"].MessageChain = MagicMock
 sys.modules["astrbot.core.message.components"].Plain = type("Plain", (), {})
@@ -128,7 +128,6 @@ def make_config(**timing_overrides):
             "leave_reply": {},
             "access_control": {},
             "context_compression": {},
-            "comfort": {},
             "debug": {"debug_mode": False},
             "personality": {
                 "ai_self_identity": "test",
@@ -714,8 +713,6 @@ class TestRuntimeCleanup:
             "g1",
             {"role": "user", "content": "hello", "timestamp": 1.0},
         )
-        patience = asyncio.create_task(asyncio.sleep(60))
-        context.patience_timers["g1"] = patience
         context.proactive_manager.custom_triggers["test"] = lambda *_args: True
         ticket = await context.debounce_manager.schedule(
             chat_id="g1",
@@ -729,8 +726,6 @@ class TestRuntimeCleanup:
         await context.cleanup()
 
         assert ticket.done() and ticket.result() == KILL
-        assert patience.done()
-        assert context.patience_timers == {}
         assert context.last_analysis_time == {}
         assert context.silenced_until == {}
         assert context.familiarity_cooldown_until == {}
@@ -745,76 +740,6 @@ class TestRuntimeCleanup:
         assert context.conversation_ledger._compression_locks == {}
         assert context.conversation_ledger.db_conn is None
         assert context.conversation_ledger.db_cursor is None
-
-    @pytest.mark.asyncio
-    async def test_cancel_patience_timer_waits_until_task_exits(self):
-        from astrbot_plugin_angel_heart.core.angel_heart_context import AngelHeartContext
-
-        released = asyncio.Event()
-
-        async def blocked():
-            try:
-                await asyncio.Event().wait()
-            finally:
-                await asyncio.sleep(0)
-                released.set()
-
-        task = asyncio.create_task(blocked())
-        await asyncio.sleep(0)
-        context = object.__new__(AngelHeartContext)
-        context.patience_timers = {"g1": task}
-        context._patience_lock = asyncio.Lock()
-
-        await context.cancel_patience_timer("g1")
-
-        assert task.done()
-        assert released.is_set()
-        assert context.patience_timers == {}
-
-    @pytest.mark.asyncio
-    async def test_concurrent_patience_restarts_are_serialized(self):
-        from astrbot_plugin_angel_heart.core.angel_heart_context import AngelHeartContext
-
-        cancellation_started = asyncio.Event()
-        allow_old_exit = asyncio.Event()
-
-        async def old_timer():
-            try:
-                await asyncio.Event().wait()
-            finally:
-                cancellation_started.set()
-                await allow_old_exit.wait()
-
-        async def new_timer(_chat_id):
-            await asyncio.Event().wait()
-
-        context = object.__new__(AngelHeartContext)
-        context.patience_timers = {"g1": asyncio.create_task(old_timer())}
-        context._patience_lock = asyncio.Lock()
-        context.config_manager = types.SimpleNamespace(
-            comfort_words="稍等",
-            patience_interval=60,
-        )
-        context._is_patience_timer_allowed = lambda _chat_id: True
-        context._patience_timer_handler = new_timer
-        await asyncio.sleep(0)
-
-        first = asyncio.create_task(context.start_patience_timer("g1"))
-        await cancellation_started.wait()
-        second = asyncio.create_task(context.start_patience_timer("g1"))
-        await asyncio.sleep(0)
-
-        assert not first.done()
-        assert not second.done()
-
-        allow_old_exit.set()
-        await asyncio.gather(first, second)
-
-        final_timer = context.patience_timers["g1"]
-        assert not final_timer.done()
-        await context.cancel_patience_timer("g1")
-        assert final_timer.done()
-        assert context.patience_timers == {}
 
     @pytest.mark.asyncio
     async def test_debounce_replacement_waits_until_old_timer_exits(self, dm):

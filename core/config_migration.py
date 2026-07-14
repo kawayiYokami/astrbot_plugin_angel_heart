@@ -51,9 +51,6 @@ _MIGRATION_MAP = {
     "context_content_retain_tokens": ("context_compression", "content_retain_tokens"),
     "context_tool_retain_tokens": ("context_compression", "tool_retain_tokens"),
     "context_forgetting_timeout": ("context_compression", "forgetting_timeout"),
-    # comfort
-    "patience_interval": ("comfort", "patience_interval"),
-    "comfort_words": ("comfort", "comfort_words"),
     # debug
     "debug_mode": ("debug", "debug_mode"),
     "strip_markdown_enabled": ("debug", "strip_markdown_enabled"),
@@ -61,6 +58,8 @@ _MIGRATION_MAP = {
 
 _DEPRECATED_FLAT_KEYS = {
     "familiarity_timeout",
+    "patience_interval",
+    "comfort_words",
     "tool_decoration_enabled",
     "tool_decoration_cooldown",
     "tool_decorations",
@@ -69,6 +68,10 @@ _DEPRECATED_FLAT_KEYS = {
 _DEPRECATED_GROUPED_KEYS = {
     "leave_reply": {
         "familiarity_timeout",
+    },
+    "comfort": {
+        "patience_interval",
+        "comfort_words",
     },
     "tool_decoration": {
         "tool_decoration_enabled",
