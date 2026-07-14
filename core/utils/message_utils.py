@@ -190,7 +190,12 @@ def serialize_agent_run_message(
     timestamp: float,
     assistant_sender_id: str,
 ) -> dict | None:
-    """将上游 run_context.messages 中的单条 assistant/tool 消息转为 Ledger 结构。"""
+    """将上游 run_context.messages 中的单条 assistant/tool 消息转为 Ledger 结构。
+
+    timestamp 由完成点统一给定：整条闭合链共用完结瞬间为基准，
+    链内仅做微小递增以保序。不要改成工具中途真实时间，否则并发用户
+    消息可能插进工具链中间。
+    """
     role = getattr(message, "role", None)
     if role not in ("assistant", "tool"):
         return None
