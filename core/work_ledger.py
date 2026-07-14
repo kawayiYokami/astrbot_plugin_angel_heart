@@ -156,51 +156,32 @@ class WorkLedger:
         return "\n".join(lines)
 
     def format_for_assistant(self, chat_id: str, current_work_id: str = "") -> str:
-        """第二人称：给助理临时注入。
+        """为主脑构建当前工作之外的临时账本提醒。"""
+        other_works = [
+            work
+            for work in self.get_recent_works(chat_id)
+            if not current_work_id or work.work_id != current_work_id
+        ]
+        if not other_works:
+            return "工作账本：当前没有其他已登记工作。"
 
-        本轮任务：说明「这是您本轮任务」，不说「请不要重复回答」。
-        勿重复只针对其他 running / 已完成工作。
-        """
-        works = self.get_recent_works(chat_id)
-        if not works:
-            return "工作提醒：当前没有其他已登记工作。"
-
-        lines = ["工作提醒："]
-        current = None
-        others_running = []
-        for w in works:
-            if current_work_id and w.work_id == current_work_id:
-                current = w
-            elif w.status == "running":
-                others_running.append(w)
-
-        if current and current.status == "running":
-            lines.append(
-                f"这是您本轮任务：「{current.trigger_summary}」"
-                f"（触发锚点={current.trigger_message_id or '未知'}）。请正常回答。"
-            )
-        elif current:
-            lines.append(
-                f"您本轮对应工作「{current.trigger_summary}」状态为 {current.status}。"
-            )
-
-        if others_running:
-            for w in others_running:
-                lines.append(
-                    f"另有工作运行中：「{w.trigger_summary}」"
-                    f"（触发锚点={w.trigger_message_id or '未知'}）。请勿重复回答同一套问题。"
-                )
-        elif not current:
-            latest = works[0]
+        lines = ["工作账本："]
+        for work in other_works:
             status_cn = {
                 "running": "运行中",
                 "done": "已完成",
                 "failed": "失败",
-            }.get(latest.status, latest.status)
-            lines.append(
-                f"最近工作[{status_cn}]：「{latest.trigger_summary}」。请勿重复回答已处理内容。"
+            }.get(work.status, work.status)
+            line = (
+                f"- [{status_cn}] 触发锚点={work.trigger_message_id or '未知'}；"
+                f"任务={work.trigger_summary}"
             )
+            if work.result_summary:
+                line += f"；结果={work.result_summary}"
+            lines.append(line)
 
+        if any(work.status == "running" for work in other_works):
+            lines.append("请勿重复处理其他运行中的工作。")
         return "\n".join(lines)
 
     def clear_chat(self, chat_id: str) -> None:
