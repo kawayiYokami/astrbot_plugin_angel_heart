@@ -876,7 +876,7 @@ class TestRuntimeCleanup:
         assert manager.active_tasks == {}
 
     @pytest.mark.asyncio
-    async def test_runtime_tracker_cancels_inflight_and_rejects_new_handlers(self):
+    async def test_runtime_tracker_stops_shared_pipeline_before_provider(self):
         from astrbot_plugin_angel_heart.core.runtime_task_tracker import (
             RuntimeTaskTracker,
             track_runtime_handler,
@@ -890,7 +890,7 @@ class TestRuntimeCleanup:
                 self.calls = 0
 
             @track_runtime_handler
-            async def handler(self):
+            async def handler(self, _event):
                 self.calls += 1
                 self.started.set()
                 try:
@@ -900,14 +900,126 @@ class TestRuntimeCleanup:
                     self.released.set()
 
         owner = RuntimeOwner()
-        task = asyncio.create_task(owner.handler())
+        event = DummyEvent("runtime-shared")
+        provider_called = asyncio.Event()
+
+        async def pipeline():
+            try:
+                await owner.handler(event)
+            except BaseException:
+                pass  # AstrBot call_event_hook 会捕获 BaseException
+            if event.is_stopped():
+                return
+            provider_called.set()
+
+        pipeline_task = asyncio.create_task(pipeline())
+        await owner.started.wait()
+
+        await owner._runtime_tasks.stop()
+        await pipeline_task
+
+        assert event.is_stopped()
+        assert not provider_called.is_set()
+        assert owner.released.is_set()
+        assert owner._runtime_tasks._children == {}
+        assert owner._runtime_tasks._pipelines == {}
+
+    @pytest.mark.asyncio
+    async def test_runtime_tracker_waits_pipeline_already_in_provider(self):
+        from astrbot_plugin_angel_heart.core.runtime_task_tracker import (
+            RuntimeTaskTracker,
+            track_runtime_handler,
+        )
+
+        class RuntimeOwner:
+            def __init__(self):
+                self._runtime_tasks = RuntimeTaskTracker()
+
+            @track_runtime_handler
+            async def handler(self, _event):
+                return None
+
+        owner = RuntimeOwner()
+        event = DummyEvent("runtime-provider")
+        provider_started = asyncio.Event()
+        provider_cancelled = asyncio.Event()
+
+        async def pipeline():
+            await owner.handler(event)
+            provider_started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                provider_cancelled.set()
+
+        pipeline_task = asyncio.create_task(pipeline())
+        await provider_started.wait()
+
+        await owner._runtime_tasks.stop()
+
+        assert event.is_stopped()
+        assert provider_cancelled.is_set()
+        assert pipeline_task.cancelled()
+        assert owner._runtime_tasks._children == {}
+        assert owner._runtime_tasks._pipelines == {}
+
+    @pytest.mark.asyncio
+    async def test_runtime_tracker_rejects_old_handler_snapshot_and_stops_event(self):
+        from astrbot_plugin_angel_heart.core.runtime_task_tracker import (
+            RuntimeTaskTracker,
+            track_runtime_handler,
+        )
+
+        class RuntimeOwner:
+            def __init__(self):
+                self._runtime_tasks = RuntimeTaskTracker()
+                self.calls = 0
+
+            @track_runtime_handler
+            async def handler(self, _event):
+                self.calls += 1
+
+        owner = RuntimeOwner()
+        await owner._runtime_tasks.stop()
+        event = DummyEvent("runtime-rejected")
+
+        assert await owner.handler(event) is None
+        assert event.is_stopped()
+        assert owner.calls == 0
+        assert owner._runtime_tasks._children == {}
+        assert owner._runtime_tasks._pipelines == {}
+
+    @pytest.mark.asyncio
+    async def test_runtime_tracker_stops_event_when_handler_swallows_cancellation(self):
+        from astrbot_plugin_angel_heart.core.runtime_task_tracker import (
+            RuntimeTaskTracker,
+            track_runtime_handler,
+        )
+
+        class RuntimeOwner:
+            def __init__(self):
+                self._runtime_tasks = RuntimeTaskTracker()
+                self.started = asyncio.Event()
+                self.cancelled = asyncio.Event()
+
+            @track_runtime_handler
+            async def handler(self, _event):
+                self.started.set()
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    self.cancelled.set()
+                    return None
+
+        owner = RuntimeOwner()
+        event = DummyEvent("runtime-swallow")
+        pipeline_task = asyncio.create_task(owner.handler(event))
         await owner.started.wait()
 
         await owner._runtime_tasks.stop()
 
-        assert task.done()
-        assert owner.released.is_set()
-        assert owner._runtime_tasks._tasks == set()
-
-        assert await owner.handler() is None
-        assert owner.calls == 1
+        assert event.is_stopped()
+        assert owner.cancelled.is_set()
+        assert pipeline_task.done()
+        assert owner._runtime_tasks._children == {}
+        assert owner._runtime_tasks._pipelines == {}
