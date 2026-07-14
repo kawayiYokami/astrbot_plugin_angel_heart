@@ -15,7 +15,7 @@ from typing import Any
 from astrbot.api.star import Star, Context, register
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.provider import ProviderRequest, LLMResponse
-from astrbot.core.star.register import register_on_llm_response
+from astrbot.core.star.register import register_on_agent_done
 from astrbot.core.star.star_tools import StarTools
 from astrbot.core.star.filter.command import CommandFilter
 from astrbot.core.star.filter.command_group import CommandGroupFilter
@@ -33,7 +33,10 @@ from .core.config_migration import run_migration
 from .roles.front_desk import FrontDesk
 from .roles.secretary import Secretary
 from .core.utils import strip_markdown
-from .core.utils.message_utils import serialize_message_chain
+from .core.utils.message_utils import (
+    extract_completed_agent_messages,
+    serialize_agent_run_message,
+)
 from .core.angel_heart_context import AngelHeartContext
 from .core.runtime_task_tracker import RuntimeTaskTracker, track_runtime_handler
 
@@ -150,65 +153,55 @@ class AngelHeartPlugin(Star):
 
         await self.front_desk.rewrite_prompt_for_llm(chat_id, event, req)
 
-    # 捕获工具调用结果
-    @register_on_llm_response()
+    @register_on_agent_done()
     @track_runtime_handler
-    async def capture_tool_results(
-        self, event: AstrMessageEvent, response: LLMResponse
+    async def capture_completed_agent_messages(
+        self, event: AstrMessageEvent, run_context: Any, response: LLMResponse
     ):
-        """捕获工具调用和结果，存储到天使之心对话总账，并处理拟人化反馈"""
+        """只在 Agent 完成后一次性记录本事件新增的完整 assistant/tool 链。"""
         chat_id = event.unified_msg_origin
+        try:
+            completed_messages = extract_completed_agent_messages(
+                getattr(run_context, "messages", None),
+                event.get_extra("provider_request") if hasattr(event, "get_extra") else None,
+            )
+            if not completed_messages:
+                return
 
-        # --- 原有逻辑：捕获工具结果 ---
-        # 获取 ProviderRequest 中的 tool_calls_result
-        provider_request = event.get_extra("provider_request")
+            base_timestamp = time.time()
+            assistant_sender_id = "assistant"
+            try:
+                assistant_sender_id = str(event.get_self_id())
+            except Exception:
+                pass
 
-        if provider_request and hasattr(provider_request, "tool_calls_result"):
-            tool_results = provider_request.tool_calls_result
+            ledger_messages = []
+            for index, message in enumerate(completed_messages):
+                ledger_message = serialize_agent_run_message(
+                    message,
+                    timestamp=base_timestamp + index * 0.001,
+                    assistant_sender_id=assistant_sender_id,
+                )
+                if ledger_message is None:
+                    continue
+                ledger_messages.append(ledger_message)
 
-            if tool_results:
-                # 确保 tool_results 是列表格式
-                if isinstance(tool_results, list):
-                    tool_results_list = tool_results
-                else:
-                    tool_results_list = [tool_results]
+            if not ledger_messages:
+                return
 
-                # 存储每轮工具调用
-                for tool_result in tool_results_list:
-                    # 1. 存储助手的工具调用消息（保持完整的toolcall结构）
-                    tool_calls_info = tool_result.tool_calls_info
+            # 整条闭合链一次原子入账，避免并发请求读到半截工具链。
+            self.angel_context.conversation_ledger.add_messages(
+                chat_id, ledger_messages
+            )
 
-                    assistant_tool_msg = {
-                        "role": tool_calls_info.role,  # "assistant"
-                        "content": tool_calls_info.content,  # 可能为None
-                        "tool_calls": tool_calls_info.tool_calls,  # 保持原始tool_calls结构
-                        "timestamp": time.time(),
-                        "sender_id": "assistant",
-                        "sender_name": "assistant",
-                        # 新增：标记这是结构化的toolcall记录，便于后续处理
-                        "is_structured_toolcall": True,
-                    }
-                    self.angel_context.conversation_ledger.add_message(
-                        chat_id, assistant_tool_msg
-                    )
-
-                    # 2. 存储工具执行结果（使用标准的tool角色格式）
-                    for tool_result_msg in tool_result.tool_calls_result:
-                        tool_msg = {
-                            "role": tool_result_msg.role,  # "tool"
-                            "tool_call_id": tool_result_msg.tool_call_id,  # 关键：保持ID关联
-                            "content": tool_result_msg.content,  # 工具执行的实际结果
-                            "timestamp": time.time(),
-                            "sender_id": "tool",
-                            "sender_name": "tool_result",
-                            # 新增：标记这是结构化的toolcall记录
-                            "is_structured_toolcall": True,
-                        }
-                        self.angel_context.conversation_ledger.add_message(
-                            chat_id, tool_msg
-                        )
-
-                logger.info(f"AngelHeart[{chat_id}]: 已记录结构化工具调用和结果")
+            logger.info(
+                f"AngelHeart[{chat_id}]: 已在完成点记录 {len(ledger_messages)} 条完整 assistant/tool 消息"
+            )
+        except Exception as e:
+            logger.error(
+                f"AngelHeart[{chat_id}]: 完成点记录 assistant/tool 链失败: {e}",
+                exc_info=True,
+            )
 
     # --- 内部方法 ---
     def reload_config(self, new_config: dict):
@@ -441,44 +434,6 @@ class AngelHeartPlugin(Star):
                                 )
             else:
                 logger.debug(f"AngelHeart[{chat_id}]: Markdown清洗已禁用，跳过清洗步骤。")
-
-            # 3. 将完整的消息链（包含文本和图片）序列化并缓存
-            if message_chain:
-                try:
-                    serialized_content = serialize_message_chain(message_chain)
-                    ai_message = {
-                        "role": "assistant",
-                        "content": serialized_content,
-                        "sender_id": str(event.get_self_id()),
-                        "sender_name": "assistant",
-                        "timestamp": time.time(),
-                    }
-                    self.angel_context.conversation_ledger.add_message(chat_id, ai_message)
-                    logger.debug(f"AngelHeart[{chat_id}]: AI多模态回复已加入对话总账")
-                except Exception as e:
-                    # 序列化失败时的降级处理：至少缓存文本内容
-                    logger.error(f"AngelHeart[{chat_id}]: 消息链序列化失败，回退到文本缓存。错误: {e}", exc_info=True)
-                    logger.debug(f"AngelHeart[{chat_id}]: 失败的消息链: {repr(message_chain)}")
-
-                    # 提取纯文本内容作为降级方案
-                    fallback_text = ""
-                    for component in message_chain:
-                        if isinstance(component, Plain):
-                            if component.text:
-                                fallback_text += component.text
-
-                    if fallback_text:
-                        ai_message = {
-                            "role": "assistant",
-                            "content": fallback_text,
-                            "sender_id": str(event.get_self_id()),
-                            "sender_name": "assistant",
-                            "timestamp": time.time(),
-                        }
-                        self.angel_context.conversation_ledger.add_message(chat_id, ai_message)
-                        logger.info(f"AngelHeart[{chat_id}]: AI回复（仅文本）已在降级处理后加入对话总账")
-                    else:
-                        logger.warning(f"AngelHeart[{chat_id}]: 无法提取任何文本内容，AI回复未被缓存")
 
             logger.debug(f"AngelHeart[{chat_id}]: 消息链中的Markdown格式清洗完成。")
         except Exception as e:
