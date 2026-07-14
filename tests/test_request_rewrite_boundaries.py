@@ -211,4 +211,4 @@ def test_group_rewrite_keeps_assistant_history_in_contexts_and_only_current_mess
     assert req.contexts[-1]["role"] == "user"
     assert "已有其他工作" in context_texts[-1]
     assert "第三条当前消息" not in context_texts[-1]
-    assert req.system_prompt.endswith("你正在一个群聊中扮演角色，你的昵称是 'fairy'。")
+    assert req.system_prompt == "BASE SYSTEM"

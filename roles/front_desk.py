@@ -1710,7 +1710,6 @@ class FrontDesk:
         should_mark_processed = True
         if self._is_group_chat(chat_id):
             scene_hint = "这是一个群聊场景。"
-            scene_prompt = "你正在一个群聊中扮演角色，你的昵称是 '{alias}'。"
         elif self._is_private_chat(chat_id):
             scene_prompt = "你正在一个私聊中扮演角色，你的昵称是 '{alias}'。"
 
