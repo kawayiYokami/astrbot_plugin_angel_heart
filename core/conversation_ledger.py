@@ -351,6 +351,9 @@ class ConversationLedger:
 
         同一批消息在单次锁内全部可见，避免完成事件的 assistant/tool 链
         被其他请求读成半截。
+
+        完成点工具链应整批传入：时间戳以完结瞬间为基准、链内仅微增保序。
+        不要按工具中途真实时间拆开写入，否则并发用户消息可能插进链中间。
         """
         if not messages:
             return

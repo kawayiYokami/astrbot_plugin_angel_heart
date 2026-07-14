@@ -168,6 +168,12 @@ class AngelHeartPlugin(Star):
             if not completed_messages:
                 return
 
+            # 时间口径（有意设计，不是遗漏）：
+            # 1. 整条工具链以「事件完结瞬间」为基准时间，不回填中途真实发生时刻。
+            # 2. 链内用 +0.001 只保相对顺序，不表示真实间隔。
+            # 3. 请求体正确性不依赖这些时间；时间只服务 Ledger 排序与内部提示词展示。
+            # 4. 若改成工具调用的真实时间，并发用户消息可能插进 assistant/tool 中间，
+            #    把闭合链拆开。完结瞬间整块落账，就是为了保住闭合性。
             base_timestamp = time.time()
             assistant_sender_id = "assistant"
             try:
