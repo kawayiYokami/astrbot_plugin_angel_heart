@@ -62,6 +62,10 @@ class ConfigManager:
     def observation_timeout(self) -> int:
         return self._get_grouped("timing", "observation_timeout", 60)
 
+    @property
+    def familiarity_timeout(self) -> int:
+        return self._get_grouped("timing", "familiarity_timeout", self.observation_timeout)
+
     # ========== leave_reply ==========
 
     @property
