@@ -266,13 +266,14 @@ class StatusChecker:
             if len(all_messages) < 3:
                 return False
 
-            # 统计窗口内每个纯文字内容的出现次数
+            # 只检测连续相同的纯文本消息，避免媒体占位符或间隔复现误触发。
             threshold = self.config_manager.echo_detection_threshold
-            content_count = {}  # content -> count
             window = self.config_manager.echo_detection_window
             cutoff_time = time.time() - window
+            last_content = ""
+            consecutive_count = 0
 
-            for msg in all_messages:
+            for msg in sorted(all_messages, key=lambda item: item.get("timestamp", 0)):
                 if msg.get("role") != "user":
                     continue
 
@@ -280,17 +281,18 @@ class StatusChecker:
                 if msg.get("timestamp", 0) < cutoff_time:
                     continue
 
-                # 先检查是否为纯文字消息（不包含图片）
+                # 先检查是否为纯文字消息（不包含媒体）
                 content = msg.get("content", "")
                 if isinstance(content, list):
-                    # 检查是否包含图片
-                    has_image = any(
-                        item.get("type") == "image_url"
+                    has_non_text = any(
+                        item.get("type") != "text"
                         for item in content
                         if isinstance(item, dict)
                     )
-                    if has_image:
-                        continue  # 跳过包含图片的消息
+                    if has_non_text:
+                        last_content = ""
+                        consecutive_count = 0
+                        continue  # 跳过包含图片/媒体的消息
 
                     # 提取纯文字内容
                     text_parts = []
@@ -303,17 +305,19 @@ class StatusChecker:
 
                 if not content:
                     continue
+                if content.startswith("[") and content.endswith("]"):
+                    last_content = ""
+                    consecutive_count = 0
+                    continue
 
-                # 统计内容出现次数
-                if content not in content_count:
-                    content_count[content] = 0
-                content_count[content] += 1
-
-            # 检查是否有内容出现次数达到阈值
-            for content, count in content_count.items():
-                if count >= threshold:
+                if content == last_content:
+                    consecutive_count += 1
+                else:
+                    last_content = content
+                    consecutive_count = 1
+                if consecutive_count >= threshold:
                     logger.debug(
-                        f"AngelHeart[{chat_id}]: 检测到复读行为 - 内容: '{content}', 出现次数: {count}"
+                        f"AngelHeart[{chat_id}]: 检测到连续复读行为 - 内容: '{content}', 连续次数: {consecutive_count}"
                     )
                     return True
 
