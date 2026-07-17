@@ -66,55 +66,55 @@
 
   "leave_reply": {
     "type": "object",
-    "description": "[离场应答] 复读与密集对话参与",
-    "hint": "控制AI在离场状态下是否参与复读或密集对话。",
+    "description": "[离场应答] 复读或多人热聊时回复一次",
+    "hint": "开启下列功能后，满足条件时我会回复一次；回复后仍保持不主动参与。",
     "items": {
       "leave_echo_reply": {
         "type": "bool",
-        "description": "复读模式开关",
-        "hint": "离场时是否进行复读应答。",
+        "description": "复读时回复一次",
+        "hint": "开启后，短时间内同样的文字重复达到设定次数时，我会回复一次。",
         "default": false
       },
       "leave_dense_reply": {
         "type": "bool",
-        "description": "密集对话参与开关",
-        "hint": "离场时是否参与密集对话应答。",
+        "description": "多人热聊时回复一次",
+        "hint": "开启后，短时间内多人连续发言达到设定条件时，我会回复一次。",
         "default": false
       },
       "echo_detection_threshold": {
         "type": "int",
-        "description": "复读检测阈值",
-        "hint": "连续多少条相同消息触发离场应答。",
+        "description": "同一句话重复几次才回复",
+        "hint": "同样的文字在设定时间内达到这个次数，才会回复一次。",
         "default": 3
       },
       "echo_detection_window": {
         "type": "int",
-        "description": "复读检测时间窗口（秒）",
-        "hint": "多长时间内的消息算作复读。",
+        "description": "统计复读的时间范围（秒）",
+        "hint": "只统计这段时间内重复出现的同样文字。",
         "default": 30
       },
       "dense_conversation_threshold": {
         "type": "int",
-        "description": "密集发言阈值",
-        "hint": "窗口期内多少条消息触发离场应答。",
+        "description": "多少条消息算热聊",
+        "hint": "在设定时间内达到这个消息数，才会判定聊天很热闹。",
         "default": 30
       },
       "dense_conversation_window": {
         "type": "int",
-        "description": "密集发言检测时间窗口（秒）",
-        "hint": "多长时间内的消息算作密集。",
+        "description": "统计热聊的时间范围（秒）",
+        "hint": "只统计这段时间内发出的消息。",
         "default": 600
       },
       "min_participant_count": {
         "type": "int",
-        "description": "密集发言最小参与人数",
-        "hint": "至少多少不同的人参与才算密集。",
+        "description": "至少几个人同时聊天",
+        "hint": "参与人数达到这个数量，才会判定多人正在热聊。",
         "default": 5
       },
       "familiarity_cooldown_duration": {
         "type": "int",
-        "description": "离场应答冷却时间（秒）",
-        "hint": "离场应答状态结束后多久才能再次触发。",
+        "description": "两次离场应答的最短间隔（秒）",
+        "hint": "因复读或热聊回复一次后，这段时间内不会再触发下一次离场应答。",
         "default": 1800
       }
     }

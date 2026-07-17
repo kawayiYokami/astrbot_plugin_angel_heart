@@ -105,7 +105,7 @@ class DummyEvent:
         return self._stopped
 
 
-def make_config(**timing_overrides):
+def make_config(leave_reply_overrides=None, **timing_overrides):
     timing = {
         "assistant_debounce_time": 0.05,
         "secretary_debounce_time": 0.08,
@@ -115,6 +115,8 @@ def make_config(**timing_overrides):
         "no_reply_cooldown": 0.01,
     }
     timing.update(timing_overrides)
+    leave_reply = {"familiarity_cooldown_duration": 1800}
+    leave_reply.update(leave_reply_overrides or {})
     return ConfigManager(
         {
             "analyzer_model": "mock-model",
@@ -125,7 +127,7 @@ def make_config(**timing_overrides):
                 "reply_even_not_questioned": False,
                 "analysis_on_mention_only": True,
             },
-            "leave_reply": {},
+            "leave_reply": leave_reply,
             "access_control": {},
             "context_compression": {},
             "debug": {"debug_mode": False},
@@ -157,6 +159,29 @@ class TestDebounceManagerBoundaries:
         assert f is None
         assert not dm.has_assistant_debounce("g1")
         assert not dm.has_secretary_debounce("g1")
+
+    @pytest.mark.asyncio
+    async def test_absent_leave_reply_creates_must_reply_secretary_record(self, dm):
+        event = DummyEvent("echo")
+        ticket = await dm.schedule(
+            chat_id="g1",
+            event=event,
+            sender_id="a",
+            message_id="echo-1",
+            is_wake=False,
+            is_present=False,
+            leave_reply_trigger="echo_chamber",
+        )
+
+        assert ticket is not None
+        assert dm.has_secretary_debounce("g1")
+        assert await ticket == PROCESS
+        assert event.extras["angelheart_must_reply"] is True
+        assert event.extras["angelheart_debounce_kind"] == "secretary"
+        assert event.extras["angelheart_leave_reply_trigger"] == "echo_chamber"
+        await dm.finish_secretary_dispatch(
+            "g1", event.extras["angelheart_secretary_dispatch_id"], reason="test_done"
+        )
 
     @pytest.mark.asyncio
     async def test_absent_wake_creates_assistant_and_process(self, dm):
@@ -398,6 +423,45 @@ class TestDebounceManagerBoundaries:
         )
 
     @pytest.mark.asyncio
+    async def test_leave_reply_ignores_present_chat_cooldown(self):
+        dm = DebounceManager(
+            make_config(secretary_debounce_time=0.05, waiting_time=0.20)
+        )
+        present_event = DummyEvent("present")
+        present_ticket = await dm.schedule(
+            chat_id="g1",
+            event=present_event,
+            sender_id="a",
+            message_id="present-1",
+            is_wake=False,
+            is_present=True,
+        )
+        assert await present_ticket == PROCESS
+        await dm.finish_secretary_dispatch(
+            "g1",
+            present_event.extras["angelheart_secretary_dispatch_id"],
+            cooldown_seconds=0.20,
+            reason="reply_sent",
+        )
+
+        leave_event = DummyEvent("leave")
+        leave_ticket = await dm.schedule(
+            chat_id="g1",
+            event=leave_event,
+            sender_id="b",
+            message_id="leave-1",
+            is_wake=False,
+            is_present=False,
+            leave_reply_trigger="echo_chamber",
+        )
+        assert await asyncio.wait_for(leave_ticket, timeout=0.15) == PROCESS
+        await dm.finish_secretary_dispatch(
+            "g1",
+            leave_event.extras["angelheart_secretary_dispatch_id"],
+            reason="test_done",
+        )
+
+    @pytest.mark.asyncio
     async def test_no_reply_cooldown_restarts_full_debounce(self):
         dm = DebounceManager(
             make_config(secretary_debounce_time=0.05, no_reply_cooldown=0.07)
@@ -507,6 +571,38 @@ class TestEventWakeDetection:
         e = DummyEvent("w4", message_str="草王")
         assert self.checker.is_event_wake(e) is False
 
+    def test_leave_reply_trigger_respects_switches_and_cooldown(self):
+        config = make_config(
+            leave_reply_overrides={
+                "leave_echo_reply": True,
+                "leave_dense_reply": True,
+            }
+        )
+        angel = MagicMock()
+        angel.is_leave_reply_in_cooldown.return_value = False
+        checker = StatusChecker(config, angel)
+        checker._detect_echo_chamber = MagicMock(return_value=True)
+        checker._detect_dense_conversation = MagicMock(return_value=True)
+
+        assert checker.get_leave_reply_trigger("g1") == "echo_chamber"
+        checker._detect_dense_conversation.assert_not_called()
+
+        angel.is_leave_reply_in_cooldown.return_value = True
+        assert checker.get_leave_reply_trigger("g1") == ""
+
+        angel.is_leave_reply_in_cooldown.return_value = False
+        disabled_checker = StatusChecker(make_config(), angel)
+        assert disabled_checker.get_leave_reply_trigger("g1") == ""
+
+        dense_only_config = make_config(
+            leave_reply_overrides={"leave_dense_reply": True}
+        )
+        dense_only_checker = StatusChecker(dense_only_config, angel)
+        angel.is_leave_reply_in_cooldown.return_value = False
+        dense_only_checker._detect_echo_chamber = MagicMock(return_value=True)
+        dense_only_checker._detect_dense_conversation = MagicMock(return_value=True)
+        assert dense_only_checker.get_leave_reply_trigger("g1") == "dense_conversation"
+        dense_only_checker._detect_echo_chamber.assert_not_called()
 
 class TestSecretaryActivation:
     @pytest.mark.asyncio
@@ -675,6 +771,38 @@ class TestMessageIdFlow:
 
 class TestSecretaryDispatchCompletion:
     @pytest.mark.asyncio
+    async def test_leave_reply_uses_direct_strategy_without_secretary_analysis(self):
+        from astrbot_plugin_angel_heart.roles.front_desk import FrontDesk
+
+        angel = MagicMock()
+        angel.astr_context = MagicMock()
+        angel.debounce_manager.get_leave_reply_trigger.return_value = "echo_chamber"
+        fd = FrontDesk(make_config(), angel)
+        fd.secretary = MagicMock()
+        fd.secretary.handle_message_by_state = AsyncMock()
+        decision = SecretaryDecision(
+            should_reply=True,
+            reply_strategy="跟紧复读队形",
+            topic="复读互动",
+            entities=[],
+            facts=[],
+            keywords=[],
+        )
+        fd.fishing_reply.generate_reply_strategy = AsyncMock(return_value=decision)
+        fd._execute_secretary_decision = AsyncMock()
+        event = DummyEvent("leave-reply", chat_id="GroupMessage:1")
+
+        await fd._call_secretary_and_execute(event, event.unified_msg_origin)
+
+        fd.fishing_reply.generate_reply_strategy.assert_awaited_once_with(
+            event.unified_msg_origin, event, "echo_chamber"
+        )
+        fd.secretary.handle_message_by_state.assert_not_awaited()
+        fd._execute_secretary_decision.assert_awaited_once_with(
+            decision, event, event.unified_msg_origin
+        )
+
+    @pytest.mark.asyncio
     async def test_no_reply_starts_configured_cooldown_and_releases_dispatch(self):
         from astrbot_plugin_angel_heart.roles.front_desk import FrontDesk
 
@@ -682,6 +810,7 @@ class TestSecretaryDispatchCompletion:
         angel = MagicMock()
         angel.astr_context = MagicMock()
         angel.debounce_manager.finish_secretary_dispatch = AsyncMock(return_value=True)
+        angel.debounce_manager.get_leave_reply_trigger.return_value = ""
         fd = FrontDesk(config, angel)
         fd.secretary = MagicMock()
         fd.secretary.handle_message_by_state = AsyncMock(
@@ -816,7 +945,7 @@ class TestStatusSemantics:
         angel.silenced_until = {}
         angel.is_in_observation_period.return_value = False
         angel.get_chat_status.return_value = AngelHeartStatus.NOT_PRESENT
-        angel.is_familiarity_in_cooldown.return_value = False
+        angel.is_leave_reply_in_cooldown.return_value = False
         angel.conversation_ledger.get_all_messages.return_value = [
             {"role": "user", "content": "复读", "timestamp": 1},
             {"role": "user", "content": "复读", "timestamp": 2},
@@ -829,6 +958,20 @@ class TestStatusSemantics:
 
 
 class TestRuntimeCleanup:
+    @pytest.mark.asyncio
+    async def test_leave_reply_sent_keeps_not_present(self, tmp_path):
+        from astrbot_plugin_angel_heart.core.angel_heart_context import AngelHeartContext
+
+        context = AngelHeartContext(make_config(), MagicMock(), tmp_path)
+        context.current_states["g1"] = AngelHeartStatus.NOT_PRESENT
+
+        await context.handle_message_sent("g1", keep_not_present=True)
+
+        assert context.get_chat_status("g1") is AngelHeartStatus.NOT_PRESENT
+        assert context.is_leave_reply_in_cooldown("g1") is True
+        assert "g1" not in context.status_transition_manager.status_start_times
+        await context.cleanup()
+
     @pytest.mark.asyncio
     async def test_front_desk_cancels_registered_private_compression(self):
         from astrbot_plugin_angel_heart.roles.front_desk import FrontDesk
@@ -862,7 +1005,7 @@ class TestRuntimeCleanup:
         context = AngelHeartContext(make_config(), MagicMock(), tmp_path)
         context.last_analysis_time["g1"] = 1.0
         context.silenced_until["g1"] = 2.0
-        context.familiarity_cooldown_until["g1"] = 3.0
+        context.leave_reply_cooldown_until["g1"] = 3.0
         context.current_states["g1"] = AngelHeartStatus.OBSERVATION
         context.status_transition_manager.status_start_times["g1"] = (
             AngelHeartStatus.OBSERVATION,
@@ -895,7 +1038,7 @@ class TestRuntimeCleanup:
         assert ticket.done() and ticket.result() == KILL
         assert context.last_analysis_time == {}
         assert context.silenced_until == {}
-        assert context.familiarity_cooldown_until == {}
+        assert context.leave_reply_cooldown_until == {}
         assert context.current_states == {}
         assert context.status_transition_manager.status_start_times == {}
         assert context.work_ledger._items == {}

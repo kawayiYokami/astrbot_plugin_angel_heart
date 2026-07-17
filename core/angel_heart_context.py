@@ -50,8 +50,8 @@ class AngelHeartContext:
         self.last_analysis_time: Dict[str, float] = {}  # chat_id -> 上次分析时间
         self.silenced_until: Dict[str, float] = {}  # chat_id -> 闭嘴结束时间
 
-        # 混脸熟冷却控制（兼容保留；混脸熟不再作为进场条件）
-        self.familiarity_cooldown_until: Dict[str, float] = {}  # chat_id -> 混脸熟冷却结束时间
+        # 离场应答冷却：一次性回复后，短时间内不再因复读或密集聊天触发回复。
+        self.leave_reply_cooldown_until: Dict[str, float] = {}
 
         # ========== 群聊参与状态 ==========
         # 当前状态跟踪：chat_id -> AngelHeartStatus
@@ -83,7 +83,7 @@ class AngelHeartContext:
 
         self.last_analysis_time.clear()
         self.silenced_until.clear()
-        self.familiarity_cooldown_until.clear()
+        self.leave_reply_cooldown_until.clear()
         self.current_states.clear()
         self.status_transition_manager.status_start_times.clear()
         self.work_ledger.clear()
@@ -158,13 +158,16 @@ class AngelHeartContext:
         """
         return self.status_transition_manager.get_status_summary(chat_id)
 
-    async def handle_message_sent(self, chat_id: str):
-        """
-        消息发送后的状态处理。
-
-        AI 回复完成后进入在场；混脸熟不再作为进场/保持条件。
-        """
+    async def handle_message_sent(self, chat_id: str, *, keep_not_present: bool = False):
+        """处理消息发送后的群聊参与状态。"""
         current_status = self.get_chat_status(chat_id)
+        if keep_not_present:
+            self.start_leave_reply_cooldown(chat_id)
+            logger.info(
+                f"AngelHeart[{chat_id}]: 离场应答已发送，保持离场"
+            )
+            return
+
         logger.info(
             f"AngelHeart[{chat_id}]: AI回复完成，当前状态: {current_status.value}，转入在场"
         )
@@ -199,36 +202,18 @@ class AngelHeartContext:
         """
         return self.get_chat_status(chat_id) == AngelHeartStatus.NOT_PRESENT
 
-    def is_familiarity_in_cooldown(self, chat_id: str) -> bool:
-        """
-        检查混脸熟是否在冷却期
-
-        Args:
-            chat_id: 聊天会话ID
-
-        Returns:
-            bool: True if in cooldown period
-        """
-        if chat_id not in self.familiarity_cooldown_until:
+    def is_leave_reply_in_cooldown(self, chat_id: str) -> bool:
+        """离场应答是否仍在冷却中。"""
+        cooldown_end = self.leave_reply_cooldown_until.get(chat_id, 0.0)
+        if time.time() >= cooldown_end:
+            self.leave_reply_cooldown_until.pop(chat_id, None)
             return False
-
-        current_time = time.time()
-        cooldown_end = self.familiarity_cooldown_until[chat_id]
-
-        # 如果冷却期已过，清理记录
-        if current_time >= cooldown_end:
-            del self.familiarity_cooldown_until[chat_id]
-            return False
-
         return True
 
-    def set_familiarity_cooldown(self, chat_id: str):
-        """
-        设置混脸熟冷却期
-
-        Args:
-            chat_id: 聊天会话ID
-        """
-        cooldown_duration = self.config_manager.familiarity_cooldown_duration
-        self.familiarity_cooldown_until[chat_id] = time.time() + cooldown_duration
-        logger.info(f"AngelHeart[{chat_id}]: 混脸熟进入冷却期，冷却时间 {cooldown_duration} 秒")
+    def start_leave_reply_cooldown(self, chat_id: str) -> None:
+        """离场应答成功发送后，启动下一次离场应答的冷却。"""
+        cooldown_duration = self.config_manager.leave_reply_cooldown_duration
+        self.leave_reply_cooldown_until[chat_id] = time.time() + cooldown_duration
+        logger.info(
+            f"AngelHeart[{chat_id}]: 离场应答进入冷却期，冷却时间 {cooldown_duration} 秒"
+        )

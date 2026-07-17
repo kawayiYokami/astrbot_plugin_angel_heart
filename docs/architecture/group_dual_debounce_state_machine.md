@@ -48,7 +48,7 @@
 
 ### 群聊规则
 
-1. 离场 + 未唤醒：只入库
+1. 离场 + 未唤醒：若命中已开启的离场应答条件，建立一次性回复等待；否则只入库
 2. 离场 + 唤醒：进场，并建立该群友助理防抖
 3. 在场 + 无助理防抖 + 未唤醒：建立秘书防抖
 4. 有任意助理防抖：不建立秘书防抖
@@ -74,7 +74,7 @@
 - `NOT_PRESENT` = 离场
 - `OBSERVATION` = 在场
 - `SUMMONED` / `GETTING_FAMILIAR` 仅兼容旧路径，不再作为进场条件
-- 复读、跟风或密集聊天不再进场；只有当前事件明确唤醒时才进场
+- 复读、跟风或密集聊天不会进场；开启离场应答时，复读或密集聊天只回复一次，回复后仍保持离场
 
 ### 防抖账本
 
@@ -83,6 +83,7 @@
 - 秘书调度：`chat_id` 最多 1 轮，从秘书分析持续到发送/不回复/异常收口
 - 回复后冷却：`waiting_time`
 - 不回复冷却：`no_reply_cooldown`
+- 离场应答冷却：`familiarity_cooldown_duration`；只限制下一次复读/密集聊天的离场应答
 - 账本自管，不拥有消息正文
 - 扣押只保存事件 Future、版本、边界、是否必须回应
 
@@ -92,10 +93,11 @@
 2. 秘书防抖默认 7 秒：`secretary_debounce_time`
 3. 加速默认 1 秒：`accelerate_debounce_time`
 4. 回复后冷却：`waiting_time`；不回复冷却：`no_reply_cooldown`
-5. 在场超时：`observation_timeout`
-6. 激活时必须重建上下文，不得沿用事件创建时快照
-7. 同一会话只能有一个运行中的秘书调度；不同会话可以各自独立调度
-8. 不能向已运行子代理注入后到消息
+5. 离场应答冷却：`familiarity_cooldown_duration`
+6. 在场超时：`observation_timeout`
+7. 激活时必须重建上下文，不得沿用事件创建时快照
+8. 同一会话只能有一个运行中的秘书调度；不同会话可以各自独立调度
+9. 不能向已运行子代理注入后到消息
 
 ## 异常降级
 
@@ -115,7 +117,7 @@ main.smart_reply_handler
    → 到期放行最后边界事件
    → FrontDesk._activate_group_event
       → 重建上下文
-      → Secretary.handle_message_by_state
+      → 离场应答直接生成一次性回复策略；其他事件交给 Secretary.handle_message_by_state
       → 需要回复则唤醒主脑（该事件独立子代理）
 ```
 

@@ -465,16 +465,26 @@ class AngelHeartPlugin(Star):
             # 仅在消息链非空时才执行状态转换
             result = event.get_result()
             if result and result.chain:
+                leave_reply_trigger = self.angel_context.debounce_manager.get_leave_reply_trigger(event)
                 try:
-                    await self.angel_context.handle_message_sent(chat_id)
+                    await self.angel_context.handle_message_sent(
+                        chat_id, keep_not_present=bool(leave_reply_trigger)
+                    )
                 except (AttributeError, RuntimeError) as e:
                     logger.warning(f"AngelHeart[{chat_id}]: 状态转换处理异常: {e}")
                 try:
                     await self._finish_secretary_dispatch(
                         event,
                         chat_id,
-                        cooldown_seconds=self.config_manager.waiting_time,
-                        reason="reply_sent",
+                        # 离场应答不属于在场普通聊天，不能启动 waiting_time。
+                        cooldown_seconds=(
+                            0.0
+                            if leave_reply_trigger
+                            else self.config_manager.waiting_time
+                        ),
+                        reason=(
+                            "leave_reply_sent" if leave_reply_trigger else "reply_sent"
+                        ),
                     )
                 except Exception as e:
                     logger.warning(f"AngelHeart[{chat_id}]: 回复后收口秘书调度失败: {e}")

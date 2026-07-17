@@ -24,7 +24,7 @@ class AngelHeartStatus(Enum):
 
     NOT_PRESENT = "离场"
     SUMMONED = "被呼唤"  # 兼容旧路径，不再作为主状态机进场条件
-    GETTING_FAMILIAR = "混脸熟"  # 兼容旧路径，不再作为进场条件
+    GETTING_FAMILIAR = "混脸熟"  # 旧数据兼容值，不参与现行状态机
     OBSERVATION = "在场"
 
 
@@ -32,7 +32,7 @@ class StatusChecker:
     """前台状态判断模块
 
     负责基于消息内容和上下文判断当前应该处于什么状态。
-    状态判断优先级：被呼唤 > 观测中 > 混脸熟 > 不在场
+    状态判断优先级：被呼唤 > 观测中 > 旧兼容状态 > 不在场
 
     注意：修复了竞态条件问题，确保状态判断和转换的原子性
     """
@@ -82,14 +82,14 @@ class StatusChecker:
             # 5. 获取当前状态（原子性读取）
             current_status = self.angel_context.get_chat_status(chat_id)
 
-            # 如果当前是混脸熟状态，说明有异常，直接转为不在场
+            # 旧兼容状态不属于现行状态机，遇到时直接转为不在场
             if current_status == AngelHeartStatus.GETTING_FAMILIAR:
                 logger.warning(
-                    f"AngelHeart[{chat_id}]: 异常状态：混脸熟状态出现在状态判断中，直接转为不在场"
+                    f"AngelHeart[{chat_id}]: 旧兼容状态出现在状态判断中，直接转为不在场"
                 )
                 return AngelHeartStatus.NOT_PRESENT
 
-            # 混脸熟不再作为进场条件：离场时只有主动呼唤才可进场
+            # 旧兼容状态不再作为进场条件：离场时只有主动呼唤才可进场
             return AngelHeartStatus.NOT_PRESENT
 
         except Exception as e:
@@ -264,6 +264,25 @@ class StatusChecker:
 
         # 检查消息中是否包含昵称
         return any(alias in message_content for alias in aliases)
+
+    def get_leave_reply_trigger(self, chat_id: str) -> str:
+        """返回当前离场消息应触发的一次性回复类型；无触发时返回空字符串。"""
+        try:
+            if self.angel_context.is_leave_reply_in_cooldown(chat_id):
+                return ""
+            if (
+                self.config_manager.leave_echo_reply
+                and self._detect_echo_chamber(chat_id)
+            ):
+                return "echo_chamber"
+            if (
+                self.config_manager.leave_dense_reply
+                and self._detect_dense_conversation(chat_id)
+            ):
+                return "dense_conversation"
+        except Exception as e:
+            logger.debug(f"AngelHeart[{chat_id}]: 离场应答检测失败: {e}")
+        return ""
 
     def _detect_echo_chamber(self, chat_id: str) -> bool:
         """
