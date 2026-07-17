@@ -213,9 +213,12 @@ class AngelHeartPlugin(Star):
     def reload_config(self, new_config: dict):
         """重新加载配置"""
         self.config_manager = ConfigManager(new_config or {})
-        # 更新角色实例的配置管理器
+        # 更新角色与调度器的配置管理器
         self.secretary.config_manager = self.config_manager
         self.front_desk.config_manager = self.config_manager
+        self.front_desk.status_checker.config_manager = self.config_manager
+        self.angel_context.config_manager = self.config_manager
+        self.angel_context.debounce_manager.config_manager = self.config_manager
         # 重新加载LLM分析器的配置
         self.secretary.llm_analyzer.reload_config(self.config_manager)
         self._whitelist_cache = self._prepare_whitelist()
@@ -466,6 +469,15 @@ class AngelHeartPlugin(Star):
                     await self.angel_context.handle_message_sent(chat_id)
                 except (AttributeError, RuntimeError) as e:
                     logger.warning(f"AngelHeart[{chat_id}]: 状态转换处理异常: {e}")
+                try:
+                    await self._finish_secretary_dispatch(
+                        event,
+                        chat_id,
+                        cooldown_seconds=self.config_manager.waiting_time,
+                        reason="reply_sent",
+                    )
+                except Exception as e:
+                    logger.warning(f"AngelHeart[{chat_id}]: 回复后收口秘书调度失败: {e}")
                 # 工作账本：本轮完成
                 try:
                     work_id = ""
@@ -501,9 +513,50 @@ class AngelHeartPlugin(Star):
                         )
                 except Exception:
                     pass
+                try:
+                    await self._finish_secretary_dispatch(
+                        event,
+                        chat_id,
+                        cooldown_seconds=0.0,
+                        reason="empty_reply",
+                    )
+                except Exception as e:
+                    logger.warning(f"AngelHeart[{chat_id}]: 空回复收口秘书调度失败: {e}")
         except Exception as e:
             logger.error(f"AngelHeart[{chat_id}]: after_message_sent处理异常: {e}", exc_info=True)
+            try:
+                await self._finish_secretary_dispatch(
+                    event,
+                    chat_id,
+                    cooldown_seconds=0.0,
+                    reason="send_handler_error",
+                )
+            except Exception:
+                pass
         # 旧单槽门锁已退役；发送后收口只做状态/工作账本，调度只认双防抖
+
+    async def _finish_secretary_dispatch(
+        self,
+        event: AstrMessageEvent,
+        chat_id: str,
+        *,
+        cooldown_seconds: float,
+        reason: str,
+    ) -> bool:
+        """按事件持有的调度归属收口同会话秘书单飞门闩。"""
+        dispatch_id = ""
+        if hasattr(event, "get_extra"):
+            dispatch_id = str(
+                event.get_extra("angelheart_secretary_dispatch_id", "") or ""
+            )
+        if not dispatch_id:
+            return False
+        return await self.angel_context.debounce_manager.finish_secretary_dispatch(
+            chat_id,
+            dispatch_id,
+            cooldown_seconds=cooldown_seconds,
+            reason=reason,
+        )
 
     def _prepare_whitelist(self) -> set:
         """预处理白名单，将其转换为 set 以获得 O(1) 的查找性能。"""

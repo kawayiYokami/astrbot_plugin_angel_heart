@@ -66,10 +66,6 @@ class ConfigManager:
         return self._get_grouped("timing", "accelerate_debounce_time", 1.0)
 
     @property
-    def llm_timeout(self) -> float:
-        return self._get_grouped("timing", "llm_timeout", 180.0)
-
-    @property
     def no_reply_cooldown(self) -> float:
         return self._get_grouped("timing", "no_reply_cooldown", 3.0)
 
@@ -227,7 +223,6 @@ class ConfigManager:
                 "assistant_debounce_time": self.assistant_debounce_time,
                 "secretary_debounce_time": self.secretary_debounce_time,
                 "accelerate_debounce_time": self.accelerate_debounce_time,
-                "llm_timeout": self.llm_timeout,
                 "no_reply_cooldown": self.no_reply_cooldown,
                 "cache_expiry": self.cache_expiry,
                 "observation_timeout": self.observation_timeout,

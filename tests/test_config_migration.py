@@ -36,3 +36,28 @@ def test_migration_removes_retired_comfort_config(tmp_path, monkeypatch):
     assert "comfort_words" not in migrated
     assert "comfort" not in migrated
     assert migrated["debug"] == {"debug_mode": True}
+
+
+def test_migration_removes_llm_timeout_but_preserves_active_cooldowns(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "timing": {
+                    "llm_timeout": 180,
+                    "waiting_time": 14,
+                    "no_reply_cooldown": 7,
+                }
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(config_migration, "_find_config_path", lambda: str(config_path))
+
+    config_migration.run_migration()
+
+    migrated = json.loads(config_path.read_text(encoding="utf-8-sig"))
+    assert "llm_timeout" not in migrated["timing"]
+    assert migrated["timing"]["waiting_time"] == 14
+    assert migrated["timing"]["no_reply_cooldown"] == 7

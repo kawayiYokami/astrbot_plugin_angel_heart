@@ -18,7 +18,6 @@ _PLUGIN_DIR_NAME = "astrbot_plugin_angel_heart"
 _MIGRATION_MAP = {
     # timing
     "waiting_time": ("timing", "waiting_time"),
-    "llm_timeout": ("timing", "llm_timeout"),
     "no_reply_cooldown": ("timing", "no_reply_cooldown"),
     "observation_timeout": ("timing", "observation_timeout"),
     # leave_reply
@@ -57,6 +56,7 @@ _MIGRATION_MAP = {
 }
 
 _DEPRECATED_FLAT_KEYS = {
+    "llm_timeout",
     "familiarity_timeout",
     "patience_interval",
     "comfort_words",
@@ -66,6 +66,9 @@ _DEPRECATED_FLAT_KEYS = {
 }
 
 _DEPRECATED_GROUPED_KEYS = {
+    "timing": {
+        "llm_timeout",
+    },
     "leave_reply": {
         "familiarity_timeout",
     },

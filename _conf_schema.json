@@ -22,49 +22,43 @@
 
   "timing": {
     "type": "object",
-    "description": "[时间参数] 冷却与超时配置",
-    "hint": "控制各种冷却时间和超时阈值。",
+    "description": "[回复节奏] 等待与冷却设置",
+    "hint": "调整群聊中我何时接话，以及接话后如何避免连续插话。",
     "items": {
       "waiting_time": {
         "type": "float",
-        "description": "回复后冷却时间（秒）",
-        "hint": "成功回复后，该对话需要等待多久才能再次分析。",
+        "description": "回复后等待时间（秒）",
+        "hint": "我回复后，普通群聊消息即使已等够时间，也会重新等待一轮再考虑接话。",
         "default": 7.0
       },
       "assistant_debounce_time": {
         "type": "float",
-        "description": "助理防抖时间（秒）",
-        "hint": "群友唤醒后，助理防抖窗口时长。防抖是目的，扣押是实现。",
+        "description": "被叫到后等待多久回复（秒）",
+        "hint": "有人 @ 我或叫我时，我会先等这段时间，看看对方会不会补充消息，再根据最后一条消息回复。",
         "default": 1.0
       },
       "secretary_debounce_time": {
         "type": "float",
-        "description": "秘书防抖时间（秒）",
-        "hint": "在场且未唤醒时，秘书防抖窗口时长。默认与回复后冷却一致。",
+        "description": "群聊停下来多久后再考虑回复（秒）",
+        "hint": "我已经参与群聊时，大家暂时不说话达到这段时间后，我才会考虑要不要接话。",
         "default": 7.0
       },
       "accelerate_debounce_time": {
         "type": "float",
-        "description": "加速防抖时间（秒）",
-        "hint": "已有防抖期间再次命中唤醒时的加速等待时长。",
+        "description": "连续叫我时的等待时间（秒）",
+        "hint": "我正在等消息补充时又有人叫我，会把等待时间缩短到这里设定的时长。",
         "default": 1.0
-      },
-      "llm_timeout": {
-        "type": "float",
-        "description": "LLM 处理超时时间（秒）",
-        "hint": "LLM 处理超过此时间将被视为卡死，触发强制清理。",
-        "default": 180.0
       },
       "no_reply_cooldown": {
         "type": "float",
-        "description": "不回复冷却时间（秒）",
-        "hint": "当秘书决定不回复时，该对话需要等待多久才能再次分析。",
+        "description": "决定不回复后等待时间（秒）",
+        "hint": "我决定暂时不接话后，普通群聊消息会先继续等待，避免反复打断大家。",
         "default": 3.0
       },
       "observation_timeout": {
         "type": "int",
-        "description": "在场超时时间（秒）",
-        "hint": "在场多长时间无活动后自动离场。",
+        "description": "最长保持参与多久（秒）",
+        "hint": "被叫到后，我最多保持参与群聊这么久；超过后，收到下一条消息时会回到不主动参与的状态。",
         "default": 60
       }
     }
