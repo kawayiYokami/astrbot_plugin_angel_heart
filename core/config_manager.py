@@ -104,7 +104,7 @@ class ConfigManager:
         return self._get_grouped("leave_reply", "min_participant_count", 5)
 
     @property
-    def familiarity_cooldown_duration(self) -> int:
+    def leave_reply_cooldown_duration(self) -> int:
         return self._get_grouped("leave_reply", "familiarity_cooldown_duration", 1800)
 
     # ========== wake_interaction ==========

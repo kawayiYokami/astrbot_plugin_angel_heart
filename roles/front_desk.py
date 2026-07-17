@@ -476,6 +476,9 @@ class FrontDesk:
 
         is_wake = self.status_checker.is_event_wake(event)
         is_present = self.context.is_present(chat_id)
+        leave_reply_trigger = ""
+        if not is_wake and not is_present:
+            leave_reply_trigger = self.status_checker.get_leave_reply_trigger(chat_id)
 
         # 离场唤醒：先标记进场，再进入助理防抖
         if is_wake and not is_present:
@@ -508,6 +511,7 @@ class FrontDesk:
             message_id=message_id,
             is_wake=is_wake,
             is_present=is_present,
+            leave_reply_trigger=leave_reply_trigger,
         )
 
         if ticket is None:
@@ -724,7 +728,13 @@ class FrontDesk:
         - 不能把后到消息注入已运行子代理
         """
         try:
-            decision = await self.secretary.handle_message_by_state(event)
+            leave_reply_trigger = self.context.debounce_manager.get_leave_reply_trigger(event)
+            if leave_reply_trigger:
+                decision = await self.fishing_reply.generate_reply_strategy(
+                    chat_id, event, leave_reply_trigger
+                )
+            else:
+                decision = await self.secretary.handle_message_by_state(event)
 
             if decision and decision.should_reply:
                 await self._execute_secretary_decision(decision, event, chat_id)

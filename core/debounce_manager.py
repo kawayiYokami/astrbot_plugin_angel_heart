@@ -39,6 +39,7 @@ class DebounceRecord:
     start_message_id: str
     end_message_id: str
     delay: float
+    leave_reply_trigger: str = ""
     created_at: float = field(default_factory=time.time)
     timer: Optional[asyncio.Task] = None
 
@@ -166,6 +167,7 @@ class DebounceManager:
         message_id: str,
         is_wake: bool,
         is_present: bool,
+        leave_reply_trigger: str = "",
     ) -> Optional[asyncio.Future]:
         """根据规则创建/更新防抖。
 
@@ -191,6 +193,7 @@ class DebounceManager:
                 sender_id=sender_id,
                 message_id=message_id,
                 is_present=is_present,
+                leave_reply_trigger=leave_reply_trigger,
             )
 
     async def _schedule_wake(
@@ -259,6 +262,7 @@ class DebounceManager:
         sender_id: str,
         message_id: str,
         is_present: bool,
+        leave_reply_trigger: str,
     ) -> Optional[asyncio.Future]:
         key = (chat_id, sender_id)
         existing_assistant = self._assistant.get(key)
@@ -287,9 +291,43 @@ class DebounceManager:
             return None
 
         if not is_present:
-            # 离场未唤醒：只入库
-            logger.debug(f"AngelHeart[{chat_id}]: 离场未唤醒，仅入库 (sender={sender_id})")
-            return None
+            if not leave_reply_trigger:
+                logger.debug(
+                    f"AngelHeart[{chat_id}]: 离场未唤醒，仅入库 (sender={sender_id})"
+                )
+                return None
+
+            existing_secretary = self._secretary.get(chat_id)
+            if existing_secretary:
+                return await self._replace_record(
+                    store="secretary",
+                    key=chat_id,
+                    old=existing_secretary,
+                    chat_id=chat_id,
+                    event=event,
+                    sender_id=sender_id,
+                    message_id=message_id,
+                    kind="secretary",
+                    delay=self._secretary_delay(),
+                    must_reply=True,
+                    keep_start=True,
+                    reason="leave_reply_boundary_update",
+                    leave_reply_trigger=leave_reply_trigger,
+                )
+
+            return await self._create_record(
+                store="secretary",
+                key=chat_id,
+                chat_id=chat_id,
+                event=event,
+                sender_id=sender_id,
+                message_id=message_id,
+                kind="secretary",
+                delay=self._secretary_delay(),
+                must_reply=True,
+                reason="leave_reply_create",
+                leave_reply_trigger=leave_reply_trigger,
+            )
 
         existing_secretary = self._secretary.get(chat_id)
         if existing_secretary:
@@ -334,6 +372,7 @@ class DebounceManager:
         delay: float,
         must_reply: bool,
         reason: str,
+        leave_reply_trigger: str = "",
     ) -> asyncio.Future:
         future: asyncio.Future = asyncio.get_running_loop().create_future()
         version = self._next_version()
@@ -348,6 +387,7 @@ class DebounceManager:
             start_message_id=message_id,
             end_message_id=message_id,
             delay=delay,
+            leave_reply_trigger=leave_reply_trigger,
         )
         record.timer = asyncio.create_task(self._timer_handler(record))
         if store == "assistant":
@@ -375,6 +415,7 @@ class DebounceManager:
         must_reply: bool,
         keep_start: bool,
         reason: str,
+        leave_reply_trigger: str = "",
     ) -> asyncio.Future:
         await self._kill_record(old, reason)
         future: asyncio.Future = asyncio.get_running_loop().create_future()
@@ -390,6 +431,7 @@ class DebounceManager:
             start_message_id=old.start_message_id if keep_start else message_id,
             end_message_id=message_id,
             delay=delay,
+            leave_reply_trigger=leave_reply_trigger,
         )
         record.timer = asyncio.create_task(self._timer_handler(record))
         if store == "assistant":
@@ -428,7 +470,7 @@ class DebounceManager:
                     self._reset_record_after_gate(record, "secretary_dispatching")
                     return
 
-                if record.kind == "secretary":
+                if record.kind == "secretary" and not record.leave_reply_trigger:
                     cooldown_remaining = self._remaining_secretary_cooldown(record.chat_id)
                     if cooldown_remaining > 0:
                         # 冷却中仍保留最后边界事件，但从本次到期时刻完整重计一轮。
@@ -452,6 +494,9 @@ class DebounceManager:
                                 "angelheart_debounce_end_message_id", record.end_message_id
                             )
                             record.event.set_extra("angelheart_secretary_dispatch_id", dispatch_id)
+                            record.event.set_extra(
+                                "angelheart_leave_reply_trigger", record.leave_reply_trigger
+                            )
                     except Exception:
                         pass
                     record.future.set_result(PROCESS)
@@ -498,6 +543,14 @@ class DebounceManager:
         try:
             if hasattr(event, "get_extra"):
                 return str(event.get_extra("angelheart_debounce_kind", "") or "")
+        except Exception:
+            pass
+        return ""
+
+    def get_leave_reply_trigger(self, event: Any) -> str:
+        try:
+            if hasattr(event, "get_extra"):
+                return str(event.get_extra("angelheart_leave_reply_trigger", "") or "")
         except Exception:
             pass
         return ""

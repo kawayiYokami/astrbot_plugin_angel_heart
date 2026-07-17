@@ -18,7 +18,7 @@ AngelHeart 是一个专为 AstrBot 平台设计的智能群聊交互插件，采
 
 群聊只以 [`AngelHeartStatus`](core/angel_heart_status.py:16) 的两种现行语义参与：
 
-- **NOT_PRESENT（离场）**：只缓存消息；只有 @ 或唤醒词命中时才能进场。复读、跟风和密集聊天不触发进场。
+- **NOT_PRESENT（离场）**：只缓存消息；只有 @ 或唤醒词命中时才能进场。复读、跟风和密集聊天不触发进场；开启离场应答后，复读或密集聊天只回复一次，回复后仍离场。
 - **OBSERVATION（在场）**：由唤醒进入或回复后保持；在场超时后回到离场。
 
 `SUMMONED` 与 `GETTING_FAMILIAR` 只为旧数据/旧调用兼容保留，不是现行状态机的一部分，禁止以它们新增业务分支。
@@ -63,7 +63,7 @@ AngelHeart 是一个专为 AstrBot 平台设计的智能群聊交互插件，采
 1. **调整群聊参与规则**：
    - 优先检查 [`FrontDesk._schedule_group_debounce()`](roles/front_desk.py:468) 与 [`DebounceManager.schedule()`](core/debounce_manager.py:160) 的完整路径。
    - 唤醒判定改 [`StatusChecker.is_event_wake()`](core/angel_heart_status.py:206)；普通消息、冷却和同会话单飞规则改 `DebounceManager`。
-   - 不要把复读、跟风或密集发言重新接为离场进场条件。
+   - 不要把复读、跟风或密集发言重新接为离场进场条件；离场应答只能一次性回复，回复后保持离场。
 
 2. **新增决策因素**：
    - 修改 [`LLMAnalyzer._build_prompt()`](core/llm_analyzer.py:186) 添加新的提示词内容
