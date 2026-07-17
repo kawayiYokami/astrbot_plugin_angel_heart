@@ -534,7 +534,16 @@ class FrontDesk:
             return
 
         # 激活：重建上下文后进入秘书/主脑
-        await self._activate_group_event(event)
+        try:
+            await self._activate_group_event(event)
+        except Exception:
+            await self._finish_secretary_dispatch(
+                event,
+                chat_id,
+                cooldown_seconds=0.0,
+                reason="activation_error",
+            )
+            raise
 
     async def _activate_group_event(self, event: AstrMessageEvent):
         """防抖到期后激活事件：重建上下文，再请求。"""
@@ -682,13 +691,36 @@ class FrontDesk:
         except Exception as e:
             logger.error(f"AngelHeart[{chat_id}]: 超时检查异常: {e}", exc_info=True)
 
+    async def _finish_secretary_dispatch(
+        self,
+        event: AstrMessageEvent,
+        chat_id: str,
+        *,
+        cooldown_seconds: float,
+        reason: str,
+    ) -> bool:
+        """按本事件的调度归属收口同会话秘书单飞门闩。"""
+        dispatch_id = ""
+        if hasattr(event, "get_extra"):
+            dispatch_id = str(
+                event.get_extra("angelheart_secretary_dispatch_id", "") or ""
+            )
+        if not dispatch_id:
+            return False
+        return await self.context.debounce_manager.finish_secretary_dispatch(
+            chat_id,
+            dispatch_id,
+            cooldown_seconds=cooldown_seconds,
+            reason=reason,
+        )
+
     async def _call_secretary_and_execute(self, event: AstrMessageEvent, chat_id: str):
         """
         调用秘书并执行决策。
 
         群聊现行模型：
-        - 防抖放行后的每个事件天然是独立子代理
-        - 不再依赖单槽门锁做消息收集
+        - 防抖放行后的事件进入秘书决策
+        - 同会话的秘书调度由 DebounceManager 单飞门闩保护
         - 不能把后到消息注入已运行子代理
         """
         try:
@@ -731,6 +763,13 @@ class FrontDesk:
             except Exception:
                 pass
 
+            await self._finish_secretary_dispatch(
+                event,
+                chat_id,
+                cooldown_seconds=self.config_manager.no_reply_cooldown if decision else 0.0,
+                reason="no_reply" if decision else "no_decision",
+            )
+
             # 不回复时停止事件，避免继续进入主脑
             event.stop_event()
         except Exception as e:
@@ -748,6 +787,12 @@ class FrontDesk:
                 )
             except Exception:
                 pass
+            await self._finish_secretary_dispatch(
+                event,
+                chat_id,
+                cooldown_seconds=0.0,
+                reason="secretary_error",
+            )
             event.stop_event()
 
     async def _execute_secretary_decision(
@@ -853,6 +898,12 @@ class FrontDesk:
                     )
                 except Exception:
                     pass
+                await self._finish_secretary_dispatch(
+                    event,
+                    chat_id,
+                    cooldown_seconds=0.0,
+                    reason="debug_skip_send",
+                )
             # 需要回复时，由主框架继续处理该事件（一事件一子代理）
 
     async def _ensure_minimum_context(self, chat_id: str, event: AstrMessageEvent):

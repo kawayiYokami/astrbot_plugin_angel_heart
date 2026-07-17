@@ -51,6 +51,9 @@ class DebounceManager:
         self._lock = asyncio.Lock()
         self._assistant: Dict[Tuple[str, str], DebounceRecord] = {}
         self._secretary: Dict[str, DebounceRecord] = {}
+        # 会话级秘书调度门闩：防抖放行后一直占用到本轮发送/不回复收口。
+        self._secretary_dispatching: Dict[str, str] = {}
+        self._secretary_cooldown_until: Dict[str, float] = {}
         self._version_seq = 0
 
     def _next_version(self) -> int:
@@ -72,6 +75,60 @@ class DebounceManager:
     def has_secretary_debounce(self, chat_id: str) -> bool:
         return chat_id in self._secretary
 
+    def has_secretary_dispatch(self, chat_id: str) -> bool:
+        """当前会话是否已有一轮秘书从分析到发送收口仍在运行。"""
+        return str(chat_id or "") in self._secretary_dispatching
+
+    def _remaining_secretary_cooldown(self, chat_id: str) -> float:
+        """读取剩余冷却；仅在 _lock 内调用。"""
+        chat_id = str(chat_id or "")
+        cooldown_until = self._secretary_cooldown_until.get(chat_id, 0.0)
+        remaining = cooldown_until - time.time()
+        if remaining <= 0:
+            self._secretary_cooldown_until.pop(chat_id, None)
+            return 0.0
+        return remaining
+
+    def _reset_record_after_gate(self, record: DebounceRecord, reason: str) -> None:
+        """门闩阻断放行时，保留最后边界事件并完整重计当前类型的防抖。"""
+        record.delay = (
+            self._secretary_delay()
+            if record.kind == "secretary"
+            else self._assistant_delay()
+        )
+        record.created_at = time.time()
+        record.timer = asyncio.create_task(self._timer_handler(record))
+        logger.info(
+            f"AngelHeart[{record.chat_id}]: {record.kind}防抖到期但被门闩阻断，"
+            f"完整重计 {record.delay:.2f} 秒 (reason={reason}, version={record.version})"
+        )
+
+    async def finish_secretary_dispatch(
+        self,
+        chat_id: str,
+        dispatch_id: str,
+        *,
+        cooldown_seconds: float = 0.0,
+        reason: str = "",
+    ) -> bool:
+        """原子释放会话级秘书调度，并按结果启动下一轮普通消息冷却。"""
+        chat_id = str(chat_id or "")
+        dispatch_id = str(dispatch_id or "")
+        async with self._lock:
+            if not dispatch_id or self._secretary_dispatching.get(chat_id) != dispatch_id:
+                return False
+
+            self._secretary_dispatching.pop(chat_id, None)
+            cooldown_seconds = max(0.0, float(cooldown_seconds))
+            if cooldown_seconds:
+                self._secretary_cooldown_until[chat_id] = time.time() + cooldown_seconds
+
+            logger.info(
+                f"AngelHeart[{chat_id}]: 秘书调度收口 "
+                f"(reason={reason or 'unknown'}, cooldown={cooldown_seconds:.2f}s)"
+            )
+            return True
+
     async def clear_chat(self, chat_id: str, reason: str = "") -> None:
         """清除某会话全部防抖，旧事件全部 KILL。"""
         async with self._lock:
@@ -88,6 +145,8 @@ class DebounceManager:
             records = list(self._assistant.values()) + list(self._secretary.values())
             self._assistant.clear()
             self._secretary.clear()
+            self._secretary_dispatching.clear()
+            self._secretary_cooldown_until.clear()
             timers = []
             for record in records:
                 if record.timer and not record.timer.done():
@@ -363,10 +422,25 @@ class DebounceManager:
                 current = self._get_current_record(record)
                 if current is None or current.version != record.version:
                     return
-                # 从账本移除后再放行，避免重复触发
+
+                if self._secretary_dispatching.get(record.chat_id):
+                    # 同会话已有秘书从分析到发送收口仍在运行，绝不并发放行第二轮。
+                    self._reset_record_after_gate(record, "secretary_dispatching")
+                    return
+
+                if record.kind == "secretary":
+                    cooldown_remaining = self._remaining_secretary_cooldown(record.chat_id)
+                    if cooldown_remaining > 0:
+                        # 冷却中仍保留最后边界事件，但从本次到期时刻完整重计一轮。
+                        self._reset_record_after_gate(record, "secretary_cooldown")
+                        return
+
+                # 从账本移除后再放行；调度占用必须先写入，避免其他到期事件并发进入秘书。
                 self._pop_current_record(record)
+                dispatch_id = str(record.version)
+                self._secretary_dispatching[record.chat_id] = dispatch_id
                 if record.future and not record.future.done():
-                    # 把 must_reply 挂到事件上，激活后重建上下文再决策
+                    # 把防抖结果与会话级调度归属挂到事件上，供完成路径原子收口。
                     try:
                         if hasattr(record.event, "set_extra"):
                             record.event.set_extra("angelheart_must_reply", record.must_reply)
@@ -377,12 +451,14 @@ class DebounceManager:
                             record.event.set_extra(
                                 "angelheart_debounce_end_message_id", record.end_message_id
                             )
+                            record.event.set_extra("angelheart_secretary_dispatch_id", dispatch_id)
                     except Exception:
                         pass
                     record.future.set_result(PROCESS)
                     logger.info(
                         f"AngelHeart[{record.chat_id}]: {record.kind}防抖到期放行 "
-                        f"(sender={record.sender_id}, must_reply={record.must_reply}, version={record.version})"
+                        f"(sender={record.sender_id}, must_reply={record.must_reply}, "
+                        f"version={record.version})"
                     )
         except asyncio.CancelledError:
             return
