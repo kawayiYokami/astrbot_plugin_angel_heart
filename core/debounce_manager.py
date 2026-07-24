@@ -147,7 +147,9 @@ class DebounceManager:
                 if event.get_extra("angelheart_energy_charged", False):
                     return False
                 state = self._get_energy_state(chat_id)
+                energy_before = state.energy
                 state.energy = max(MINIMUM_ENERGY, state.energy - cost)
+                energy_after = state.energy
                 state.updated_at = time.time()
                 event.set_extra("angelheart_energy_charged", True)
             except Exception:
@@ -157,15 +159,49 @@ class DebounceManager:
                 )
                 return False
 
+        leave_reply_trigger = event.get_extra("angelheart_leave_reply_trigger", "")
+        if leave_reply_trigger:
+            mode = "leave_reply"
+        elif event.get_extra("angelheart_must_reply", False):
+            mode = "mention"
+        else:
+            mode = "ordinary"
         logger.info(
-            f"AngelHeart[{chat_id}]: 回复已扣除能量 {cost:.2f} "
-            f"(characters={character_count}, remaining={state.energy:.2f})"
+            f"AngelHeart[{chat_id}]: 回复结算 mode={mode} "
+            f"characters={character_count} cost={cost:.2f} "
+            f"energy={energy_before:.2f}->{energy_after:.2f}"
         )
         return True
 
     @staticmethod
     def _record_label(kind: str) -> str:
         return "助理防抖" if kind == "assistant" else "巡检"
+
+    @staticmethod
+    def _record_mode(record: DebounceRecord) -> str:
+        if record.leave_reply_trigger:
+            return "leave_reply"
+        if record.must_reply:
+            return "mention"
+        return "ordinary"
+
+    def _log_gate_decision(
+        self,
+        record: DebounceRecord,
+        action: str,
+        reason: str,
+        details: str = "",
+    ) -> None:
+        label = "巡检" if record.kind == "secretary" else "助理防抖"
+        fields = [
+            f"mode={self._record_mode(record)}",
+            f"action={action}",
+            f"reason={reason}",
+        ]
+        if details:
+            fields.append(details)
+        log = logger.info if record.kind == "secretary" else logger.debug
+        log(f"AngelHeart[{record.chat_id}]: {label}判定 " + " ".join(fields))
 
     def has_assistant_debounce(self, chat_id: str) -> bool:
         return any(key[0] == chat_id for key in self._assistant.keys())
@@ -197,7 +233,7 @@ class DebounceManager:
         record.created_at = time.time()
         record.timer = asyncio.create_task(self._timer_handler(record))
         label = self._record_label(record.kind)
-        logger.info(
+        logger.debug(
             f"AngelHeart[{record.chat_id}]: {label}到期但被门闩阻断，"
             f"完整重计 {record.delay:.2f} 秒 (reason={reason}, version={record.version})"
         )
@@ -222,7 +258,7 @@ class DebounceManager:
             if cooldown_seconds:
                 self._secretary_cooldown_until[chat_id] = time.time() + cooldown_seconds
 
-            logger.info(
+            logger.debug(
                 f"AngelHeart[{chat_id}]: 秘书调度收口 "
                 f"(reason={reason or 'unknown'}, cooldown={cooldown_seconds:.2f}s)"
             )
@@ -494,7 +530,7 @@ class DebounceManager:
         else:
             self._secretary[key] = record
         label = self._record_label(kind)
-        logger.info(
+        logger.debug(
             f"AngelHeart[{chat_id}]: 创建{label} "
             f"(sender={sender_id}, delay={delay:.2f}s, must_reply={must_reply}, reason={reason})"
         )
@@ -539,7 +575,7 @@ class DebounceManager:
         else:
             self._secretary[key] = record
         label = self._record_label(kind)
-        logger.info(
+        logger.debug(
             f"AngelHeart[{chat_id}]: 更新{label} "
             f"(sender={sender_id}, delay={delay:.2f}s, must_reply={must_reply}, reason={reason})"
         )
@@ -554,7 +590,7 @@ class DebounceManager:
         if timer:
             await asyncio.gather(timer, return_exceptions=True)
         logger.debug(
-            f"AngelHeart[{record.chat_id}]: 旧{record.kind}事件已 KILL "
+            f"AngelHeart[{record.chat_id}]: 旧{self._record_label(record.kind)}事件已 KILL "
             f"(sender={record.sender_id}, reason={reason}, version={record.version})"
         )
 
@@ -568,6 +604,9 @@ class DebounceManager:
 
                 if self._secretary_dispatching.get(record.chat_id):
                     # 同会话已有秘书从分析到发送收口仍在运行，绝不并发放行第二轮。
+                    self._log_gate_decision(
+                        record, "retry", "secretary_dispatching"
+                    )
                     self._reset_record_after_gate(record, "secretary_dispatching")
                     return
 
@@ -577,17 +616,31 @@ class DebounceManager:
                     cooldown_remaining = self._remaining_secretary_cooldown(record.chat_id)
                     if cooldown_remaining > 0:
                         # 冷却中仍保留最后边界事件，但从本次到期时刻完整重计一轮。
+                        self._log_gate_decision(
+                            record,
+                            "retry",
+                            "reply_cooldown",
+                            f"cooldown={cooldown_remaining:.2f}s",
+                        )
                         self._reset_record_after_gate(record, "secretary_cooldown")
                         return
 
+                energy_after_gate = None
+                recovered = None
                 if record.kind == "secretary" and not record.must_reply:
+                    energy_state = self._get_energy_state(record.chat_id)
+                    energy_before = energy_state.energy
                     energy_state = self._recover_energy_before_patrol(record.chat_id)
-                    if energy_state.energy <= 0:
-                        self._reset_record_after_gate(record, "energy_insufficient")
-                        logger.info(
-                            f"AngelHeart[{record.chat_id}]: 巡检能量不足，保留当前巡检并重计 "
-                            f"(energy={energy_state.energy:.2f})"
+                    energy_after_gate = energy_state.energy
+                    recovered = max(0.0, energy_after_gate - energy_before)
+                    if energy_after_gate <= 0:
+                        self._log_gate_decision(
+                            record,
+                            "retry",
+                            "energy_insufficient",
+                            f"energy={energy_after_gate:.2f} recovered={recovered:.2f}",
                         )
+                        self._reset_record_after_gate(record, "energy_insufficient")
                         return
 
                 # 从账本移除后再放行；调度占用必须先写入，避免其他到期事件并发进入秘书。
@@ -615,13 +668,29 @@ class DebounceManager:
                             )
                     except Exception:
                         pass
+                    mode = self._record_mode(record)
+                    if mode == "ordinary":
+                        self._log_gate_decision(
+                            record,
+                            "process",
+                            "energy_sufficient",
+                            f"energy={energy_after_gate:.2f} recovered={recovered:.2f} cooldown=pass",
+                        )
+                    elif mode == "mention":
+                        self._log_gate_decision(
+                            record,
+                            "process",
+                            "mentioned",
+                            "energy_check=skip cooldown=pass",
+                        )
+                    else:
+                        self._log_gate_decision(
+                            record,
+                            "process",
+                            "leave_reply",
+                            "energy_check=skip cooldown=skip",
+                        )
                     record.future.set_result(PROCESS)
-                    label = self._record_label(record.kind)
-                    logger.info(
-                        f"AngelHeart[{record.chat_id}]: {label}到期放行 "
-                        f"(sender={record.sender_id}, must_reply={record.must_reply}, "
-                        f"version={record.version})"
-                    )
         except asyncio.CancelledError:
             return
         except Exception as e:

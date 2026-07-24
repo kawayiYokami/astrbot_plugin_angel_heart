@@ -57,7 +57,7 @@ class Secretary:
         current_status = self.angel_context.get_chat_status(chat_id)
         must_reply = self.angel_context.debounce_manager.get_must_reply(event)
         debounce_kind = self.angel_context.debounce_manager.get_debounce_kind(event)
-        logger.info(
+        logger.debug(
             f"AngelHeart[{chat_id}]: 秘书处理激活事件 "
             f"(状态: {current_status.value}, kind={debounce_kind or 'unknown'}, must_reply={must_reply})"
         )
@@ -79,7 +79,7 @@ class Secretary:
             )
         )
         if not recent_dialogue:
-            logger.info(f"AngelHeart[{chat_id}]: 无新消息需要分析。")
+            logger.debug(f"AngelHeart[{chat_id}]: 无新消息需要分析。")
             return SecretaryDecision(
                 should_reply=False, reply_strategy="无新消息", topic="未知",
                 entities=[], facts=[], keywords=[]
@@ -132,7 +132,7 @@ class Secretary:
         Returns:
             SecretaryDecision: 分析后得出的决策对象。
         """
-        logger.info(f"AngelHeart[{chat_id}]: 秘书开始调用LLM进行分析...")
+        logger.debug(f"AngelHeart[{chat_id}]: 秘书开始调用分析模型...")
 
         try:
             work_ledger_text = ""
