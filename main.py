@@ -444,6 +444,9 @@ class AngelHeartPlugin(Star):
             else:
                 logger.debug(f"AngelHeart[{chat_id}]: Markdown清洗已禁用，跳过清洗步骤。")
 
+            await self.angel_context.debounce_manager.charge_reply_energy(
+                event, message_chain
+            )
             logger.debug(f"AngelHeart[{chat_id}]: 消息链中的Markdown格式清洗完成。")
         except Exception as e:
             logger.error(f"AngelHeart[{chat_id}]: strip_markdown_on_decorating_result 处理异常: {e}", exc_info=True)
