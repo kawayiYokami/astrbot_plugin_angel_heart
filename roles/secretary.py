@@ -104,23 +104,11 @@ class Secretary:
             recent_dialogue, historical_context, chat_id, event=event
         )
 
-        # 必须回应：助理防抖 / 加速秘书防抖
+        # 点名巡检 / 助理防抖放行后必须回复；是否有理由不再影响门闩结果。
         if must_reply:
-            has_reason = (
-                decision.is_questioned
-                or decision.is_interesting
-                or self.config_manager.reply_even_not_questioned
-                or self.config_manager.force_reply_when_summoned
-            )
-            if has_reason:
-                decision.should_reply = True
-                if not decision.reply_strategy or decision.reply_strategy == "继续观察":
-                    decision.reply_strategy = "必须回应"
-            else:
-                # 配置要求强制回复时，即使理由弱也回
-                if self.config_manager.force_reply_when_summoned:
-                    decision.should_reply = True
-                    decision.reply_strategy = "必须回应"
+            decision.should_reply = True
+            if not decision.reply_strategy or decision.reply_strategy == "继续观察":
+                decision.reply_strategy = "必须回应"
 
         return decision
 

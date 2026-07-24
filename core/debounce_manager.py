@@ -24,6 +24,21 @@ except ImportError:
 PROCESS = "PROCESS"
 KILL = "KILL"
 
+MAXIMUM_ENERGY = 100.0
+MINIMUM_ENERGY = -100.0
+INITIAL_ENERGY = 100.0
+ENERGY_RECOVERY_PER_SECOND = 0.6
+BASE_REPLY_ENERGY_COST = 14.0
+ENERGY_COST_PER_CHARACTER = 0.12
+
+
+@dataclass
+class ChatEnergyState:
+    """单群运行时能量；不持久化，插件重启后重新初始化。"""
+
+    energy: float = INITIAL_ENERGY
+    updated_at: float = field(default_factory=time.time)
+
 
 @dataclass
 class DebounceRecord:
@@ -55,6 +70,7 @@ class DebounceManager:
         # 会话级秘书调度门闩：防抖放行后一直占用到本轮发送/不回复收口。
         self._secretary_dispatching: Dict[str, str] = {}
         self._secretary_cooldown_until: Dict[str, float] = {}
+        self.energy_states: Dict[str, ChatEnergyState] = {}
         self._version_seq = 0
 
     def _next_version(self) -> int:
@@ -69,6 +85,87 @@ class DebounceManager:
 
     def _accelerate_delay(self) -> float:
         return max(0.05, float(getattr(self.config_manager, "accelerate_debounce_time", 1.0)))
+
+    def _get_energy_state(self, chat_id: str) -> ChatEnergyState:
+        chat_id = str(chat_id or "")
+        state = self.energy_states.get(chat_id)
+        if state is None:
+            state = ChatEnergyState()
+            self.energy_states[chat_id] = state
+        return state
+
+    def _recover_energy_before_patrol(self, chat_id: str) -> ChatEnergyState:
+        """在普通巡检资格判断前，按当前时间恢复一次能量。"""
+        state = self._get_energy_state(chat_id)
+        now = time.time()
+        elapsed = max(0.0, now - state.updated_at)
+        state.energy = min(
+            MAXIMUM_ENERGY,
+            state.energy + elapsed * ENERGY_RECOVERY_PER_SECOND,
+        )
+        state.updated_at = now
+        return state
+
+    def get_chat_energy(self, chat_id: str) -> float:
+        return self._get_energy_state(chat_id).energy
+
+    @staticmethod
+    def _effective_character_count(message_chain) -> int:
+        text_parts = []
+        for component in message_chain:
+            text = getattr(component, "text", None)
+            if text is not None:
+                text_parts.append(str(text))
+                continue
+            data = getattr(component, "data", None)
+            if isinstance(data, dict):
+                text = data.get("text", "")
+                if text:
+                    text_parts.append(str(text))
+        return len("".join(text_parts).strip())
+
+    async def charge_reply_energy(self, event: Any, message_chain) -> bool:
+        """在最终消息链上对当前 AngelHeart 回复统一扣能一次。"""
+        if not message_chain or not hasattr(event, "get_extra"):
+            return False
+
+        try:
+            if not event.get_extra("angelheart_energy_charge_eligible", False):
+                return False
+            if event.get_extra("angelheart_energy_charged", False):
+                return False
+            chat_id = str(event.unified_msg_origin or "")
+        except Exception:
+            return False
+        if not chat_id:
+            return False
+
+        character_count = self._effective_character_count(message_chain)
+        cost = BASE_REPLY_ENERGY_COST + character_count * ENERGY_COST_PER_CHARACTER
+        async with self._lock:
+            try:
+                if event.get_extra("angelheart_energy_charged", False):
+                    return False
+                state = self._get_energy_state(chat_id)
+                state.energy = max(MINIMUM_ENERGY, state.energy - cost)
+                state.updated_at = time.time()
+                event.set_extra("angelheart_energy_charged", True)
+            except Exception:
+                logger.warning(
+                    f"AngelHeart[{chat_id}]: 回复能量结算失败",
+                    exc_info=True,
+                )
+                return False
+
+        logger.info(
+            f"AngelHeart[{chat_id}]: 回复已扣除能量 {cost:.2f} "
+            f"(characters={character_count}, remaining={state.energy:.2f})"
+        )
+        return True
+
+    @staticmethod
+    def _record_label(kind: str) -> str:
+        return "助理防抖" if kind == "assistant" else "巡检"
 
     def has_assistant_debounce(self, chat_id: str) -> bool:
         return any(key[0] == chat_id for key in self._assistant.keys())
@@ -99,8 +196,9 @@ class DebounceManager:
         )
         record.created_at = time.time()
         record.timer = asyncio.create_task(self._timer_handler(record))
+        label = self._record_label(record.kind)
         logger.info(
-            f"AngelHeart[{record.chat_id}]: {record.kind}防抖到期但被门闩阻断，"
+            f"AngelHeart[{record.chat_id}]: {label}到期但被门闩阻断，"
             f"完整重计 {record.delay:.2f} 秒 (reason={reason}, version={record.version})"
         )
 
@@ -148,6 +246,7 @@ class DebounceManager:
             self._secretary.clear()
             self._secretary_dispatching.clear()
             self._secretary_cooldown_until.clear()
+            self.energy_states.clear()
             timers = []
             for record in records:
                 if record.timer and not record.timer.done():
@@ -394,8 +493,9 @@ class DebounceManager:
             self._assistant[key] = record
         else:
             self._secretary[key] = record
+        label = self._record_label(kind)
         logger.info(
-            f"AngelHeart[{chat_id}]: 创建{kind}防抖/扣押 "
+            f"AngelHeart[{chat_id}]: 创建{label} "
             f"(sender={sender_id}, delay={delay:.2f}s, must_reply={must_reply}, reason={reason})"
         )
         return future
@@ -438,8 +538,9 @@ class DebounceManager:
             self._assistant[key] = record
         else:
             self._secretary[key] = record
+        label = self._record_label(kind)
         logger.info(
-            f"AngelHeart[{chat_id}]: 更新{kind}防抖/扣押 "
+            f"AngelHeart[{chat_id}]: 更新{label} "
             f"(sender={sender_id}, delay={delay:.2f}s, must_reply={must_reply}, reason={reason})"
         )
         return future
@@ -470,11 +571,23 @@ class DebounceManager:
                     self._reset_record_after_gate(record, "secretary_dispatching")
                     return
 
-                if record.kind == "secretary" and not record.leave_reply_trigger:
+                if not record.leave_reply_trigger and (
+                    record.kind == "secretary" or record.must_reply
+                ):
                     cooldown_remaining = self._remaining_secretary_cooldown(record.chat_id)
                     if cooldown_remaining > 0:
                         # 冷却中仍保留最后边界事件，但从本次到期时刻完整重计一轮。
                         self._reset_record_after_gate(record, "secretary_cooldown")
+                        return
+
+                if record.kind == "secretary" and not record.must_reply:
+                    energy_state = self._recover_energy_before_patrol(record.chat_id)
+                    if energy_state.energy <= 0:
+                        self._reset_record_after_gate(record, "energy_insufficient")
+                        logger.info(
+                            f"AngelHeart[{record.chat_id}]: 巡检能量不足，保留当前巡检并重计 "
+                            f"(energy={energy_state.energy:.2f})"
+                        )
                         return
 
                 # 从账本移除后再放行；调度占用必须先写入，避免其他到期事件并发进入秘书。
@@ -497,11 +610,15 @@ class DebounceManager:
                             record.event.set_extra(
                                 "angelheart_leave_reply_trigger", record.leave_reply_trigger
                             )
+                            record.event.set_extra(
+                                "angelheart_energy_charge_eligible", True
+                            )
                     except Exception:
                         pass
                     record.future.set_result(PROCESS)
+                    label = self._record_label(record.kind)
                     logger.info(
-                        f"AngelHeart[{record.chat_id}]: {record.kind}防抖到期放行 "
+                        f"AngelHeart[{record.chat_id}]: {label}到期放行 "
                         f"(sender={record.sender_id}, must_reply={record.must_reply}, "
                         f"version={record.version})"
                     )

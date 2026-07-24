@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import time
 import types
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -50,6 +51,7 @@ sys.modules["astrbot.core.star.context"].Context = type("Context", (), {})
 
 from astrbot_plugin_angel_heart.core.config_manager import ConfigManager
 from astrbot_plugin_angel_heart.core.debounce_manager import (
+    ChatEnergyState,
     DebounceManager,
     PROCESS,
     KILL,
@@ -105,7 +107,7 @@ class DummyEvent:
         return self._stopped
 
 
-def make_config(leave_reply_overrides=None, **timing_overrides):
+def make_config(leave_reply_overrides=None, wake_reply_overrides=None, **timing_overrides):
     timing = {
         "assistant_debounce_time": 0.05,
         "secretary_debounce_time": 0.08,
@@ -117,16 +119,18 @@ def make_config(leave_reply_overrides=None, **timing_overrides):
     timing.update(timing_overrides)
     leave_reply = {"familiarity_cooldown_duration": 1800}
     leave_reply.update(leave_reply_overrides or {})
+    wake_interaction = {
+        "alias": "草王|纳西妲",
+        "force_reply_when_summoned": True,
+        "reply_even_not_questioned": False,
+        "analysis_on_mention_only": True,
+    }
+    wake_interaction.update(wake_reply_overrides or {})
     return ConfigManager(
         {
             "analyzer_model": "mock-model",
             "timing": timing,
-            "wake_interaction": {
-                "alias": "草王|纳西妲",
-                "force_reply_when_summoned": True,
-                "reply_even_not_questioned": False,
-                "analysis_on_mention_only": True,
-            },
+            "wake_interaction": wake_interaction,
             "leave_reply": leave_reply,
             "access_control": {},
             "context_compression": {},
@@ -502,6 +506,206 @@ class TestDebounceManagerBoundaries:
         )
 
     @pytest.mark.asyncio
+    async def test_ordinary_patrol_recovers_before_energy_gate(self):
+        dm = DebounceManager(make_config(secretary_debounce_time=0.05))
+        dm.energy_states["g1"] = ChatEnergyState(
+            energy=-0.2,
+            updated_at=time.time() - 1.0,
+        )
+        event = DummyEvent("recover")
+        ticket = await dm.schedule(
+            chat_id="g1",
+            event=event,
+            sender_id="a",
+            message_id="1",
+            is_wake=False,
+            is_present=True,
+        )
+
+        assert await asyncio.wait_for(ticket, timeout=0.15) == PROCESS
+        assert dm.get_chat_energy("g1") > 0
+        await dm.finish_secretary_dispatch(
+            "g1",
+            event.extras["angelheart_secretary_dispatch_id"],
+            reason="test_done",
+        )
+
+    @pytest.mark.asyncio
+    async def test_insufficient_energy_restarts_current_patrol(self):
+        dm = DebounceManager(make_config(secretary_debounce_time=0.05))
+        dm.energy_states["g1"] = ChatEnergyState(
+            energy=-100.0,
+            updated_at=time.time(),
+        )
+        event = DummyEvent("insufficient")
+        ticket = await dm.schedule(
+            chat_id="g1",
+            event=event,
+            sender_id="a",
+            message_id="1",
+            is_wake=False,
+            is_present=True,
+        )
+
+        await asyncio.sleep(0.06)
+        assert not ticket.done()
+        assert dm.has_secretary_debounce("g1")
+
+        dm.energy_states["g1"].energy = 1.0
+        assert await asyncio.wait_for(ticket, timeout=0.15) == PROCESS
+        await dm.finish_secretary_dispatch(
+            "g1",
+            event.extras["angelheart_secretary_dispatch_id"],
+            reason="test_done",
+        )
+
+    @pytest.mark.asyncio
+    async def test_mention_upgrades_current_patrol_and_bypasses_energy_gate(self):
+        dm = DebounceManager(make_config(secretary_debounce_time=0.10))
+        dm.energy_states["g1"] = ChatEnergyState(
+            energy=-100.0,
+            updated_at=time.time(),
+        )
+        ordinary = DummyEvent("ordinary")
+        ordinary_ticket = await dm.schedule(
+            chat_id="g1",
+            event=ordinary,
+            sender_id="a",
+            message_id="1",
+            is_wake=False,
+            is_present=True,
+        )
+        mention = DummyEvent("mention")
+        mention_ticket = await dm.schedule(
+            chat_id="g1",
+            event=mention,
+            sender_id="b",
+            message_id="2",
+            is_wake=True,
+            is_present=True,
+        )
+
+        assert len(dm._secretary) == 1
+        assert await ordinary_ticket == KILL
+        assert await asyncio.wait_for(mention_ticket, timeout=0.15) == PROCESS
+        assert mention.extras["angelheart_must_reply"] is True
+        await dm.finish_secretary_dispatch(
+            "g1",
+            mention.extras["angelheart_secretary_dispatch_id"],
+            reason="test_done",
+        )
+
+    @pytest.mark.asyncio
+    async def test_energy_is_independent_per_chat(self):
+        dm = DebounceManager(make_config(secretary_debounce_time=0.05))
+        dm.energy_states["g1"] = ChatEnergyState(
+            energy=-100.0,
+            updated_at=time.time(),
+        )
+        first = DummyEvent("g1")
+        first_ticket = await dm.schedule(
+            chat_id="g1",
+            event=first,
+            sender_id="a",
+            message_id="1",
+            is_wake=False,
+            is_present=True,
+        )
+        second = DummyEvent("g2", chat_id="group:2")
+        second_ticket = await dm.schedule(
+            chat_id="g2",
+            event=second,
+            sender_id="a",
+            message_id="2",
+            is_wake=False,
+            is_present=True,
+        )
+
+        await asyncio.sleep(0.06)
+        assert not first_ticket.done()
+        assert await second_ticket == PROCESS
+        await dm.finish_secretary_dispatch(
+            "g2",
+            second.extras["angelheart_secretary_dispatch_id"],
+            reason="test_done",
+        )
+
+        dm.energy_states["g1"].energy = 1.0
+        assert await asyncio.wait_for(first_ticket, timeout=0.15) == PROCESS
+        await dm.finish_secretary_dispatch(
+            "g1",
+            first.extras["angelheart_secretary_dispatch_id"],
+            reason="test_done",
+        )
+
+    @pytest.mark.asyncio
+    async def test_point_patrol_still_respects_reply_cooldown(self):
+        dm = DebounceManager(
+            make_config(
+                assistant_debounce_time=0.05,
+                accelerate_debounce_time=0.05,
+                waiting_time=0.12,
+            )
+        )
+        first = DummyEvent("first")
+        first_ticket = await dm.schedule(
+            chat_id="g1",
+            event=first,
+            sender_id="a",
+            message_id="1",
+            is_wake=False,
+            is_present=True,
+        )
+        assert await first_ticket == PROCESS
+        await dm.finish_secretary_dispatch(
+            "g1",
+            first.extras["angelheart_secretary_dispatch_id"],
+            cooldown_seconds=0.12,
+            reason="reply_sent",
+        )
+
+        mention = DummyEvent("mention")
+        mention_ticket = await dm.schedule(
+            chat_id="g1",
+            event=mention,
+            sender_id="b",
+            message_id="2",
+            is_wake=True,
+            is_present=True,
+        )
+        await asyncio.sleep(0.06)
+        assert not mention_ticket.done()
+        assert await asyncio.wait_for(mention_ticket, timeout=0.20) == PROCESS
+        await dm.finish_secretary_dispatch(
+            "g1",
+            mention.extras["angelheart_secretary_dispatch_id"],
+            reason="test_done",
+        )
+
+    @pytest.mark.asyncio
+    async def test_reply_energy_uses_final_chain_and_charges_once(self, dm):
+        event = DummyEvent("reply")
+        event.set_extra("angelheart_energy_charge_eligible", True)
+        message_chain = [types.SimpleNamespace(text="清洗后的内容")]
+        initial = dm.get_chat_energy("group:1")
+
+        assert await dm.charge_reply_energy(event, message_chain) is True
+        expected = initial - 14.0 - len("清洗后的内容") * 0.12
+        assert dm.get_chat_energy("group:1") == pytest.approx(expected)
+        assert await dm.charge_reply_energy(event, message_chain) is False
+        assert dm.get_chat_energy("group:1") == pytest.approx(expected)
+
+    @pytest.mark.asyncio
+    async def test_unmarked_event_does_not_charge_reply_energy(self, dm):
+        event = DummyEvent("other")
+        initial = dm.get_chat_energy("g1")
+
+        assert await dm.charge_reply_energy(
+            event, [types.SimpleNamespace(text="其他事件")]
+        ) is False
+        assert dm.get_chat_energy("g1") == pytest.approx(initial)
+
+    @pytest.mark.asyncio
     async def test_running_secretary_restarts_later_secretary_debounce(self):
         dm = DebounceManager(make_config(secretary_debounce_time=0.05))
         first = DummyEvent("first")
@@ -643,6 +847,44 @@ class TestSecretaryActivation:
             event.unified_msg_origin, "boundary-2"
         )
         assert event.get_extra("angelheart_decision_context")["boundary_message_id"] == "boundary-2"
+        assert decision.should_reply is True
+        assert decision.reply_strategy == "必须回应"
+
+    @pytest.mark.asyncio
+    async def test_must_reply_ignores_force_reply_configuration(self):
+        from astrbot_plugin_angel_heart.roles.secretary import Secretary
+
+        config = make_config(
+            wake_reply_overrides={"force_reply_when_summoned": False}
+        )
+        angel = MagicMock()
+        angel.get_chat_status.return_value = AngelHeartStatus.OBSERVATION
+        angel.is_present.return_value = True
+        angel.debounce_manager.get_must_reply.return_value = True
+        angel.debounce_manager.get_debounce_kind.return_value = "secretary"
+        angel.debounce_manager.get_end_message_id.return_value = "boundary-1"
+        angel.conversation_ledger.get_context_snapshot.return_value = (
+            [],
+            [{"role": "user", "content": "被点名"}],
+            1.0,
+        )
+        angel.status_transition_manager.transition_to_status = AsyncMock()
+
+        secretary = Secretary(config, MagicMock(), angel)
+        secretary.perform_analysis = AsyncMock(
+            return_value=SecretaryDecision(
+                should_reply=False,
+                is_questioned=False,
+                is_interesting=False,
+                reply_strategy="继续观察",
+                topic="t",
+                entities=[],
+                facts=[],
+                keywords=[],
+            )
+        )
+
+        decision = await secretary.handle_message_by_state(DummyEvent("mention"))
         assert decision.should_reply is True
         assert decision.reply_strategy == "必须回应"
 
@@ -1032,6 +1274,7 @@ class TestRuntimeCleanup:
         )
         context.debounce_manager._secretary_dispatching["g1"] = "dispatch-1"
         context.debounce_manager._secretary_cooldown_until["g1"] = 9999999999.0
+        context.energy_states["g1"] = ChatEnergyState(energy=-10.0)
 
         await context.cleanup()
 
@@ -1048,6 +1291,7 @@ class TestRuntimeCleanup:
         assert context.debounce_manager._secretary == {}
         assert context.debounce_manager._secretary_dispatching == {}
         assert context.debounce_manager._secretary_cooldown_until == {}
+        assert context.energy_states == {}
         assert context.conversation_ledger._ledgers == {}
         assert context.conversation_ledger._compression_locks == {}
         assert context.conversation_ledger.db_conn is None
