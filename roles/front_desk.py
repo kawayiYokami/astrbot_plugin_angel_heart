@@ -552,8 +552,8 @@ class FrontDesk:
     async def _activate_group_event(self, event: AstrMessageEvent):
         """防抖到期后激活事件：重建上下文，再请求。"""
         chat_id = event.unified_msg_origin
-        logger.info(
-            f"AngelHeart[{chat_id}]: 防抖放行，重建上下文后激活 "
+        logger.debug(
+            f"AngelHeart[{chat_id}]: 巡检放行后激活 "
             f"(kind={self.context.debounce_manager.get_debounce_kind(event)}, "
             f"must_reply={self.context.debounce_manager.get_must_reply(event)})"
         )
@@ -737,8 +737,22 @@ class FrontDesk:
                 decision = await self.secretary.handle_message_by_state(event)
 
             if decision and decision.should_reply:
+                logger.info(
+                    f"AngelHeart[{chat_id}]: 秘书决策 action=reply "
+                    f"reason={decision.reply_strategy or '未说明'}"
+                )
                 await self._execute_secretary_decision(decision, event, chat_id)
                 return
+
+            if decision:
+                logger.info(
+                    f"AngelHeart[{chat_id}]: 秘书决策 action=no_reply "
+                    f"reason={decision.reply_strategy or '未说明'}"
+                )
+            else:
+                logger.warning(
+                    f"AngelHeart[{chat_id}]: 秘书决策 action=no_decision reason=analysis_failed"
+                )
 
             if (
                 event.is_at_or_wake_command
@@ -748,13 +762,6 @@ class FrontDesk:
                     f"AngelHeart[{chat_id}]: 上游唤醒聊天事件未获批准，已停止后续主 LLM 处理。"
                 )
                 event.stop_event()
-
-            if decision:
-                logger.info(
-                    f"AngelHeart[{chat_id}]: 决策为'不参与'。原因: {decision.reply_strategy}"
-                )
-            else:
-                logger.warning(f"AngelHeart[{chat_id}]: 分析失败，无决策结果")
 
             # 不回复：关闭本轮工作，避免账本一直 running
             try:
@@ -839,8 +846,9 @@ class FrontDesk:
     ):
         """处理决策结果 - 复用秘书的逻辑"""
         if decision and decision.should_reply:
-            logger.info(
-                f"AngelHeart[{chat_id}]: 决策为'参与'。策略: {decision.reply_strategy}"
+            logger.debug(
+                f"AngelHeart[{chat_id}]: 执行秘书决策 action=reply "
+                f"reason={decision.reply_strategy or '未说明'}"
             )
 
             # 图片转述处理
@@ -858,7 +866,7 @@ class FrontDesk:
                 )
             )
             if caption_count > 0:
-                logger.info(
+                logger.debug(
                     f"AngelHeart[{chat_id}]: 已为 {caption_count} 张图片生成转述"
                 )
 
@@ -871,7 +879,7 @@ class FrontDesk:
                 event.angelheart_context = json_serialize_context(
                     full_snapshot, decision
                 )
-                logger.info(
+                logger.debug(
                     f"AngelHeart[{chat_id}]: 上下文已注入 event.angelheart_context"
                 )
             except Exception as e:
@@ -893,7 +901,7 @@ class FrontDesk:
                 event.is_at_or_wake_command = True
                 logger.debug(f"AngelHeart[{chat_id}]: 已设置唤醒主脑标志")
             else:
-                logger.info(f"AngelHeart[{chat_id}]: 调试模式已启用，阻止了实际唤醒。")
+                logger.debug(f"AngelHeart[{chat_id}]: 调试模式已启用，阻止了实际唤醒。")
                 try:
                     work_id = ""
                     if hasattr(event, "get_extra"):
@@ -963,7 +971,7 @@ class FrontDesk:
                 return
 
             # 固定获取19条历史消息（除了最新那条）
-            logger.info(
+            logger.debug(
                 f"AngelHeart[{chat_id}]: 当前有 {len(text_messages)} 条消息，开始获取历史消息"
             )
             supplement_messages = await self._fetch_database_history(chat_id, 19, event)
@@ -1016,7 +1024,7 @@ class FrontDesk:
             if converted_messages:
                 return converted_messages
 
-            logger.info(
+            logger.debug(
                 f"AngelHeart[{chat_id}]: QQ 历史获取为空或失败，回退到 AstrBot 官方会话历史"
             )
             return await self._fetch_astrbot_conversation_history(chat_id, needed_count)
@@ -1061,12 +1069,12 @@ class FrontDesk:
 
             conversation_id = await conv_mgr.get_curr_conversation_id(chat_id)
             if not conversation_id:
-                logger.info(f"AngelHeart[{chat_id}]: 当前会话没有官方 conversation id")
+                logger.debug(f"AngelHeart[{chat_id}]: 当前会话没有官方 conversation id")
                 return []
 
             conversation = await conv_mgr.get_conversation(chat_id, conversation_id)
             if not conversation or not getattr(conversation, "history", None):
-                logger.info(f"AngelHeart[{chat_id}]: 官方 conversation history 为空")
+                logger.debug(f"AngelHeart[{chat_id}]: 官方 conversation history 为空")
                 return []
 
             try:
@@ -1082,7 +1090,7 @@ class FrontDesk:
                 history_records,
                 needed_count,
             )
-            logger.info(
+            logger.debug(
                 f"AngelHeart[{chat_id}]: 已从 AstrBot 官方会话历史回退补充 {len(fallback_messages)} 条消息"
             )
             return fallback_messages
@@ -1245,7 +1253,7 @@ class FrontDesk:
                 return []
 
         except Exception as e:
-            logger.info(f"AngelHeart: 首次补历史调用QQ API失败（不影响主流程）: {e}")
+            logger.debug(f"AngelHeart: 首次补历史调用QQ API失败（不影响主流程）: {e}")
             return []
 
     def _extract_group_id(self, chat_id: str) -> str:
@@ -1385,7 +1393,7 @@ class FrontDesk:
                 return contexts
 
             # 不支持图片，需要过滤
-            logger.info(
+            logger.debug(
                 f"AngelHeart[{chat_id}]: Provider {provider_config.get('id', 'unknown')} 不支持图片，开始过滤图片内容"
             )
 
@@ -1434,7 +1442,7 @@ class FrontDesk:
                 filtered_contexts.append(filtered_msg)
 
             if images_filtered_count > 0:
-                logger.info(
+                logger.debug(
                     f"AngelHeart[{chat_id}]: 总共过滤了 {images_filtered_count} 个图片组件"
                 )
 
@@ -1782,7 +1790,7 @@ class FrontDesk:
             force_caption=not preserve_current_image_urls,
         )
         if caption_count > 0:
-            logger.info(
+            logger.debug(
                 f"AngelHeart[{chat_id}]: 组请求前已补齐 {caption_count} 条图片转述"
             )
 
@@ -1861,7 +1869,7 @@ class FrontDesk:
                 f"AngelHeart[{chat_id}]: 重建后的当前提示词为空，本次仅重建上文，保留原始 req.prompt。"
             )
 
-        logger.info(
+        logger.debug(
             f"AngelHeart[{chat_id}]: LLM请求体已重构，采用'完整上下文+聚焦指令'模式。"
         )
 

@@ -200,7 +200,7 @@ class AngelHeartPlugin(Star):
                 chat_id, ledger_messages
             )
 
-            logger.info(
+            logger.debug(
                 f"AngelHeart[{chat_id}]: 已在完成点记录 {len(ledger_messages)} 条完整 assistant/tool 消息"
             )
         except Exception as e:
