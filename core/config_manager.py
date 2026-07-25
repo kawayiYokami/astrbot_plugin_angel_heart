@@ -73,6 +73,32 @@ class ConfigManager:
     def observation_timeout(self) -> int:
         return self._get_grouped("timing", "observation_timeout", 60)
 
+    # ========== energy ==========
+
+    @property
+    def initial_energy(self) -> float:
+        return self._get_grouped("energy", "initial_energy", 100.0)
+
+    @property
+    def max_energy(self) -> float:
+        return self._get_grouped("energy", "max_energy", 100.0)
+
+    @property
+    def min_energy(self) -> float:
+        return self._get_grouped("energy", "min_energy", -100.0)
+
+    @property
+    def recovery_per_second(self) -> float:
+        return self._get_grouped("energy", "recovery_per_second", 0.6)
+
+    @property
+    def base_reply_cost(self) -> float:
+        return self._get_grouped("energy", "base_reply_cost", 14.0)
+
+    @property
+    def reply_cost_per_character(self) -> float:
+        return self._get_grouped("energy", "reply_cost_per_character", 0.12)
+
     # ========== leave_reply ==========
 
     @property

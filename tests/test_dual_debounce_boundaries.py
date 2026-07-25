@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 import time
 import types
@@ -107,7 +108,12 @@ class DummyEvent:
         return self._stopped
 
 
-def make_config(leave_reply_overrides=None, wake_reply_overrides=None, **timing_overrides):
+def make_config(
+    leave_reply_overrides=None,
+    wake_reply_overrides=None,
+    energy_overrides=None,
+    **timing_overrides,
+):
     timing = {
         "assistant_debounce_time": 0.05,
         "secretary_debounce_time": 0.08,
@@ -119,6 +125,8 @@ def make_config(leave_reply_overrides=None, wake_reply_overrides=None, **timing_
     timing.update(timing_overrides)
     leave_reply = {"familiarity_cooldown_duration": 1800}
     leave_reply.update(leave_reply_overrides or {})
+    energy = {}
+    energy.update(energy_overrides or {})
     wake_interaction = {
         "alias": "草王|纳西妲",
         "force_reply_when_summoned": True,
@@ -130,6 +138,7 @@ def make_config(leave_reply_overrides=None, wake_reply_overrides=None, **timing_
         {
             "analyzer_model": "mock-model",
             "timing": timing,
+            "energy": energy,
             "wake_interaction": wake_interaction,
             "leave_reply": leave_reply,
             "access_control": {},
@@ -141,6 +150,47 @@ def make_config(leave_reply_overrides=None, wake_reply_overrides=None, **timing_
             },
         }
     )
+
+
+class TestEnergyConfiguration:
+    def test_energy_defaults_and_nested_overrides(self):
+        default = make_config()
+        assert default.initial_energy == 100.0
+        assert default.max_energy == 100.0
+        assert default.min_energy == -100.0
+        assert default.recovery_per_second == 0.6
+        assert default.base_reply_cost == 14.0
+        assert default.reply_cost_per_character == 0.12
+
+        custom = make_config(
+            energy_overrides={
+                "initial_energy": 40.0,
+                "max_energy": 80.0,
+                "min_energy": -30.0,
+                "recovery_per_second": 1.5,
+                "base_reply_cost": 9.0,
+                "reply_cost_per_character": 0.2,
+            }
+        )
+        assert custom.initial_energy == 40.0
+        assert custom.max_energy == 80.0
+        assert custom.min_energy == -30.0
+        assert custom.recovery_per_second == 1.5
+        assert custom.base_reply_cost == 9.0
+        assert custom.reply_cost_per_character == 0.2
+
+    def test_schema_exposes_energy_as_separate_section(self):
+        schema = json.loads(
+            (PLUGIN_ROOT / "_conf_schema.json").read_text(encoding="utf-8")
+        )
+        assert set(schema["energy"]["items"]) == {
+            "initial_energy",
+            "max_energy",
+            "min_energy",
+            "recovery_per_second",
+            "base_reply_cost",
+            "reply_cost_per_character",
+        }
 
 
 @pytest.fixture
@@ -704,6 +754,82 @@ class TestDebounceManagerBoundaries:
             event, [types.SimpleNamespace(text="其他事件")]
         ) is False
         assert dm.get_chat_energy("g1") == pytest.approx(initial)
+
+    @pytest.mark.asyncio
+    async def test_configured_energy_values_drive_initial_recovery_and_reply_cost(self):
+        dm = DebounceManager(
+            make_config(
+                energy_overrides={
+                    "initial_energy": 40.0,
+                    "max_energy": 50.0,
+                    "min_energy": -20.0,
+                    "recovery_per_second": 0.0,
+                    "base_reply_cost": 5.0,
+                    "reply_cost_per_character": 1.0,
+                }
+            )
+        )
+        assert dm.get_chat_energy("g1") == 40.0
+
+        event = DummyEvent("configured", chat_id="g1")
+        event.set_extra("angelheart_energy_charge_eligible", True)
+        assert await dm.charge_reply_energy(
+            event, [types.SimpleNamespace(text="abc")]
+        ) is True
+        assert dm.get_chat_energy("g1") == 32.0
+
+    @pytest.mark.asyncio
+    async def test_configured_recovery_respects_configured_upper_bound(self):
+        dm = DebounceManager(
+            make_config(
+                secretary_debounce_time=0.05,
+                energy_overrides={
+                    "max_energy": 3.0,
+                    "recovery_per_second": 2.0,
+                },
+            )
+        )
+        dm.energy_states["g1"] = ChatEnergyState(
+            energy=0.0,
+            updated_at=time.time() - 10.0,
+        )
+        event = DummyEvent("configured-recovery")
+        ticket = await dm.schedule(
+            chat_id="g1",
+            event=event,
+            sender_id="a",
+            message_id="1",
+            is_wake=False,
+            is_present=True,
+        )
+
+        assert await asyncio.wait_for(ticket, timeout=0.15) == PROCESS
+        assert dm.get_chat_energy("g1") == pytest.approx(3.0)
+        await dm.finish_secretary_dispatch(
+            "g1",
+            event.extras["angelheart_secretary_dispatch_id"],
+            reason="test_done",
+        )
+
+    @pytest.mark.asyncio
+    async def test_configured_lower_bound_limits_reply_cost(self):
+        dm = DebounceManager(
+            make_config(
+                energy_overrides={
+                    "initial_energy": 0.0,
+                    "min_energy": -2.0,
+                    "base_reply_cost": 10.0,
+                    "reply_cost_per_character": 1.0,
+                }
+            )
+        )
+        event = DummyEvent("configured-min", chat_id="g1")
+        event.set_extra("angelheart_energy_charge_eligible", True)
+
+        assert await dm.charge_reply_energy(
+            event, [types.SimpleNamespace(text="abc")]
+        ) is True
+        assert dm.get_chat_energy("g1") == -2.0
 
     @pytest.mark.asyncio
     async def test_running_secretary_restarts_later_secretary_debounce(self):

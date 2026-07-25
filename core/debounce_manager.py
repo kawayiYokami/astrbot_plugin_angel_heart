@@ -86,11 +86,43 @@ class DebounceManager:
     def _accelerate_delay(self) -> float:
         return max(0.05, float(getattr(self.config_manager, "accelerate_debounce_time", 1.0)))
 
+    def _initial_energy(self) -> float:
+        return float(getattr(self.config_manager, "initial_energy", INITIAL_ENERGY))
+
+    def _maximum_energy(self) -> float:
+        return float(getattr(self.config_manager, "max_energy", MAXIMUM_ENERGY))
+
+    def _minimum_energy(self) -> float:
+        return float(getattr(self.config_manager, "min_energy", MINIMUM_ENERGY))
+
+    def _energy_recovery_per_second(self) -> float:
+        return float(
+            getattr(
+                self.config_manager,
+                "recovery_per_second",
+                ENERGY_RECOVERY_PER_SECOND,
+            )
+        )
+
+    def _base_reply_energy_cost(self) -> float:
+        return float(
+            getattr(self.config_manager, "base_reply_cost", BASE_REPLY_ENERGY_COST)
+        )
+
+    def _reply_energy_cost_per_character(self) -> float:
+        return float(
+            getattr(
+                self.config_manager,
+                "reply_cost_per_character",
+                ENERGY_COST_PER_CHARACTER,
+            )
+        )
+
     def _get_energy_state(self, chat_id: str) -> ChatEnergyState:
         chat_id = str(chat_id or "")
         state = self.energy_states.get(chat_id)
         if state is None:
-            state = ChatEnergyState()
+            state = ChatEnergyState(energy=self._initial_energy())
             self.energy_states[chat_id] = state
         return state
 
@@ -100,8 +132,8 @@ class DebounceManager:
         now = time.time()
         elapsed = max(0.0, now - state.updated_at)
         state.energy = min(
-            MAXIMUM_ENERGY,
-            state.energy + elapsed * ENERGY_RECOVERY_PER_SECOND,
+            self._maximum_energy(),
+            state.energy + elapsed * self._energy_recovery_per_second(),
         )
         state.updated_at = now
         return state
@@ -141,14 +173,14 @@ class DebounceManager:
             return False
 
         character_count = self._effective_character_count(message_chain)
-        cost = BASE_REPLY_ENERGY_COST + character_count * ENERGY_COST_PER_CHARACTER
+        cost = self._base_reply_energy_cost() + character_count * self._reply_energy_cost_per_character()
         async with self._lock:
             try:
                 if event.get_extra("angelheart_energy_charged", False):
                     return False
                 state = self._get_energy_state(chat_id)
                 energy_before = state.energy
-                state.energy = max(MINIMUM_ENERGY, state.energy - cost)
+                state.energy = max(self._minimum_energy(), state.energy - cost)
                 energy_after = state.energy
                 state.updated_at = time.time()
                 event.set_extra("angelheart_energy_charged", True)
