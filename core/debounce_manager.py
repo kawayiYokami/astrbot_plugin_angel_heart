@@ -62,14 +62,15 @@ class DebounceRecord:
 class DebounceManager:
     """群聊双防抖管理器。"""
 
-    def __init__(self, config_manager):
+    def __init__(self, config_manager, work_ledger=None):
         self.config_manager = config_manager
+        self.work_ledger = work_ledger
         self._lock = asyncio.Lock()
         self._assistant: Dict[Tuple[str, str], DebounceRecord] = {}
         self._secretary: Dict[str, DebounceRecord] = {}
-        # 会话级秘书调度门闩：防抖放行后一直占用到本轮发送/不回复收口。
+        # 会话级秘书调度门闩：只覆盖秘书判断阶段。
         self._secretary_dispatching: Dict[str, str] = {}
-        self._secretary_cooldown_until: Dict[str, float] = {}
+        self._assistant_rest_until: Dict[str, float] = {}
         self.energy_states: Dict[str, ChatEnergyState] = {}
         self._version_seq = 0
 
@@ -249,23 +250,42 @@ class DebounceManager:
         """
         return str(chat_id or "") in self._secretary_dispatching
 
-    def _remaining_secretary_cooldown(self, chat_id: str) -> float:
-        """读取剩余冷却；仅在 _lock 内调用。"""
+    def _remaining_assistant_rest(self, chat_id: str) -> float:
+        """读取助理休息剩余时间；仅在 _lock 内调用。"""
         chat_id = str(chat_id or "")
-        cooldown_until = self._secretary_cooldown_until.get(chat_id, 0.0)
-        remaining = cooldown_until - time.time()
+        rest_until = self._assistant_rest_until.get(chat_id, 0.0)
+        remaining = rest_until - time.time()
         if remaining <= 0:
-            self._secretary_cooldown_until.pop(chat_id, None)
+            self._assistant_rest_until.pop(chat_id, None)
             return 0.0
         return remaining
 
+    def _has_running_assistant_work(self, chat_id: str) -> bool:
+        if self.work_ledger is None:
+            return False
+        try:
+            return any(
+                getattr(work, "status", "") == "running"
+                and getattr(work, "kind", "") in ("assistant", "secretary")
+                for work in self.work_ledger.get_active_works(chat_id)
+            )
+        except Exception:
+            logger.warning(
+                f"AngelHeart[{chat_id}]: 读取助理工作账本失败",
+                exc_info=True,
+            )
+            return False
+
     def _reset_record_after_gate(self, record: DebounceRecord, reason: str) -> None:
-        """门闩阻断放行时，保留最后边界事件并完整重计当前类型的防抖。"""
-        record.delay = (
-            self._secretary_delay()
-            if record.kind == "secretary"
-            else self._assistant_delay()
-        )
+        """硬门闩阻断放行时，保留最后边界事件并按完整巡检时长重计。"""
+        if record.kind == "assistant":
+            key = (record.chat_id, record.sender_id)
+            if self._assistant.get(key) is record:
+                self._assistant.pop(key, None)
+            record.kind = "secretary"
+            self._secretary[record.chat_id] = record
+
+        record.delay = self._secretary_delay()
         record.created_at = time.time()
         record.timer = asyncio.create_task(self._timer_handler(record))
         label = self._record_label(record.kind)
@@ -282,11 +302,7 @@ class DebounceManager:
         cooldown_seconds: float = 0.0,
         reason: str = "",
     ) -> bool:
-        """原子释放会话级秘书单飞，并可附带启动普通消息休息。
-
-        放行给助理时应只释放单飞（cooldown_seconds=0）；
-        回复后休息由 start_secretary_cooldown 在发送完成后单独启动。
-        """
+        """原子释放会话级秘书单飞；不再附带任何休息语义。"""
         chat_id = str(chat_id or "")
         dispatch_id = str(dispatch_id or "")
         async with self._lock:
@@ -294,34 +310,31 @@ class DebounceManager:
                 return False
 
             self._secretary_dispatching.pop(chat_id, None)
-            cooldown_seconds = max(0.0, float(cooldown_seconds))
-            if cooldown_seconds:
-                self._secretary_cooldown_until[chat_id] = time.time() + cooldown_seconds
-
+            ignored_cooldown = max(0.0, float(cooldown_seconds))
             logger.debug(
                 f"AngelHeart[{chat_id}]: 秘书调度收口 "
-                f"(reason={reason or 'unknown'}, cooldown={cooldown_seconds:.2f}s)"
+                f"(reason={reason or 'unknown'}, ignored_cooldown={ignored_cooldown:.2f}s)"
             )
             return True
 
-    async def start_secretary_cooldown(
+    async def start_assistant_rest(
         self,
         chat_id: str,
-        cooldown_seconds: float = 0.0,
+        rest_seconds: float = 0.0,
         *,
         reason: str = "",
     ) -> bool:
-        """仅启动普通消息休息，不依赖秘书单飞是否仍占用。"""
+        """启动助理休息；只表示助理已被调用后的普通巡检抑制。"""
         chat_id = str(chat_id or "")
-        cooldown_seconds = max(0.0, float(cooldown_seconds))
-        if not chat_id or cooldown_seconds <= 0:
+        rest_seconds = max(0.0, float(rest_seconds))
+        if not chat_id or rest_seconds <= 0:
             return False
 
         async with self._lock:
-            self._secretary_cooldown_until[chat_id] = time.time() + cooldown_seconds
+            self._assistant_rest_until[chat_id] = time.time() + rest_seconds
             logger.debug(
-                f"AngelHeart[{chat_id}]: 启动秘书休息 "
-                f"(reason={reason or 'unknown'}, cooldown={cooldown_seconds:.2f}s)"
+                f"AngelHeart[{chat_id}]: 启动助理休息 "
+                f"(reason={reason or 'unknown'}, rest={rest_seconds:.2f}s)"
             )
             return True
 
@@ -342,7 +355,7 @@ class DebounceManager:
             self._assistant.clear()
             self._secretary.clear()
             self._secretary_dispatching.clear()
-            self._secretary_cooldown_until.clear()
+            self._assistant_rest_until.clear()
             self.energy_states.clear()
             timers = []
             for record in records:
@@ -542,6 +555,15 @@ class DebounceManager:
                 reason="secretary_boundary_update",
             )
 
+        if not leave_reply_trigger:
+            rest_remaining = self._remaining_assistant_rest(chat_id)
+            if rest_remaining > 0:
+                logger.debug(
+                    f"AngelHeart[{chat_id}]: 助理休息中，普通消息仅入库 "
+                    f"(sender={sender_id}, rest={rest_remaining:.2f}s)"
+                )
+                return None
+
         return await self._create_record(
             store="secretary",
             key=chat_id,
@@ -672,24 +694,28 @@ class DebounceManager:
                     self._reset_record_after_gate(record, "secretary_dispatching")
                     return
 
-                if not record.leave_reply_trigger and (
-                    record.kind == "secretary" or record.must_reply
-                ):
-                    cooldown_remaining = self._remaining_secretary_cooldown(record.chat_id)
-                    if cooldown_remaining > 0:
-                        # 冷却中仍保留最后边界事件，但从本次到期时刻完整重计一轮。
+                if self._has_running_assistant_work(record.chat_id):
+                    self._log_gate_decision(
+                        record, "retry", "assistant_busy"
+                    )
+                    self._reset_record_after_gate(record, "assistant_busy")
+                    return
+
+                if not record.leave_reply_trigger:
+                    rest_remaining = self._remaining_assistant_rest(record.chat_id)
+                    if rest_remaining > 0:
                         self._log_gate_decision(
                             record,
                             "retry",
-                            "reply_cooldown",
-                            f"cooldown={cooldown_remaining:.2f}s",
+                            "assistant_rest",
+                            f"rest={rest_remaining:.2f}s",
                         )
-                        self._reset_record_after_gate(record, "secretary_cooldown")
+                        self._reset_record_after_gate(record, "assistant_rest")
                         return
 
                 energy_after_gate = None
                 recovered = None
-                if record.kind == "secretary" and not record.must_reply:
+                if not record.leave_reply_trigger:
                     energy_state = self._get_energy_state(record.chat_id)
                     energy_before = energy_state.energy
                     energy_state = self._recover_energy_before_patrol(record.chat_id)
@@ -743,14 +769,14 @@ class DebounceManager:
                             record,
                             "process",
                             "mentioned",
-                            "energy_check=skip cooldown=pass",
+                            f"energy={energy_after_gate:.2f} recovered={recovered:.2f} rest=pass",
                         )
                     else:
                         self._log_gate_decision(
                             record,
                             "process",
                             "leave_reply",
-                            "energy_check=skip cooldown=skip",
+                            "energy_check=skip rest=skip",
                         )
                     record.future.set_result(PROCESS)
         except asyncio.CancelledError:

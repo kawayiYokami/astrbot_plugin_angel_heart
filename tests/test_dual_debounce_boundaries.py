@@ -57,6 +57,7 @@ from astrbot_plugin_angel_heart.core.debounce_manager import (
     PROCESS,
     KILL,
 )
+from astrbot_plugin_angel_heart.core.work_ledger import WorkLedger
 from astrbot_plugin_angel_heart.core.angel_heart_status import (
     AngelHeartStatus,
     StatusChecker,
@@ -437,44 +438,24 @@ class TestDebounceManagerBoundaries:
         assert await f1 == KILL
         assert await f2 == PROCESS
     @pytest.mark.asyncio
-    async def test_secretary_cooldown_restarts_full_debounce(self):
+    async def test_assistant_rest_blocks_ordinary_patrol_creation(self):
         dm = DebounceManager(
             make_config(secretary_debounce_time=0.05, waiting_time=0.07)
         )
-        first = DummyEvent("first")
-        first_future = await dm.schedule(
+        assert await dm.start_assistant_rest("g1", 0.07, reason="assistant_invoked") is True
+
+        event = DummyEvent("ordinary-during-rest")
+        ticket = await dm.schedule(
             chat_id="g1",
-            event=first,
+            event=event,
             sender_id="a",
             message_id="1",
             is_wake=False,
             is_present=True,
         )
-        assert await first_future == PROCESS
-        await dm.finish_secretary_dispatch(
-            "g1",
-            first.extras["angelheart_secretary_dispatch_id"],
-            cooldown_seconds=0.07,
-            reason="reply_sent",
-        )
 
-        second = DummyEvent("second")
-        second_future = await dm.schedule(
-            chat_id="g1",
-            event=second,
-            sender_id="b",
-            message_id="2",
-            is_wake=False,
-            is_present=True,
-        )
-        await asyncio.sleep(0.06)
-        assert not second_future.done()
-        assert await asyncio.wait_for(second_future, timeout=0.15) == PROCESS
-        await dm.finish_secretary_dispatch(
-            "g1",
-            second.extras["angelheart_secretary_dispatch_id"],
-            reason="test_done",
-        )
+        assert ticket is None
+        assert not dm.has_secretary_debounce("g1")
 
     @pytest.mark.asyncio
     async def test_leave_reply_ignores_present_chat_cooldown(self):
@@ -494,9 +475,9 @@ class TestDebounceManagerBoundaries:
         await dm.finish_secretary_dispatch(
             "g1",
             present_event.extras["angelheart_secretary_dispatch_id"],
-            cooldown_seconds=0.20,
-            reason="reply_sent",
+            reason="reply_handoff",
         )
+        assert await dm.start_assistant_rest("g1", 0.20, reason="assistant_invoked") is True
 
         leave_event = DummyEvent("leave")
         leave_ticket = await dm.schedule(
@@ -516,7 +497,7 @@ class TestDebounceManagerBoundaries:
         )
 
     @pytest.mark.asyncio
-    async def test_no_reply_cooldown_restarts_full_debounce(self):
+    async def test_no_reply_cooldown_has_no_scheduling_effect(self):
         dm = DebounceManager(
             make_config(secretary_debounce_time=0.05, no_reply_cooldown=0.07)
         )
@@ -546,9 +527,7 @@ class TestDebounceManagerBoundaries:
             is_wake=False,
             is_present=True,
         )
-        await asyncio.sleep(0.06)
-        assert not second_future.done()
-        assert await asyncio.wait_for(second_future, timeout=0.15) == PROCESS
+        assert await asyncio.wait_for(second_future, timeout=0.10) == PROCESS
         await dm.finish_secretary_dispatch(
             "g1",
             second.extras["angelheart_secretary_dispatch_id"],
@@ -610,7 +589,7 @@ class TestDebounceManagerBoundaries:
         )
 
     @pytest.mark.asyncio
-    async def test_mention_upgrades_current_patrol_and_bypasses_energy_gate(self):
+    async def test_mention_upgrades_current_patrol_but_respects_energy_gate(self):
         dm = DebounceManager(make_config(secretary_debounce_time=0.10))
         dm.energy_states["g1"] = ChatEnergyState(
             energy=-100.0,
@@ -637,7 +616,12 @@ class TestDebounceManagerBoundaries:
 
         assert len(dm._secretary) == 1
         assert await ordinary_ticket == KILL
-        assert await asyncio.wait_for(mention_ticket, timeout=0.15) == PROCESS
+        await asyncio.sleep(0.06)
+        assert not mention_ticket.done()
+        assert dm.has_secretary_debounce("g1")
+
+        dm.energy_states["g1"].energy = 1.0
+        assert await asyncio.wait_for(mention_ticket, timeout=0.20) == PROCESS
         assert mention.extras["angelheart_must_reply"] is True
         await dm.finish_secretary_dispatch(
             "g1",
@@ -689,7 +673,7 @@ class TestDebounceManagerBoundaries:
         )
 
     @pytest.mark.asyncio
-    async def test_point_patrol_still_respects_reply_cooldown(self):
+    async def test_point_patrol_still_respects_assistant_rest(self):
         dm = DebounceManager(
             make_config(
                 assistant_debounce_time=0.05,
@@ -710,9 +694,9 @@ class TestDebounceManagerBoundaries:
         await dm.finish_secretary_dispatch(
             "g1",
             first.extras["angelheart_secretary_dispatch_id"],
-            cooldown_seconds=0.12,
-            reason="reply_sent",
+            reason="reply_handoff",
         )
+        assert await dm.start_assistant_rest("g1", 0.12, reason="assistant_invoked") is True
 
         mention = DummyEvent("mention")
         mention_ticket = await dm.schedule(
@@ -885,7 +869,7 @@ class TestDebounceManagerBoundaries:
         assert await first_future == PROCESS
         assert dm.has_secretary_dispatch("g1") is True
 
-        # 模拟秘书决定回复并放行助理：只释放单飞，不启动回复后休息。
+        # 纯防抖层未注入工作账本时，只验证秘书单飞已释放。
         assert await dm.finish_secretary_dispatch(
             "g1",
             first.extras["angelheart_secretary_dispatch_id"],
@@ -916,8 +900,45 @@ class TestDebounceManagerBoundaries:
         )
 
     @pytest.mark.asyncio
-    async def test_start_secretary_cooldown_without_dispatch(self):
-        """回复后休息应可在单飞已释放后单独启动。"""
+    async def test_running_assistant_work_restarts_wake_with_full_patrol_delay(self):
+        work_ledger = WorkLedger()
+        dm = DebounceManager(
+            make_config(assistant_debounce_time=0.05, secretary_debounce_time=0.10),
+            work_ledger=work_ledger,
+        )
+        work_ledger.start_work(
+            chat_id="g1",
+            work_id="work-a",
+            trigger_message_id="1",
+            trigger_summary="正在回答 A",
+            kind="assistant",
+        )
+
+        event = DummyEvent("wake-while-busy")
+        ticket = await dm.schedule(
+            chat_id="g1",
+            event=event,
+            sender_id="b",
+            message_id="2",
+            is_wake=True,
+            is_present=True,
+        )
+        await asyncio.sleep(0.06)
+        assert not ticket.done()
+        assert dm.has_assistant_debounce("g1") is False
+        assert dm.has_secretary_debounce("g1") is True
+
+        work_ledger.complete_work("g1", "work-a", status="done", result_summary="已回复")
+        assert await asyncio.wait_for(ticket, timeout=0.20) == PROCESS
+        await dm.finish_secretary_dispatch(
+            "g1",
+            event.extras["angelheart_secretary_dispatch_id"],
+            reason="test_done",
+        )
+
+    @pytest.mark.asyncio
+    async def test_start_assistant_rest_without_dispatch(self):
+        """助理休息可在秘书单飞已释放后单独启动。"""
         dm = DebounceManager(
             make_config(secretary_debounce_time=0.05, waiting_time=0.10)
         )
@@ -939,25 +960,49 @@ class TestDebounceManagerBoundaries:
         )
         assert dm.has_secretary_dispatch("g1") is False
 
-        assert await dm.start_secretary_cooldown(
-            "g1", 0.10, reason="reply_sent"
+        assert await dm.start_assistant_rest(
+            "g1", 0.10, reason="assistant_invoked"
         ) is True
 
-        second = DummyEvent("second")
-        second_future = await dm.schedule(
+        ordinary = DummyEvent("ordinary")
+        ordinary_future = await dm.schedule(
             chat_id="g1",
-            event=second,
+            event=ordinary,
             sender_id="b",
             message_id="2",
             is_wake=False,
             is_present=True,
         )
+        assert ordinary_future is None
+
+        mention = DummyEvent("mention")
+        mention_future = await dm.schedule(
+            chat_id="g1",
+            event=mention,
+            sender_id="b",
+            message_id="3",
+            is_wake=True,
+            is_present=True,
+        )
         await asyncio.sleep(0.06)
-        assert not second_future.done()
-        assert await asyncio.wait_for(second_future, timeout=0.20) == PROCESS
+        assert not mention_future.done()
+        assert dm.has_assistant_debounce("g1") is False
+        assert dm.has_secretary_debounce("g1") is True
+
+        boundary = DummyEvent("ordinary-boundary")
+        boundary_future = await dm.schedule(
+            chat_id="g1",
+            event=boundary,
+            sender_id="c",
+            message_id="4",
+            is_wake=False,
+            is_present=True,
+        )
+        assert await mention_future == KILL
+        assert await asyncio.wait_for(boundary_future, timeout=0.20) == PROCESS
         await dm.finish_secretary_dispatch(
             "g1",
-            second.extras["angelheart_secretary_dispatch_id"],
+            boundary.extras["angelheart_secretary_dispatch_id"],
             reason="test_done",
         )
 
@@ -1263,7 +1308,7 @@ class TestSecretaryDispatchCompletion:
         )
 
     @pytest.mark.asyncio
-    async def test_no_reply_starts_configured_cooldown_and_releases_dispatch(self):
+    async def test_no_reply_only_releases_dispatch(self):
         from astrbot_plugin_angel_heart.roles.front_desk import FrontDesk
 
         config = make_config(no_reply_cooldown=0.12)
@@ -1291,7 +1336,7 @@ class TestSecretaryDispatchCompletion:
         angel.debounce_manager.finish_secretary_dispatch.assert_awaited_once_with(
             event.unified_msg_origin,
             "dispatch-1",
-            cooldown_seconds=0.12,
+            cooldown_seconds=0.0,
             reason="no_reply",
         )
         assert event.is_stopped()
@@ -1304,6 +1349,7 @@ class TestSecretaryDispatchCompletion:
         angel = MagicMock()
         angel.astr_context = MagicMock()
         angel.debounce_manager.finish_secretary_dispatch = AsyncMock(return_value=True)
+        angel.debounce_manager.start_assistant_rest = AsyncMock(return_value=True)
         angel.debounce_manager.get_leave_reply_trigger.return_value = ""
         fd = FrontDesk(config, angel)
         fd.secretary = MagicMock()
@@ -1325,6 +1371,11 @@ class TestSecretaryDispatchCompletion:
 
         await fd._call_secretary_and_execute(event, event.unified_msg_origin)
 
+        angel.debounce_manager.start_assistant_rest.assert_awaited_once_with(
+            event.unified_msg_origin,
+            config.waiting_time,
+            reason="assistant_invoked",
+        )
         angel.debounce_manager.finish_secretary_dispatch.assert_awaited_once_with(
             event.unified_msg_origin,
             "dispatch-reply",
@@ -1529,7 +1580,7 @@ class TestRuntimeCleanup:
             is_present=False,
         )
         context.debounce_manager._secretary_dispatching["g1"] = "dispatch-1"
-        context.debounce_manager._secretary_cooldown_until["g1"] = 9999999999.0
+        context.debounce_manager._assistant_rest_until["g1"] = 9999999999.0
         context.energy_states["g1"] = ChatEnergyState(energy=-10.0)
 
         await context.cleanup()
@@ -1546,7 +1597,7 @@ class TestRuntimeCleanup:
         assert context.debounce_manager._assistant == {}
         assert context.debounce_manager._secretary == {}
         assert context.debounce_manager._secretary_dispatching == {}
-        assert context.debounce_manager._secretary_cooldown_until == {}
+        assert context.debounce_manager._assistant_rest_until == {}
         assert context.energy_states == {}
         assert context.conversation_ledger._ledgers == {}
         assert context.conversation_ledger._compression_locks == {}

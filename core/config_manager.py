@@ -12,7 +12,7 @@ class ConfigManager:
     配置格式（新版）：
     {
         "analyzer_model": "...",
-        "timing": {"waiting_time": 7.0, ...},
+        "timing": {"waiting_time": 30.0, ...},
         "leave_reply": {"leave_echo_reply": false, ...},
         ...
     }
@@ -48,7 +48,7 @@ class ConfigManager:
 
     @property
     def waiting_time(self) -> float:
-        return self._get_grouped("timing", "waiting_time", 7.0)
+        return self._get_grouped("timing", "waiting_time", 30.0)
 
     @property
     def assistant_debounce_time(self) -> float:
@@ -57,7 +57,7 @@ class ConfigManager:
 
     @property
     def secretary_debounce_time(self) -> float:
-        """秘书防抖等待时长（秒）。默认复用 waiting_time。"""
+        """前台巡检最长等待时长（秒）。默认复用 waiting_time。"""
         return self._get_grouped("timing", "secretary_debounce_time", self.waiting_time)
 
     @property
@@ -249,7 +249,6 @@ class ConfigManager:
                 "assistant_debounce_time": self.assistant_debounce_time,
                 "secretary_debounce_time": self.secretary_debounce_time,
                 "accelerate_debounce_time": self.accelerate_debounce_time,
-                "no_reply_cooldown": self.no_reply_cooldown,
                 "cache_expiry": self.cache_expiry,
                 "observation_timeout": self.observation_timeout,
             },

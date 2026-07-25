@@ -707,7 +707,7 @@ class FrontDesk:
         """按本事件的调度归属收口同会话秘书单飞。
 
         秘书单飞只覆盖判断阶段；放行助理后应立即调用并令 cooldown_seconds=0。
-        回复后休息不走这里，改由 DebounceManager.start_secretary_cooldown。
+        助理休息由 DebounceManager.start_assistant_rest 在主脑调用点单独启动。
         """
         dispatch_id = ""
         if hasattr(event, "get_extra"):
@@ -789,7 +789,7 @@ class FrontDesk:
             await self._finish_secretary_dispatch(
                 event,
                 chat_id,
-                cooldown_seconds=self.config_manager.no_reply_cooldown if decision else 0.0,
+                cooldown_seconds=0.0,
                 reason="no_reply" if decision else "no_decision",
             )
 
@@ -884,6 +884,17 @@ class FrontDesk:
                 )
 
             # 决策门闩：要回就唤醒主脑
+            try:
+                if hasattr(event, "set_extra"):
+                    event.set_extra("angelheart_assistant_invoked", True)
+                await self.context.debounce_manager.start_assistant_rest(
+                    chat_id,
+                    self.config_manager.waiting_time,
+                    reason="assistant_invoked",
+                )
+            except Exception as e:
+                logger.warning(f"AngelHeart[{chat_id}]: 启动助理休息失败: {e}")
+
             if not self._config_manager.debug_mode:
                 event.is_at_or_wake_command = True
                 logger.debug(f"AngelHeart[{chat_id}]: 已设置唤醒主脑标志")
