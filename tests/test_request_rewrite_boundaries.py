@@ -242,6 +242,10 @@ def test_group_rewrite_uses_focus_reply_length_when_focus_instruction_hits():
             "timestamp": 3.0,
             "chat_id": "aiocqhttp:GroupMessage:10000",
             "source_message_id": "m3",
+            "metadata": {
+                "body_text": "帮我好好想想这个问题",
+                "hits": [{"type": "focus", "phrase": "好好想想"}],
+            },
         }
     ]
 

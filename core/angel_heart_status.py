@@ -11,6 +11,12 @@ except ImportError:
 
     logger = logging.getLogger(__name__)
 
+from .utils.message_hits import (
+    extract_plain_body_from_components,
+    metadata_has_hit,
+    parse_pipe_phrases,
+)
+
 
 class AngelHeartStatus(Enum):
     """AngelHeart 群聊参与状态。
@@ -177,12 +183,11 @@ class StatusChecker:
         return str(content)
 
     def _is_summoned(self, chat_id: str) -> bool:
-        """检查是否被呼唤
+        """检查是否被点名。
 
         判定规则：
-        - @自己：扫描"上次 AI 回复之后"的所有 user 消息，任意一条 is_at_self=True 即视为被呼唤。
-          这样可以避免门锁冷却期间多消息排队时，@消息被后续非@消息覆盖判断的问题。
-        - 唤醒词：仍只检测最新一条 user 消息，避免历史唤醒词反复触发。
+        - @自己：扫描"上次 AI 回复之后"的所有 user 消息，任意一条 is_at_self/metadata 命中即视为点名。
+        - 昵称点名：只看最新一条 user 消息的入库命中结果；不再扫 outline / 引用 / 昵称展示。
         """
         try:
             # 检查是否处于闭嘴状态
@@ -193,49 +198,83 @@ class StatusChecker:
             if self._has_at_self_since_last_reply(chat_id):
                 return True
 
-            # 规则2：基于最新 user 消息检测唤醒词
+            # 规则2：基于最新 user 消息的入库命中
             latest_user_message = self._get_latest_user_message(chat_id)
             if not latest_user_message:
                 return False
-            message_content = self._extract_message_content(latest_user_message)
-            return self._detect_wake_word(chat_id, message_content)
+            return self._message_has_alias_hit(latest_user_message)
         except Exception as e:
-            logger.debug(f"AngelHeart[{chat_id}]: 检查被呼唤状态失败: {e}")
+            logger.debug(f"AngelHeart[{chat_id}]: 检查被点名状态失败: {e}")
             return False
 
+    def _message_has_alias_hit(self, message: Dict) -> bool:
+        """读取消息 metadata 中的 alias 命中；旧消息回退到 body_text。"""
+        if not isinstance(message, dict):
+            return False
+        if not self._alias_detection_enabled():
+            return False
+        metadata = message.get("metadata")
+        if isinstance(metadata, dict) and "hits" in metadata:
+            return metadata_has_hit(metadata, "alias")
+        body_text = ""
+        if isinstance(metadata, dict):
+            body_text = str(metadata.get("body_text", "") or "")
+        if not body_text:
+            body_text = self._extract_message_content(message)
+        return self._detect_wake_word(body_text)
+
     def is_event_wake(self, event) -> bool:
-        """判断当前事件本身是否为唤醒。
+        """判断当前事件本身是否为点名。
 
         双防抖调度必须基于当前事件，不能回扫历史@消息。
+        优先读入库时写好的 metadata；没有则只对当前事件 Plain 正文判定。
         """
         try:
             chat_id = getattr(event, "unified_msg_origin", "") or ""
             if chat_id and self._is_silenced(chat_id):
                 return False
 
-            # @自己：只看当前事件组件
+            metadata = None
+            try:
+                if hasattr(event, "get_extra"):
+                    metadata = event.get_extra("angelheart_message_metadata", None)
+            except Exception:
+                metadata = None
+
+            if isinstance(metadata, dict) and "hits" in metadata:
+                if metadata_has_hit(metadata, "at_self"):
+                    return True
+                if self._alias_detection_enabled() and metadata_has_hit(metadata, "alias"):
+                    return True
+                return False
+
+            # 兜底：当前事件组件上直接判定，不使用 outline
             try:
                 self_id = str(event.get_self_id())
-                for component in event.get_messages():
+                for component in event.get_messages() or []:
                     qq = getattr(component, "qq", None)
                     if qq is None:
                         continue
-                    # AstrBot At 组件带 qq；类名在不同导入路径下可能不同，故宽松匹配
                     cls_name = component.__class__.__name__
                     if str(qq) == self_id and ("At" in cls_name or "at" in cls_name.lower()):
                         return True
             except Exception:
                 pass
 
-            # 唤醒词 / 昵称：只看当前事件 outline
-            content = ""
+            body_text = ""
             try:
-                content = event.get_message_outline() or ""
+                if hasattr(event, "get_extra"):
+                    body_text = str(event.get_extra("angelheart_body_text", "") or "")
             except Exception:
-                content = ""
-            return self._detect_wake_word(chat_id, content)
+                body_text = ""
+            if not body_text:
+                try:
+                    body_text = extract_plain_body_from_components(event.get_messages() or [])
+                except Exception:
+                    body_text = ""
+            return self._detect_wake_word(body_text)
         except Exception as e:
-            logger.debug(f"AngelHeart: 当前事件唤醒判定失败: {e}")
+            logger.debug(f"AngelHeart: 当前事件点名判定失败: {e}")
             return False
 
     def _is_silenced(self, chat_id: str) -> bool:
@@ -244,25 +283,22 @@ class StatusChecker:
         silenced_until = self.angel_context.silenced_until.get(chat_id, 0)
         return current_time < silenced_until
 
-    def _detect_wake_word(self, chat_id: str, message_content: str) -> bool:
-        """检测唤醒词或@消息"""
-        # 检查是否启用呼唤模式
-        if (
-            not self.config_manager.analysis_on_mention_only
-            and not self.config_manager.force_reply_when_summoned
-        ):
+    def _alias_detection_enabled(self) -> bool:
+        """点名昵称检测是否启用。"""
+        return bool(
+            self.config_manager.analysis_on_mention_only
+            or self.config_manager.force_reply_when_summoned
+        )
+
+    def _detect_wake_word(self, message_content: str) -> bool:
+        """检测正文中是否包含点名昵称。"""
+        if not self._alias_detection_enabled():
             return False
 
-        # 获取昵称列表
-        alias_str = self.config_manager.alias
-        if not alias_str:
+        aliases = parse_pipe_phrases(self.config_manager.alias)
+        if not aliases or not message_content:
             return False
 
-        aliases = [name.strip() for name in alias_str.split("|") if name.strip()]
-        if not aliases:
-            return False
-
-        # 检查消息中是否包含昵称
         return any(alias in message_content for alias in aliases)
 
     def get_leave_reply_trigger(self, chat_id: str) -> str:
