@@ -92,6 +92,27 @@ class AngelHeartPlugin(Star):
         # 如果是需要处理的消息，则委托给前台缓存
         await self.front_desk.handle_event(event)
 
+    @filter.llm_tool(name="angel_describe_image")
+    async def angel_describe_image(
+        self,
+        event: AstrMessageEvent,
+        focus: str,
+        path: str,
+    ) -> str:
+        """当你当前看不到图片、但需要某张历史图片的细节时才调用。
+
+        Args:
+            focus(string): 希望从图片中确认的具体内容，例如“读取右下角的报错文字”或“比较这张图中的两个数值”。
+            path(string): 当前会话 AngelHeart 上下文中显示的图片路径；只能使用其中已有的单张图片路径。
+        """
+        return await self.angel_context.conversation_ledger.describe_image(
+            chat_id=event.unified_msg_origin,
+            path=path,
+            focus=focus,
+            caption_provider_id=self.config_manager.image_caption_provider_id,
+            astr_context=self.context,
+        )
+
     @filter.on_llm_request(priority=0)
     @track_runtime_handler
     async def inject_oneshot_decision_on_llm_request(

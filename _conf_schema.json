@@ -8,8 +8,8 @@
   },
   "image_caption_provider_id": {
     "type": "string",
-    "description": "[核心模型] 图片转述模型",
-    "hint": "AngelHeart 专用的图片转述模型提供商。请禁用 AstrBot 上游的图转文模型（provider_settings.default_image_caption_provider_id 留空），避免重复转述。",
+    "description": "[核心模型] 图片理解模型",
+    "hint": "AngelHeart 的 angel_describe_image 工具使用的视觉模型。主模型仅在需要某张历史图片细节时调用它；请禁用 AstrBot 上游的图转文模型（provider_settings.default_image_caption_provider_id 留空），避免重复处理。",
     "_special": "select_provider",
     "default": ""
   },

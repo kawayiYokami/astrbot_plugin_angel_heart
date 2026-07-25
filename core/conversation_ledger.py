@@ -984,6 +984,83 @@ class ConversationLedger:
 
         return ""
 
+    def _get_allowed_image_refs(self, chat_id: str) -> set[str]:
+        """返回当前会话账本中已登记的图片引用。"""
+        ledger = self._get_or_create_ledger(chat_id)
+        refs: set[str] = set()
+        with self._lock:
+            for message in ledger["messages"]:
+                content = message.get("content", [])
+                if isinstance(content, list):
+                    for item in content:
+                        if not isinstance(item, dict) or item.get("type") != "image_url":
+                            continue
+                        ref = self._get_image_item_read_ref(item)
+                        if ref:
+                            refs.add(ref)
+
+                stored_refs = message.get("image_refs", [])
+                if isinstance(stored_refs, list):
+                    refs.update(
+                        ref for ref in stored_refs if isinstance(ref, str) and ref
+                    )
+        return refs
+
+    async def describe_image(
+        self,
+        chat_id: str,
+        path: str,
+        focus: str,
+        caption_provider_id: str,
+        astr_context=None,
+    ) -> str:
+        """针对当前会话账本中的单张图片，按关注点返回文字理解结果。"""
+        if not isinstance(path, str) or not path.strip():
+            return "图片理解失败：path 不能为空。"
+        if not isinstance(focus, str) or not focus.strip():
+            return "图片理解失败：关注点不能为空。"
+        if not caption_provider_id:
+            return "图片理解不可用：未配置 image_caption_provider_id。"
+        if not astr_context:
+            return "图片理解失败：无法获取 AstrBot 上下文。"
+
+        path = path.strip()
+        if path not in self._get_allowed_image_refs(chat_id):
+            return "图片理解被拒绝：path 不属于当前会话账本中的图片。"
+
+        caption_provider = astr_context.get_provider_by_id(caption_provider_id)
+        if not caption_provider:
+            return "图片理解不可用：找不到已配置的图片理解 Provider。"
+
+        raw_image_data = await self._load_image_bytes(path)
+        if not raw_image_data:
+            return "图片理解失败：无法读取图片内容。"
+
+        image_data_url = self._build_caption_image_data_url(raw_image_data)
+        if not image_data_url:
+            image_data_url = self._build_original_image_data_url(raw_image_data)
+        if not image_data_url:
+            return "图片理解失败：无法编码图片内容。"
+
+        prompt = (
+            "请只依据这张图片回答下面的关注点。若图片无法确认，请明确说明无法确认，"
+            "不要补充未在图片中出现的内容。\n\n"
+            f"关注点：{focus.strip()}"
+        )
+        try:
+            response = await caption_provider.text_chat(
+                prompt=prompt,
+                image_urls=[image_data_url],
+            )
+        except Exception as exc:
+            logger.warning(f"AngelHeart[{chat_id}]: 按需图片理解失败: {exc}")
+            return f"图片理解失败：视觉 Provider 调用异常：{exc}"
+
+        result = str(getattr(response, "completion_text", "") or "").strip()
+        if not result:
+            return "图片理解失败：视觉 Provider 未返回文字结果。"
+        return result
+
     async def generate_captions_for_chat(self, chat_id: str, caption_provider_id: str, astr_context=None) -> int:
         """
         为指定会话中的所有未转述图片生成转述

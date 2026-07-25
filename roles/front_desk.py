@@ -8,6 +8,7 @@ import base64
 import copy
 import json
 import os
+import re
 import time
 import uuid
 from pathlib import Path
@@ -851,25 +852,6 @@ class FrontDesk:
                 f"reason={decision.reply_strategy or '未说明'}"
             )
 
-            # 图片转述处理
-            try:
-                caption_provider_id = self._config_manager.image_caption_provider_id
-            except Exception as e:
-                logger.warning(f"AngelHeart[{chat_id}]: 无法读取图片转述配置: {e}")
-                caption_provider_id = ""
-
-            caption_count = (
-                await self.context.conversation_ledger.process_image_captions_if_needed(
-                    chat_id=chat_id,
-                    caption_provider_id=caption_provider_id,
-                    astr_context=self.astr_context,
-                )
-            )
-            if caption_count > 0:
-                logger.debug(
-                    f"AngelHeart[{chat_id}]: 已为 {caption_count} 张图片生成转述"
-                )
-
             # 旁路上下文：聊天记录 + 决策 挂到本事件，供日志/下游钩子读
             # 不写会话共享缓存；主脑 req 临时注入仍只留工作账本
             from ..core.utils import json_serialize_context
@@ -1596,30 +1578,6 @@ class FrontDesk:
         """主模型支持图片时，当前事件图片保持 AstrBot 原生传递。"""
         return self._provider_supports_images(chat_id)
 
-    async def _ensure_image_captions_for_request(
-        self, chat_id: str, force_caption: bool = False
-    ) -> int:
-        """在真正组请求前，按当前配置补齐待回答消息的图片转述。"""
-        caption_provider_id = self._config_manager.image_caption_provider_id
-        if not caption_provider_id:
-            return 0
-
-        try:
-            if force_caption:
-                return await self.context.conversation_ledger.generate_captions_for_chat(
-                    chat_id=chat_id,
-                    caption_provider_id=caption_provider_id,
-                    astr_context=self.astr_context,
-                )
-            return await self.context.conversation_ledger.process_image_captions_if_needed(
-                chat_id=chat_id,
-                caption_provider_id=caption_provider_id,
-                astr_context=self.astr_context,
-            )
-        except Exception as e:
-            logger.warning(f"AngelHeart[{chat_id}]: 预处理图片转述失败: {e}")
-            return 0
-
     def _build_contexts_with_processor(
         self,
         processor: 'MessageProcessor',
@@ -1737,6 +1695,42 @@ class FrontDesk:
             except Exception as e:
                 logger.warning(f"AngelHeart: 追加聚合图片失败: {e}")
 
+    def _replace_current_image_attachment_paths(
+        self, req: Any, current_image_urls: List[str]
+    ):
+        """把 AstrBot 当前消息图片附件文本中的临时 path 替换为账本缓存 path。"""
+        if not current_image_urls:
+            return
+        parts = getattr(req, "extra_user_content_parts", None)
+        if not isinstance(parts, list):
+            return
+
+        ref_index = 0
+        pattern = re.compile(r"^\[Image Attachment: path .+\]$")
+        for part in parts:
+            if ref_index >= len(current_image_urls):
+                break
+
+            text = ""
+            if isinstance(part, dict):
+                text = part.get("text", "") if part.get("type") == "text" else ""
+            else:
+                text = getattr(part, "text", "")
+
+            if not isinstance(text, str) or not pattern.match(text):
+                continue
+
+            replacement = f"[Image Attachment: path {current_image_urls[ref_index]}]"
+            if isinstance(part, dict):
+                part["text"] = replacement
+            else:
+                try:
+                    part.text = replacement
+                except Exception as e:
+                    logger.warning(f"AngelHeart: 替换当前图片附件路径失败: {e}")
+                    continue
+            ref_index += 1
+
     def _update_request(
         self,
         req: Any,
@@ -1761,6 +1755,7 @@ class FrontDesk:
                 self._append_extra_image_urls_to_request(req, extra_image_urls or [])
             else:
                 req.image_urls = []
+            self._replace_current_image_attachment_paths(req, current_image_urls or [])
 
         # 注入系统提示词
         original_system_prompt = getattr(req, "system_prompt", "")
@@ -1784,15 +1779,6 @@ class FrontDesk:
         scene_hint = None
         scene_prompt = None
         preserve_current_image_urls = self._should_preserve_current_image_urls(chat_id)
-
-        caption_count = await self._ensure_image_captions_for_request(
-            chat_id,
-            force_caption=not preserve_current_image_urls,
-        )
-        if caption_count > 0:
-            logger.debug(
-                f"AngelHeart[{chat_id}]: 组请求前已补齐 {caption_count} 条图片转述"
-            )
 
         # 历史重写：
         # - 群聊：必须用秘书判断点固化的切片（秘书点=主脑点）
@@ -1838,10 +1824,8 @@ class FrontDesk:
             if preserve_current_image_urls
             else []
         )
-        current_image_urls = (
-            self._collect_current_image_urls(recent_dialogue, current_message_id)
-            if preserve_current_image_urls
-            else []
+        current_image_urls = self._collect_current_image_urls(
+            recent_dialogue, current_message_id
         )
 
         # 4. 注入工作账本临时提醒（不保存），不再注入秘书决策建议
