@@ -4,7 +4,7 @@ import sys
 import types
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 HERE = Path(__file__).resolve().parent
 PLUGIN_ROOT = HERE.parent
@@ -49,7 +49,6 @@ def _front_desk():
     angel.work_ledger = WorkLedger()
     angel.astr_context = MagicMock()
     fd = FrontDesk(config, angel)
-    fd._ensure_image_captions_for_request = AsyncMock(return_value=0)
     fd._provider_supports_images = MagicMock(return_value=False)
     fd.filter_images_for_provider = MagicMock(side_effect=lambda _chat_id, contexts: contexts)
     return fd, angel
@@ -212,3 +211,51 @@ def test_group_rewrite_keeps_assistant_history_in_contexts_and_only_current_mess
     assert "已有其他工作" in context_texts[-1]
     assert "第三条当前消息" not in context_texts[-1]
     assert req.system_prompt == "BASE SYSTEM"
+
+
+def test_group_rewrite_replaces_current_astrbot_image_attachment_path_with_ledger_cache_path():
+    import asyncio
+
+    fd, _ = _front_desk()
+    req = SimpleNamespace(
+        contexts=[],
+        prompt="",
+        image_urls=["/AstrBot/data/temp/compressed_wrong.jpg"],
+        extra_user_content_parts=[
+            SimpleNamespace(text="[Image Attachment: path /AstrBot/data/temp/compressed_wrong.jpg]"),
+            SimpleNamespace(text="[Image Attachment in quoted message: path /AstrBot/data/temp/quoted.jpg]"),
+        ],
+        system_prompt="BASE SYSTEM",
+    )
+    event = _event("m-current")
+    cache_path = r"E:\github\ai-qq\astrbot\data\plugin_data\astrbot_plugin_angel_heart\media_cache\chat\image.webp"
+
+    recent_dialogue = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "这是真的假的"},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": cache_path},
+                    "cache_path": cache_path,
+                    "local_file_path": cache_path,
+                    "original_url": cache_path,
+                    "original_file_url": cache_path,
+                },
+            ],
+            "sender_name": "红豆泥",
+            "sender_id": "289104862",
+            "timestamp": 3.0,
+            "chat_id": "aiocqhttp:GroupMessage:10000",
+            "source_message_id": "m-current",
+        },
+    ]
+
+    asyncio.run(_run_group_rewrite(fd, event, req, recent_dialogue, historical_context=[]))
+
+    assert req.image_urls == []
+    assert req.extra_user_content_parts[0].text == f"[Image Attachment: path {cache_path}]"
+    assert req.extra_user_content_parts[1].text == "[Image Attachment in quoted message: path /AstrBot/data/temp/quoted.jpg]"
+    assert cache_path not in req.prompt
+    assert "[图片1]" in req.prompt

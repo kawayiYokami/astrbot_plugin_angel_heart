@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -58,20 +57,6 @@ def _image(url: str) -> dict:
     return {"type": "image_url", "image_url": {"url": url}}
 
 
-class _CaptionLedger:
-    def __init__(self):
-        self.generated = 0
-        self.checked = 0
-
-    async def generate_captions_for_chat(self, **kwargs):
-        self.generated += 1
-        return 1
-
-    async def process_image_captions_if_needed(self, **kwargs):
-        self.checked += 1
-        return 0
-
-
 def test_preserves_current_image_urls_when_provider_supports_images():
     front_desk = _front_desk(supports_image=True, image_caption_provider_id="caption")
     req = _request(["file:///tmp/current-a.png", "file:///tmp/current-b.png"])
@@ -104,23 +89,6 @@ def test_clears_current_image_urls_when_provider_cannot_receive_direct_images():
     )
 
     assert req.image_urls == []
-
-
-def test_supported_provider_does_not_force_caption_generation():
-    front_desk = _front_desk(supports_image=True, image_caption_provider_id="caption")
-    ledger = _CaptionLedger()
-    front_desk.context = SimpleNamespace(conversation_ledger=ledger)
-
-    caption_count = asyncio.run(
-        front_desk._ensure_image_captions_for_request(
-            "chat",
-            force_caption=not front_desk._should_preserve_current_image_urls("chat"),
-        )
-    )
-
-    assert caption_count == 0
-    assert ledger.generated == 0
-    assert ledger.checked == 1
 
 
 def test_unconfigured_provider_modalities_are_treated_as_image_capable():
