@@ -704,7 +704,11 @@ class FrontDesk:
         cooldown_seconds: float,
         reason: str,
     ) -> bool:
-        """按本事件的调度归属收口同会话秘书单飞门闩。"""
+        """按本事件的调度归属收口同会话秘书单飞。
+
+        秘书单飞只覆盖判断阶段；放行助理后应立即调用并令 cooldown_seconds=0。
+        回复后休息不走这里，改由 DebounceManager.start_secretary_cooldown。
+        """
         dispatch_id = ""
         if hasattr(event, "get_extra"):
             dispatch_id = str(
@@ -725,7 +729,8 @@ class FrontDesk:
 
         群聊现行模型：
         - 防抖放行后的事件进入秘书决策
-        - 同会话的秘书调度由 DebounceManager 单飞门闩保护
+        - 同会话秘书单飞只保护“判断是否接话”
+        - 秘书放行后立即释放单飞；助理生成/发送不再占用
         - 不能把后到消息注入已运行子代理
         """
         try:
@@ -882,6 +887,13 @@ class FrontDesk:
             if not self._config_manager.debug_mode:
                 event.is_at_or_wake_command = True
                 logger.debug(f"AngelHeart[{chat_id}]: 已设置唤醒主脑标志")
+                # 秘书判断结束即释放单飞；助理生成/发送不再占用。
+                await self._finish_secretary_dispatch(
+                    event,
+                    chat_id,
+                    cooldown_seconds=0.0,
+                    reason="reply_handoff",
+                )
             else:
                 logger.debug(f"AngelHeart[{chat_id}]: 调试模式已启用，阻止了实际唤醒。")
                 try:

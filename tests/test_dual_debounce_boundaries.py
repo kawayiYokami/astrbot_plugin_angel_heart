@@ -869,6 +869,98 @@ class TestDebounceManagerBoundaries:
             reason="test_done",
         )
 
+    @pytest.mark.asyncio
+    async def test_reply_handoff_releases_dispatch_so_next_wake_can_process(self):
+        """秘书放行后立即释放单飞；助理生成期间不应再挡住下一轮点名。"""
+        dm = DebounceManager(make_config(assistant_debounce_time=0.05, secretary_debounce_time=0.05))
+        first = DummyEvent("first-reply")
+        first_future = await dm.schedule(
+            chat_id="g1",
+            event=first,
+            sender_id="a",
+            message_id="1",
+            is_wake=True,
+            is_present=False,
+        )
+        assert await first_future == PROCESS
+        assert dm.has_secretary_dispatch("g1") is True
+
+        # 模拟秘书决定回复并放行助理：只释放单飞，不启动回复后休息。
+        assert await dm.finish_secretary_dispatch(
+            "g1",
+            first.extras["angelheart_secretary_dispatch_id"],
+            cooldown_seconds=0.0,
+            reason="reply_handoff",
+        ) is True
+        assert dm.has_secretary_dispatch("g1") is False
+
+        # 助理仍在忙 first 时，新的点名应能独立放行。
+        second = DummyEvent("second-wake")
+        second_future = await dm.schedule(
+            chat_id="g1",
+            event=second,
+            sender_id="b",
+            message_id="2",
+            is_wake=True,
+            is_present=True,
+        )
+        assert await asyncio.wait_for(second_future, timeout=0.15) == PROCESS
+        assert second.extras.get("angelheart_must_reply") is True
+        assert dm.has_secretary_dispatch("g1") is True
+
+        await dm.finish_secretary_dispatch(
+            "g1",
+            second.extras["angelheart_secretary_dispatch_id"],
+            cooldown_seconds=0.0,
+            reason="reply_handoff",
+        )
+
+    @pytest.mark.asyncio
+    async def test_start_secretary_cooldown_without_dispatch(self):
+        """回复后休息应可在单飞已释放后单独启动。"""
+        dm = DebounceManager(
+            make_config(secretary_debounce_time=0.05, waiting_time=0.10)
+        )
+        first = DummyEvent("first")
+        first_future = await dm.schedule(
+            chat_id="g1",
+            event=first,
+            sender_id="a",
+            message_id="1",
+            is_wake=False,
+            is_present=True,
+        )
+        assert await first_future == PROCESS
+        await dm.finish_secretary_dispatch(
+            "g1",
+            first.extras["angelheart_secretary_dispatch_id"],
+            cooldown_seconds=0.0,
+            reason="reply_handoff",
+        )
+        assert dm.has_secretary_dispatch("g1") is False
+
+        assert await dm.start_secretary_cooldown(
+            "g1", 0.10, reason="reply_sent"
+        ) is True
+
+        second = DummyEvent("second")
+        second_future = await dm.schedule(
+            chat_id="g1",
+            event=second,
+            sender_id="b",
+            message_id="2",
+            is_wake=False,
+            is_present=True,
+        )
+        await asyncio.sleep(0.06)
+        assert not second_future.done()
+        assert await asyncio.wait_for(second_future, timeout=0.20) == PROCESS
+        await dm.finish_secretary_dispatch(
+            "g1",
+            second.extras["angelheart_secretary_dispatch_id"],
+            reason="test_done",
+        )
+
 
 class TestEventWakeDetection:
     def setup_method(self):
@@ -1203,6 +1295,44 @@ class TestSecretaryDispatchCompletion:
             reason="no_reply",
         )
         assert event.is_stopped()
+
+    @pytest.mark.asyncio
+    async def test_reply_handoff_releases_dispatch_before_assistant_runs(self):
+        from astrbot_plugin_angel_heart.roles.front_desk import FrontDesk
+
+        config = make_config()
+        angel = MagicMock()
+        angel.astr_context = MagicMock()
+        angel.debounce_manager.finish_secretary_dispatch = AsyncMock(return_value=True)
+        angel.debounce_manager.get_leave_reply_trigger.return_value = ""
+        fd = FrontDesk(config, angel)
+        fd.secretary = MagicMock()
+        fd.secretary.handle_message_by_state = AsyncMock(
+            return_value=SecretaryDecision(
+                should_reply=True,
+                reply_strategy="直接回答",
+                topic="测试",
+                entities=[],
+                facts=[],
+                keywords=[],
+            )
+        )
+        fd._get_decision_context_for_rewrite = MagicMock(
+            return_value=([], [], time.time())
+        )
+        event = DummyEvent("reply-handoff", chat_id="GroupMessage:1")
+        event.set_extra("angelheart_secretary_dispatch_id", "dispatch-reply")
+
+        await fd._call_secretary_and_execute(event, event.unified_msg_origin)
+
+        angel.debounce_manager.finish_secretary_dispatch.assert_awaited_once_with(
+            event.unified_msg_origin,
+            "dispatch-reply",
+            cooldown_seconds=0.0,
+            reason="reply_handoff",
+        )
+        assert event.is_at_or_wake_command is True
+        assert event.is_stopped() is False
 
 
 class TestFrontDeskPrivateAndGroupRouting:
