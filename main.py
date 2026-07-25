@@ -477,9 +477,10 @@ class AngelHeartPlugin(Star):
     @track_runtime_handler
     async def handle_message_sent(self, event: AstrMessageEvent):
         """
-        消息发送后处理：状态转换、完成工作账本
+        消息发送后处理：状态转换、完成工作账本、启动回复后休息
 
-        比 on_decorating_result 更可靠，因为即使消息链为空也会触发
+        比 on_decorating_result 更可靠，因为即使消息链为空也会触发。
+        秘书单飞已在放行助理时释放；这里不再用发送完成去占用/释放秘书判断锁。
         """
         chat_id = event.unified_msg_origin
         try:
@@ -496,22 +497,37 @@ class AngelHeartPlugin(Star):
                     )
                 except (AttributeError, RuntimeError) as e:
                     logger.warning(f"AngelHeart[{chat_id}]: 状态转换处理异常: {e}")
+
+                # 秘书单飞已在放行助理时释放；这里只启动回复后休息。
+                if not leave_reply_trigger:
+                    try:
+                        await self.angel_context.debounce_manager.start_secretary_cooldown(
+                            chat_id,
+                            self.config_manager.waiting_time,
+                            reason="reply_sent",
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            f"AngelHeart[{chat_id}]: 回复后启动休息失败: {e}"
+                        )
+
+                # 兼容兜底：若放行时未释放单飞，发送后仍尝试收口，但不附带休息。
                 try:
                     await self._finish_secretary_dispatch(
                         event,
                         chat_id,
-                        # 离场应答不属于在场普通聊天，不能启动 waiting_time。
-                        cooldown_seconds=(
-                            0.0
-                            if leave_reply_trigger
-                            else self.config_manager.waiting_time
-                        ),
+                        cooldown_seconds=0.0,
                         reason=(
-                            "leave_reply_sent" if leave_reply_trigger else "reply_sent"
+                            "leave_reply_sent"
+                            if leave_reply_trigger
+                            else "reply_sent"
                         ),
                     )
                 except Exception as e:
-                    logger.warning(f"AngelHeart[{chat_id}]: 回复后收口秘书调度失败: {e}")
+                    logger.warning(
+                        f"AngelHeart[{chat_id}]: 回复后兜底收口秘书单飞失败: {e}"
+                    )
+
                 # 工作账本：本轮完成
                 try:
                     work_id = ""
@@ -529,7 +545,9 @@ class AngelHeartPlugin(Star):
                         result_summary=preview or "已回复",
                     )
                 except Exception as e:
-                    logger.debug(f"AngelHeart[{chat_id}]: 更新工作账本完成状态失败: {e}")
+                    logger.debug(
+                        f"AngelHeart[{chat_id}]: 更新工作账本完成状态失败: {e}"
+                    )
             else:
                 logger.debug(f"AngelHeart[{chat_id}]: 消息链为空，跳过状态转换")
                 try:
@@ -555,9 +573,14 @@ class AngelHeartPlugin(Star):
                         reason="empty_reply",
                     )
                 except Exception as e:
-                    logger.warning(f"AngelHeart[{chat_id}]: 空回复收口秘书调度失败: {e}")
+                    logger.warning(
+                        f"AngelHeart[{chat_id}]: 空回复收口秘书调度失败: {e}"
+                    )
         except Exception as e:
-            logger.error(f"AngelHeart[{chat_id}]: after_message_sent处理异常: {e}", exc_info=True)
+            logger.error(
+                f"AngelHeart[{chat_id}]: after_message_sent处理异常: {e}",
+                exc_info=True,
+            )
             try:
                 await self._finish_secretary_dispatch(
                     event,
@@ -567,7 +590,7 @@ class AngelHeartPlugin(Star):
                 )
             except Exception:
                 pass
-        # 旧单槽门锁已退役；发送后收口只做状态/工作账本，调度只认双防抖
+        # 旧单槽门锁已退役；发送后只做状态/工作账本/回复后休息，调度只认双防抖
 
     async def _finish_secretary_dispatch(
         self,
@@ -577,7 +600,10 @@ class AngelHeartPlugin(Star):
         cooldown_seconds: float,
         reason: str,
     ) -> bool:
-        """按事件持有的调度归属收口同会话秘书单飞门闩。"""
+        """按事件持有的调度归属收口同会话秘书单飞。
+
+        正常回复路径应在秘书放行时已释放；此处多为兜底或不回复/异常收口。
+        """
         dispatch_id = ""
         if hasattr(event, "get_extra"):
             dispatch_id = str(

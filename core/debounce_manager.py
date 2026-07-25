@@ -242,7 +242,11 @@ class DebounceManager:
         return chat_id in self._secretary
 
     def has_secretary_dispatch(self, chat_id: str) -> bool:
-        """当前会话是否已有一轮秘书从分析到发送收口仍在运行。"""
+        """当前会话是否已有一轮秘书分析尚未收口。
+
+        秘书单飞只覆盖“判断是否接话”阶段；放行给助理后应立即释放，
+        不得占到助理生成/发送完成。
+        """
         return str(chat_id or "") in self._secretary_dispatching
 
     def _remaining_secretary_cooldown(self, chat_id: str) -> float:
@@ -278,7 +282,11 @@ class DebounceManager:
         cooldown_seconds: float = 0.0,
         reason: str = "",
     ) -> bool:
-        """原子释放会话级秘书调度，并按结果启动下一轮普通消息冷却。"""
+        """原子释放会话级秘书单飞，并可附带启动普通消息休息。
+
+        放行给助理时应只释放单飞（cooldown_seconds=0）；
+        回复后休息由 start_secretary_cooldown 在发送完成后单独启动。
+        """
         chat_id = str(chat_id or "")
         dispatch_id = str(dispatch_id or "")
         async with self._lock:
@@ -292,6 +300,27 @@ class DebounceManager:
 
             logger.debug(
                 f"AngelHeart[{chat_id}]: 秘书调度收口 "
+                f"(reason={reason or 'unknown'}, cooldown={cooldown_seconds:.2f}s)"
+            )
+            return True
+
+    async def start_secretary_cooldown(
+        self,
+        chat_id: str,
+        cooldown_seconds: float = 0.0,
+        *,
+        reason: str = "",
+    ) -> bool:
+        """仅启动普通消息休息，不依赖秘书单飞是否仍占用。"""
+        chat_id = str(chat_id or "")
+        cooldown_seconds = max(0.0, float(cooldown_seconds))
+        if not chat_id or cooldown_seconds <= 0:
+            return False
+
+        async with self._lock:
+            self._secretary_cooldown_until[chat_id] = time.time() + cooldown_seconds
+            logger.debug(
+                f"AngelHeart[{chat_id}]: 启动秘书休息 "
                 f"(reason={reason or 'unknown'}, cooldown={cooldown_seconds:.2f}s)"
             )
             return True
@@ -635,7 +664,8 @@ class DebounceManager:
                     return
 
                 if self._secretary_dispatching.get(record.chat_id):
-                    # 同会话已有秘书从分析到发送收口仍在运行，绝不并发放行第二轮。
+                    # 同会话已有秘书正在分析，不并发放行第二轮秘书。
+                    # 助理生成/发送不占此门闩。
                     self._log_gate_decision(
                         record, "retry", "secretary_dispatching"
                     )
