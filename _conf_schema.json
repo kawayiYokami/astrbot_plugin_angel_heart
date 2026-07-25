@@ -64,6 +64,50 @@
     }
   },
 
+  "energy": {
+    "type": "object",
+    "description": "[能量设置] 群聊能量与回复消耗",
+    "hint": "调整每个群独立的运行时能量、恢复速度和回复消耗。默认值：初始能量 100、上限 100、下限 -100、每秒恢复 0.6、每次回复基础消耗 14、每字符回复消耗 0.12。修改后，新巡检会按新参数判断；已有群能量不会重置。",
+    "items": {
+      "initial_energy": {
+        "type": "float",
+        "description": "初始能量",
+        "hint": "每个群首次创建能量状态时使用的能量值。默认值：100。",
+        "default": 100.0
+      },
+      "max_energy": {
+        "type": "float",
+        "description": "能量上限",
+        "hint": "能量恢复时不会超过这个值。默认值：100。",
+        "default": 100.0
+      },
+      "min_energy": {
+        "type": "float",
+        "description": "能量下限",
+        "hint": "回复扣能时不会低于这个值。默认值：-100。",
+        "default": -100.0
+      },
+      "recovery_per_second": {
+        "type": "float",
+        "description": "每秒恢复能量",
+        "hint": "普通巡检结束前按经过的时间恢复一次能量。默认值：每秒恢复 0.6。",
+        "default": 0.6
+      },
+      "base_reply_cost": {
+        "type": "float",
+        "description": "每次回复基础消耗",
+        "hint": "每次实际形成回复内容时固定扣除的能量。默认值：14。",
+        "default": 14.0
+      },
+      "reply_cost_per_character": {
+        "type": "float",
+        "description": "每字符回复消耗",
+        "hint": "按最终消息链中的有效字符数额外扣除能量。默认值：每字符 0.12。",
+        "default": 0.12
+      }
+    }
+  },
+
   "leave_reply": {
     "type": "object",
     "description": "[离场应答] 复读或多人热聊时回复一次",
