@@ -4,7 +4,7 @@ import sys
 import types
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 HERE = Path(__file__).resolve().parent
 PLUGIN_ROOT = HERE.parent
@@ -45,6 +45,9 @@ def _front_desk():
     config = MagicMock()
     config.alias = "fairy"
     config.image_caption_provider_id = ""
+    config.focus_instructions = "分析 总结 好好想想 为什么 到底"
+    config.normal_reply_max_chars = 20
+    config.focus_reply_max_chars = 200
     angel = MagicMock()
     angel.work_ledger = WorkLedger()
     angel.astr_context = MagicMock()
@@ -206,11 +209,97 @@ def test_group_rewrite_keeps_assistant_history_in_contexts_and_only_current_mess
     assert "第二条助理" in joined_context
     assert "第三条当前消息" not in joined_context
     assert any(message.get("role") == "assistant" for message in req.contexts)
-    assert req.contexts[-1]["_no_save"] is True
-    assert req.contexts[-1]["role"] == "user"
-    assert "已有其他工作" in context_texts[-1]
-    assert "第三条当前消息" not in context_texts[-1]
+    temporary_contexts = [message for message in req.contexts if message.get("_no_save")]
+    assert len(temporary_contexts) == 2
+    assert temporary_contexts[0]["sender_id"] == "angelheart-work-ledger"
+    assert temporary_contexts[1]["sender_id"] == "angelheart-reply-length"
+    assert "已有其他工作" in temporary_contexts[0]["content"][0]["text"]
+    assert "第三条当前消息" not in temporary_contexts[0]["content"][0]["text"]
+    assert "【硬性长度约束】整段回复必须不超过 20 字。" in temporary_contexts[1]["content"][0]["text"]
+    assert "只给结论，不要铺垫、解释、列点或补问。超字数视为失败。" in temporary_contexts[1]["content"][0]["text"]
+    assert temporary_contexts[1]["angelheart_focus"] is False
     assert req.system_prompt == "BASE SYSTEM"
+
+
+def test_group_rewrite_uses_focus_reply_length_when_focus_instruction_hits():
+    import asyncio
+
+    fd, _ = _front_desk()
+    req = SimpleNamespace(
+        contexts=[],
+        prompt="",
+        image_urls=[],
+        extra_user_content_parts=[],
+        system_prompt="BASE SYSTEM",
+    )
+    event = _event("m3")
+    recent_dialogue = [
+        {
+            "role": "user",
+            "content": "帮我好好想想这个问题",
+            "sender_name": "甲",
+            "sender_id": "1001",
+            "timestamp": 3.0,
+            "chat_id": "aiocqhttp:GroupMessage:10000",
+            "source_message_id": "m3",
+        }
+    ]
+
+    asyncio.run(_run_group_rewrite(fd, event, req, recent_dialogue, historical_context=[]))
+
+    length_context = next(
+        message
+        for message in req.contexts
+        if message.get("sender_id") == "angelheart-reply-length"
+    )
+    assert length_context["angelheart_focus"] is True
+    assert "【硬性长度约束】请认真回答，但整段回复必须不超过 200 字。" in length_context["content"][0]["text"]
+    assert "先结论，后必要依据；不要注水、不要重复。超字数视为失败。" in length_context["content"][0]["text"]
+
+
+def test_private_rewrite_does_not_inject_reply_length_reminder():
+    import asyncio
+
+    fd, _ = _front_desk()
+    chat_id = "aiocqhttp:FriendMessage:10000"
+    req = SimpleNamespace(
+        contexts=[],
+        prompt="",
+        image_urls=[],
+        extra_user_content_parts=[],
+        system_prompt="BASE SYSTEM",
+    )
+    event = _event("m1")
+    event.unified_msg_origin = chat_id
+    fd._get_decision_context_for_rewrite = MagicMock(
+        return_value=(
+            [
+                {
+                    "role": "user",
+                    "content": "帮我好好想想这个问题",
+                    "sender_name": "甲",
+                    "sender_id": "1001",
+                    "timestamp": 1.0,
+                    "chat_id": chat_id,
+                    "source_message_id": "m1",
+                }
+            ],
+            [],
+            1.0,
+        )
+    )
+    fd._ensure_minimum_context = AsyncMock()
+
+    async def _run():
+        await fd.rewrite_prompt_for_llm(chat_id, event, req)
+
+    asyncio.run(_run())
+
+    assert all(
+        message.get("sender_id") != "angelheart-reply-length" for message in req.contexts
+    )
+    assert "【硬性长度约束】" not in req.prompt
+    assert "整段回复必须不超过" not in req.prompt
 
 
 def test_group_rewrite_replaces_current_astrbot_image_attachment_path_with_ledger_cache_path():

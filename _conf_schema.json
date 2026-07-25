@@ -102,6 +102,32 @@
     }
   },
 
+  "reply_length": {
+    "type": "object",
+    "description": "[回复长度] 常规与焦点字数提醒",
+    "hint": "群聊真正交给助理回复时，会注入一条系统提醒控制回复长度。命中焦点指令后改用更长上限；这是提示词层约束，不强制硬截断。",
+    "items": {
+      "focus_instructions": {
+        "type": "string",
+        "description": "焦点指令（空格分隔）",
+        "hint": "本批群聊消息命中任一短语后，本次回复改用焦点字数提醒。默认值：分析 总结 好好想想 为什么 到底。",
+        "default": "分析 总结 好好想想 为什么 到底"
+      },
+      "normal_reply_max_chars": {
+        "type": "int",
+        "description": "常规回复字数",
+        "hint": "未命中焦点指令时注入的回复上限。默认值：20。",
+        "default": 20
+      },
+      "focus_reply_max_chars": {
+        "type": "int",
+        "description": "焦点回复字数",
+        "hint": "命中焦点指令时注入的回复上限，不能小于常规回复字数。默认值：200。",
+        "default": 200
+      }
+    }
+  },
+
   "leave_reply": {
     "type": "object",
     "description": "[离场应答] 复读或多人热聊时回复一次",
