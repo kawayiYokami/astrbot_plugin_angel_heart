@@ -192,6 +192,30 @@ class TestEnergyConfiguration:
             "base_reply_cost",
             "reply_cost_per_character",
         }
+        assert set(schema["reply_length"]["items"]) == {
+            "focus_instructions",
+            "normal_reply_max_chars",
+            "focus_reply_max_chars",
+        }
+
+    def test_reply_length_defaults_and_focus_not_below_normal(self):
+        default = make_config()
+        assert default.focus_instructions == "分析 总结 好好想想 为什么 到底"
+        assert default.normal_reply_max_chars == 20
+        assert default.focus_reply_max_chars == 200
+
+        custom = ConfigManager(
+            {
+                "reply_length": {
+                    "focus_instructions": "深入 复盘",
+                    "normal_reply_max_chars": 30,
+                    "focus_reply_max_chars": 10,
+                }
+            }
+        )
+        assert custom.focus_instructions == "深入 复盘"
+        assert custom.normal_reply_max_chars == 30
+        assert custom.focus_reply_max_chars == 30
 
 
 @pytest.fixture

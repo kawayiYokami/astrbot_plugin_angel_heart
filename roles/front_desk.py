@@ -30,6 +30,7 @@ from ..core.image_processor import ImageProcessor
 
 from ..core.fishing_direct_reply import FishingDirectReply
 from ..core.message_processor import MessageProcessor
+from ..core.utils.content_utils import convert_content_to_string
 from ..core.utils.message_utils import serialize_content_parts
 
 # 导入状态枚举
@@ -1539,6 +1540,99 @@ class FrontDesk:
         """检查重建后的当前提示词是否有有效内容。"""
         return isinstance(prompt, str) and bool(prompt.strip())
 
+    def _parse_space_separated_phrases(self, raw: Any) -> List[str]:
+        """解析空格分隔短语，去掉空项并去重保序。"""
+        if isinstance(raw, list):
+            phrases = [str(item).strip() for item in raw]
+        else:
+            phrases = str(raw or "").split()
+        seen = set()
+        result = []
+        for phrase in phrases:
+            if not phrase or phrase in seen:
+                continue
+            seen.add(phrase)
+            result.append(phrase)
+        return result
+
+    def _extract_message_plain_text(self, message: Dict[str, Any] | None) -> str:
+        """从账本消息中提取纯文本，供焦点指令匹配。"""
+        if not isinstance(message, dict):
+            return ""
+        return convert_content_to_string(message.get("content", ""))
+
+    def _matches_focus_instructions(self, texts: List[str]) -> bool:
+        """本批文本是否命中任一焦点指令短语。"""
+        phrases = self._parse_space_separated_phrases(
+            getattr(self.config_manager, "focus_instructions", "")
+        )
+        if not phrases:
+            return False
+        normalized_phrases = [phrase.casefold() for phrase in phrases]
+        for text in texts:
+            normalized = str(text or "").casefold()
+            if not normalized:
+                continue
+            if any(phrase in normalized for phrase in normalized_phrases):
+                return True
+        return False
+
+    def _build_reply_length_reminder(self, focus: bool) -> str:
+        """构建常规/焦点字数系统提醒。"""
+        normal_limit = int(getattr(self.config_manager, "normal_reply_max_chars", 20) or 20)
+        focus_limit = int(getattr(self.config_manager, "focus_reply_max_chars", 200) or 200)
+        normal_limit = max(1, normal_limit)
+        focus_limit = max(normal_limit, focus_limit)
+        if focus:
+            return (
+                f"【硬性长度约束】请认真回答，但整段回复必须不超过 {focus_limit} 字。"
+                "先结论，后必要依据；不要注水、不要重复。超字数视为失败。"
+            )
+        return (
+            f"【硬性长度约束】整段回复必须不超过 {normal_limit} 字。"
+            "只给结论，不要铺垫、解释、列点或补问。超字数视为失败。"
+        )
+
+    def _build_temporary_reply_length_context(
+        self,
+        chat_id: str,
+        recent_dialogue: List[Dict],
+        prompt_recent_dialogue: List[Dict],
+    ) -> Dict[str, Any] | None:
+        """群聊回复时注入字数提醒；私聊不注入。"""
+        if not self._is_group_chat(chat_id):
+            return None
+
+        candidate_messages = list(recent_dialogue or []) + list(prompt_recent_dialogue or [])
+        texts = []
+        for message in candidate_messages:
+            if not isinstance(message, dict):
+                continue
+            if str(message.get("role", "") or "").lower() == "assistant":
+                continue
+            text = self._extract_message_plain_text(message)
+            if text:
+                texts.append(text)
+
+        focus = self._matches_focus_instructions(texts)
+        reminder = self._build_reply_length_reminder(focus)
+        return {
+            "role": "user",
+            "content": [
+                {
+                    "type": "text",
+                    "text": f"<system_reminder>\n{reminder}\n</system_reminder>",
+                }
+            ],
+            "sender_id": "angelheart-reply-length",
+            "sender_name": "回复长度",
+            "timestamp": time.time(),
+            "_no_save": True,
+            "is_temporary_context": True,
+            "chat_id": chat_id,
+            "angelheart_focus": focus,
+        }
+
     def _build_temporary_work_ledger_context(
         self, chat_id: str, event: AstrMessageEvent | None = None
     ) -> Dict[str, Any] | None:
@@ -1855,6 +1949,15 @@ class FrontDesk:
         work_context = self._build_temporary_work_ledger_context(chat_id, event)
         if work_context:
             new_contexts.append(work_context)
+
+        # 4.1 群聊注入回复字数提醒（常规/焦点）
+        length_context = self._build_temporary_reply_length_context(
+            chat_id,
+            context_recent_dialogue,
+            prompt_recent_dialogue,
+        )
+        if length_context:
+            new_contexts.append(length_context)
 
         # 5. 根据 Provider 的 modalities 配置过滤图片内容
         new_contexts = self.filter_images_for_provider(chat_id, new_contexts)

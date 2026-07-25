@@ -99,6 +99,33 @@ class ConfigManager:
     def reply_cost_per_character(self) -> float:
         return self._get_grouped("energy", "reply_cost_per_character", 0.12)
 
+    # ========== reply_length ==========
+
+    @property
+    def focus_instructions(self) -> str:
+        return self._get_grouped(
+            "reply_length",
+            "focus_instructions",
+            "分析 总结 好好想想 为什么 到底",
+        )
+
+    @property
+    def normal_reply_max_chars(self) -> int:
+        raw = self._get_grouped("reply_length", "normal_reply_max_chars", 20)
+        try:
+            return max(1, int(raw))
+        except (TypeError, ValueError):
+            return 20
+
+    @property
+    def focus_reply_max_chars(self) -> int:
+        raw = self._get_grouped("reply_length", "focus_reply_max_chars", 200)
+        try:
+            value = max(1, int(raw))
+        except (TypeError, ValueError):
+            value = 200
+        return max(self.normal_reply_max_chars, value)
+
     # ========== leave_reply ==========
 
     @property
@@ -262,6 +289,11 @@ class ConfigManager:
                 "alias": self.alias,
                 "analysis_on_mention_only": self.analysis_on_mention_only,
                 "force_reply_when_summoned": self.force_reply_when_summoned,
+            },
+            "reply_length": {
+                "focus_instructions": self.focus_instructions,
+                "normal_reply_max_chars": self.normal_reply_max_chars,
+                "focus_reply_max_chars": self.focus_reply_max_chars,
             },
             "access_control": {
                 "whitelist_enabled": self.whitelist_enabled,
