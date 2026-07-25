@@ -77,6 +77,7 @@ class DummyEvent:
         self.angelheart_context = None
         self._result = MagicMock()
         self._result.chain = ["x"]
+        self._messages = None
 
     def set_extra(self, key, value):
         self.extras[key] = value
@@ -97,7 +98,16 @@ class DummyEvent:
         return self.message_str
 
     def get_messages(self):
-        return []
+        if self._messages is not None:
+            return self._messages
+        if not self.message_str:
+            return []
+
+        class Plain:
+            def __init__(self, text):
+                self.text = text
+
+        return [Plain(self.message_str)]
 
     def get_result(self):
         return self._result
@@ -1052,8 +1062,89 @@ class TestEventWakeDetection:
                 self.qq = qq
 
         e = DummyEvent("w3", message_str="")
-        e.get_messages = lambda: [At("bot1")]
+        e._messages = [At("bot1")]
         assert self.checker.is_event_wake(e) is True
+
+    def test_reply_outline_does_not_wake_by_alias_or_focus_text(self):
+        class Reply:
+            def __init__(self):
+                self.message_str = "草王在吗，帮我分析一下"
+                self.sender_nickname = "草王"
+                self.text = "草王在吗，帮我分析一下"
+
+        e = DummyEvent("w-reply", message_str="")
+        e.get_message_outline = lambda: "[引用消息(草王: 草王在吗，帮我分析一下)]"
+        e._messages = [Reply()]
+        assert self.checker.is_event_wake(e) is False
+
+    def test_cache_message_writes_hits_from_plain_body_only(self):
+        import asyncio
+        from types import SimpleNamespace
+        from astrbot_plugin_angel_heart.roles.front_desk import FrontDesk
+
+        class Plain:
+            def __init__(self, text):
+                self.text = text
+
+        class At:
+            def __init__(self, qq, name=""):
+                self.qq = qq
+                self.name = name
+
+        class Reply:
+            def __init__(self):
+                self.message_str = "草王帮我分析"
+                self.sender_nickname = "草王"
+                self.text = "草王帮我分析"
+
+        angel = MagicMock()
+        angel.astr_context = MagicMock()
+        angel.conversation_ledger.add_message = MagicMock()
+        config = make_config()
+        config = type(config)(
+            {
+                **config._config,
+                "reply_length": {
+                    "focus_instructions": "分析 总结",
+                    "normal_reply_max_chars": 20,
+                    "focus_reply_max_chars": 200,
+                },
+            }
+        )
+        fd = FrontDesk(config, angel)
+
+        event = DummyEvent("hit-1", message_str="")
+        event._messages = [
+            Reply(),
+            At("someone", name="草王"),
+            Plain("今天天气不错"),
+        ]
+        event.get_message_outline = (
+            lambda: "[引用消息(草王: 草王帮我分析)] @草王 今天天气不错"
+        )
+
+        asyncio.run(fd.cache_message("group:1", event))
+        cached = angel.conversation_ledger.add_message.call_args.args[1]
+        assert cached["metadata"]["body_text"] == "今天天气不错"
+        assert cached["metadata"]["hits"] == []
+        assert event.get_extra("angelheart_message_metadata")["hits"] == []
+
+        event2 = DummyEvent("hit-2", message_str="")
+        event2._messages = [Plain("草王帮我分析一下")]
+        asyncio.run(fd.cache_message("group:1", event2))
+        cached2 = angel.conversation_ledger.add_message.call_args.args[1]
+        assert cached2["metadata"]["body_text"] == "草王帮我分析一下"
+        hit_types = {item["type"] for item in cached2["metadata"]["hits"]}
+        assert "alias" in hit_types
+        assert "focus" in hit_types
+        assert any(
+            item.get("type") == "alias" and item.get("phrase") == "草王"
+            for item in cached2["metadata"]["hits"]
+        )
+        assert any(
+            item.get("type") == "focus" and item.get("phrase") == "分析"
+            for item in cached2["metadata"]["hits"]
+        )
 
     def test_silenced_blocks_wake(self):
         import time

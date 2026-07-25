@@ -6,6 +6,14 @@ AngelHeart 插件 - 核心工具模块
 # 从各个子模块导入函数
 from .time_utils import get_latest_message_time, format_relative_time, get_beijing_time_str
 from .content_utils import convert_content_to_string, strip_markdown
+from .message_hits import (
+    build_message_metadata,
+    extract_plain_body_from_components,
+    metadata_has_hit,
+    metadata_hit_phrases,
+    parse_pipe_phrases,
+    parse_space_phrases,
+)
 from .message_utils import prune_old_messages, format_message_for_llm
 from .context_utils import (
     json_serialize_context,
@@ -27,6 +35,14 @@ __all__ = [
     # 内容处理相关
     'convert_content_to_string',
     'strip_markdown',
+
+    # 正文命中相关
+    'build_message_metadata',
+    'extract_plain_body_from_components',
+    'metadata_has_hit',
+    'metadata_hit_phrases',
+    'parse_pipe_phrases',
+    'parse_space_phrases',
 
     # 消息处理相关
     'prune_old_messages',

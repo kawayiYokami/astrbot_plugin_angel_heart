@@ -31,6 +31,13 @@ from ..core.image_processor import ImageProcessor
 from ..core.fishing_direct_reply import FishingDirectReply
 from ..core.message_processor import MessageProcessor
 from ..core.utils.content_utils import convert_content_to_string
+from ..core.utils.message_hits import (
+    build_message_metadata,
+    extract_plain_body_from_components,
+    metadata_has_hit,
+    parse_pipe_phrases,
+    parse_space_phrases,
+)
 from ..core.utils.message_utils import serialize_content_parts
 
 # 导入状态枚举
@@ -268,16 +275,18 @@ class FrontDesk:
 
     async def cache_message(self, chat_id: str, event: AstrMessageEvent):
         """
-        前台职责：使用消息概要作为主要正文，处理图片组件并缓存。
+        前台职责：缓存消息，并在入库时对正文做一次命中判定。
 
         Args:
             chat_id (str): 会话ID。
             event (AstrMessageEvent): 消息事件对象。
         """
-        # 1. 获取消息概要作为主要正文
+        # 1. 展示正文：Plain + @显示名 + 文件名；匹配正文：只取 Plain
         outline = event.get_message_outline()
+        message_chain = event.get_messages() or []
+        body_text = extract_plain_body_from_components(message_chain)
         text_parts = []
-        for component in event.get_messages():
+        for component in message_chain:
             if isinstance(component, Plain) and component.text:
                 text_parts.append(component.text)
             elif isinstance(component, At):
@@ -291,18 +300,19 @@ class FrontDesk:
                     text_parts.append(f"[文件: {file_name}]")
         text_content = "".join(text_parts).strip()
         if not text_content:
+            # 展示兜底仍可用 outline；关键词匹配绝不回退 outline
             text_content = outline if outline and outline.strip() else ""
 
-        # 2. 获取 MessageChain 用于图片处理
-        message_chain = event.get_messages()
-        logger.debug(f"AngelHeart[{chat_id}]: 缓存消息，消息概要: '{text_content}'")
+        logger.debug(
+            f"AngelHeart[{chat_id}]: 缓存消息，展示正文: '{text_content}', 匹配正文: '{body_text}'"
+        )
 
-        # 3. 构建标准多模态 content 列表
+        # 2. 构建标准多模态 content 列表
         content_list = []
         if text_content:
             content_list.append({"type": "text", "text": text_content})
 
-        # 4. 处理图片与文件组件
+        # 3. 处理图片与文件组件
         for component in message_chain:
             if isinstance(component, Image):
                 try:
@@ -322,21 +332,43 @@ class FrontDesk:
                     logger.debug(f"AngelHeart[{chat_id}]: File 组件处理异常: {e}")
                     content_list.append({"type": "text", "text": f"[文件处理异常: {getattr(component, 'name', '')}]"})
 
-        # 5. 如果没有内容，创建一个空文本
+        # 4. 如果没有内容，创建一个空文本
         if not content_list:
             content_list.append({"type": "text", "text": ""})
 
-        # 6. 构建完整的消息字典
+        # 5. 构建完整的消息字典
         source_message_id = self._get_event_message_id(event)
 
         # 检测是否为@自己的消息
         is_at_self = False
         try:
             self_id = str(event.get_self_id())
-            for component in event.get_messages():
+            for component in message_chain:
                 if isinstance(component, At) and str(component.qq) == self_id:
                     is_at_self = True
                     break
+                # 兼容非 strict At 类型
+                qq = getattr(component, "qq", None)
+                cls_name = component.__class__.__name__
+                if qq is not None and str(qq) == self_id and ("At" in cls_name or "at" in cls_name.lower()):
+                    is_at_self = True
+                    break
+        except Exception:
+            pass
+
+        metadata = build_message_metadata(
+            body_text=body_text,
+            alias_phrases=parse_pipe_phrases(getattr(self.config_manager, "alias", "")),
+            focus_phrases=parse_space_phrases(
+                getattr(self.config_manager, "focus_instructions", "")
+            ),
+            is_at_self=is_at_self,
+        )
+        # 给当前事件挂一份，供调度点名立刻读取，避免再扫 outline
+        try:
+            if hasattr(event, "set_extra"):
+                event.set_extra("angelheart_message_metadata", metadata)
+                event.set_extra("angelheart_body_text", body_text)
         except Exception:
             pass
 
@@ -351,13 +383,14 @@ class FrontDesk:
             # 当前消息 ID：用于精确定位 ledger 边界并排除请求中的重复当前消息
             "source_message_id": source_message_id,
             "is_at_self": is_at_self,
+            "metadata": metadata,
             "timestamp": (
                 event.get_timestamp()
                 if hasattr(event, "get_timestamp") and event.get_timestamp()
                 else time.time()
             ),
         }
-        # 7. 将消息添加到 Ledger。上下文清理由压缩策略统一控制，不再因离场状态触发。
+        # 6. 将消息添加到 Ledger。上下文清理由压缩策略统一控制，不再因离场状态触发。
         self.context.conversation_ledger.add_message(chat_id, new_message)
 
     async def handle_event(self, event: AstrMessageEvent):
@@ -1542,27 +1575,38 @@ class FrontDesk:
 
     def _parse_space_separated_phrases(self, raw: Any) -> List[str]:
         """解析空格分隔短语，去掉空项并去重保序。"""
-        if isinstance(raw, list):
-            phrases = [str(item).strip() for item in raw]
-        else:
-            phrases = str(raw or "").split()
-        seen = set()
-        result = []
-        for phrase in phrases:
-            if not phrase or phrase in seen:
-                continue
-            seen.add(phrase)
-            result.append(phrase)
-        return result
+        return parse_space_phrases(raw)
 
     def _extract_message_plain_text(self, message: Dict[str, Any] | None) -> str:
-        """从账本消息中提取纯文本，供焦点指令匹配。"""
+        """兼容旧调用：优先 metadata.body_text，否则退回 content 纯文本。"""
         if not isinstance(message, dict):
             return ""
+        metadata = message.get("metadata")
+        if isinstance(metadata, dict):
+            body_text = metadata.get("body_text")
+            if isinstance(body_text, str):
+                return body_text
         return convert_content_to_string(message.get("content", ""))
 
+    def _message_has_focus_hit(self, message: Dict[str, Any] | None) -> bool:
+        """读取入库时写好的焦点命中。"""
+        if not isinstance(message, dict):
+            return False
+        metadata = message.get("metadata")
+        if isinstance(metadata, dict) and "hits" in metadata:
+            return metadata_has_hit(metadata, "focus")
+        # 兼容旧消息：只回退到 body_text / 纯 content，不再扫昵称字段
+        text = self._extract_message_plain_text(message)
+        phrases = self._parse_space_separated_phrases(
+            getattr(self.config_manager, "focus_instructions", "")
+        )
+        if not text or not phrases:
+            return False
+        normalized = text.casefold()
+        return any(phrase.casefold() in normalized for phrase in phrases)
+
     def _matches_focus_instructions(self, texts: List[str]) -> bool:
-        """本批文本是否命中任一焦点指令短语。"""
+        """兼容旧接口：对给定文本列表做焦点匹配。"""
         phrases = self._parse_space_separated_phrases(
             getattr(self.config_manager, "focus_instructions", "")
         )
@@ -1604,17 +1648,16 @@ class FrontDesk:
             return None
 
         candidate_messages = list(recent_dialogue or []) + list(prompt_recent_dialogue or [])
-        texts = []
+        focus = False
         for message in candidate_messages:
             if not isinstance(message, dict):
                 continue
             if str(message.get("role", "") or "").lower() == "assistant":
                 continue
-            text = self._extract_message_plain_text(message)
-            if text:
-                texts.append(text)
+            if self._message_has_focus_hit(message):
+                focus = True
+                break
 
-        focus = self._matches_focus_instructions(texts)
         reminder = self._build_reply_length_reminder(focus)
         return {
             "role": "user",
