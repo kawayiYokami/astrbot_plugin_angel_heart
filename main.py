@@ -245,7 +245,8 @@ class AngelHeartPlugin(Star):
         self._whitelist_cache = self._prepare_whitelist()
 
         logger.info(
-            f"AngelHeart: 配置已更新。等待时间: {self.config_manager.waiting_time}秒"
+            f"AngelHeart: 配置已更新。助理休息: {self.config_manager.waiting_time}秒，"
+            f"前台巡检: {self.config_manager.secretary_debounce_time}秒"
         )
 
     def _get_plain_chat_id(self, unified_id: str) -> str:
@@ -477,7 +478,7 @@ class AngelHeartPlugin(Star):
     @track_runtime_handler
     async def handle_message_sent(self, event: AstrMessageEvent):
         """
-        消息发送后处理：状态转换、完成工作账本、启动回复后休息
+        消息发送后处理：状态转换、完成工作账本、兜底收口
 
         比 on_decorating_result 更可靠，因为即使消息链为空也会触发。
         秘书单飞已在放行助理时释放；这里不再用发送完成去占用/释放秘书判断锁。
@@ -498,18 +499,7 @@ class AngelHeartPlugin(Star):
                 except (AttributeError, RuntimeError) as e:
                     logger.warning(f"AngelHeart[{chat_id}]: 状态转换处理异常: {e}")
 
-                # 秘书单飞已在放行助理时释放；这里只启动回复后休息。
-                if not leave_reply_trigger:
-                    try:
-                        await self.angel_context.debounce_manager.start_secretary_cooldown(
-                            chat_id,
-                            self.config_manager.waiting_time,
-                            reason="reply_sent",
-                        )
-                    except Exception as e:
-                        logger.warning(
-                            f"AngelHeart[{chat_id}]: 回复后启动休息失败: {e}"
-                        )
+                # 秘书单飞已在放行助理时释放；助理休息已在主脑调用点启动。
 
                 # 兼容兜底：若放行时未释放单飞，发送后仍尝试收口，但不附带休息。
                 try:
@@ -590,7 +580,7 @@ class AngelHeartPlugin(Star):
                 )
             except Exception:
                 pass
-        # 旧单槽门锁已退役；发送后只做状态/工作账本/回复后休息，调度只认双防抖
+        # 旧单槽门锁已退役；发送后只做状态/工作账本/兜底收口，调度只认双防抖
 
     async def _finish_secretary_dispatch(
         self,

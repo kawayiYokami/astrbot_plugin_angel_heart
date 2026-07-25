@@ -61,12 +61,12 @@ class AngelHeartContext:
         # 状态转换管理器
         self.status_transition_manager = StatusTransitionManager(self)
 
-        # 群聊调度：助理防抖与巡检（旧单槽门锁已退役）
-        self.debounce_manager = DebounceManager(config_manager)
-        self.energy_states = self.debounce_manager.energy_states
-
         # 助理工作账本：正在/已经处理哪一套活
         self.work_ledger = WorkLedger()
+
+        # 群聊调度：助理防抖与巡检（旧单槽门锁已退役）
+        self.debounce_manager = DebounceManager(config_manager, work_ledger=self.work_ledger)
+        self.energy_states = self.debounce_manager.energy_states
 
         # 主动应答管理器
         self.proactive_manager = ProactiveManager(self)
