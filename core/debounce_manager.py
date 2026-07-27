@@ -715,7 +715,8 @@ class DebounceManager:
 
                 energy_after_gate = None
                 recovered = None
-                if not record.leave_reply_trigger:
+                # 普通巡检才受精力门槛限制；点名和离场应答跳过精力门闩。
+                if not record.leave_reply_trigger and not record.must_reply:
                     energy_state = self._get_energy_state(record.chat_id)
                     energy_before = energy_state.energy
                     energy_state = self._recover_energy_before_patrol(record.chat_id)
@@ -769,7 +770,7 @@ class DebounceManager:
                             record,
                             "process",
                             "mentioned",
-                            f"energy={energy_after_gate:.2f} recovered={recovered:.2f} rest=pass",
+                            "energy_check=skip",
                         )
                     else:
                         self._log_gate_decision(

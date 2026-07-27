@@ -623,7 +623,7 @@ class TestDebounceManagerBoundaries:
         )
 
     @pytest.mark.asyncio
-    async def test_mention_upgrades_current_patrol_but_respects_energy_gate(self):
+    async def test_mention_upgrades_current_patrol_but_ignores_energy_gate(self):
         dm = DebounceManager(make_config(secretary_debounce_time=0.10))
         dm.energy_states["g1"] = ChatEnergyState(
             energy=-100.0,
@@ -650,13 +650,36 @@ class TestDebounceManagerBoundaries:
 
         assert len(dm._secretary) == 1
         assert await ordinary_ticket == KILL
-        await asyncio.sleep(0.06)
-        assert not mention_ticket.done()
-        assert dm.has_secretary_debounce("g1")
-
-        dm.energy_states["g1"].energy = 1.0
         assert await asyncio.wait_for(mention_ticket, timeout=0.20) == PROCESS
+        assert dm.get_chat_energy("g1") == pytest.approx(-100.0)
         assert mention.extras["angelheart_must_reply"] is True
+        await dm.finish_secretary_dispatch(
+            "g1",
+            mention.extras["angelheart_secretary_dispatch_id"],
+            reason="test_done",
+        )
+
+    @pytest.mark.asyncio
+    async def test_point_wake_assistant_debounce_ignores_energy_gate(self):
+        dm = DebounceManager(make_config(assistant_debounce_time=0.05))
+        dm.energy_states["g1"] = ChatEnergyState(
+            energy=-100.0,
+            updated_at=time.time(),
+        )
+        mention = DummyEvent("mention")
+        mention_ticket = await dm.schedule(
+            chat_id="g1",
+            event=mention,
+            sender_id="b",
+            message_id="1",
+            is_wake=True,
+            is_present=True,
+        )
+
+        assert await asyncio.wait_for(mention_ticket, timeout=0.15) == PROCESS
+        assert dm.get_chat_energy("g1") == pytest.approx(-100.0)
+        assert mention.extras["angelheart_must_reply"] is True
+        assert mention.extras["angelheart_debounce_kind"] == "assistant"
         await dm.finish_secretary_dispatch(
             "g1",
             mention.extras["angelheart_secretary_dispatch_id"],
