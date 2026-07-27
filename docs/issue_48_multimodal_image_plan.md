@@ -1,4 +1,6 @@
-# Issue 48 多模态图片上下文修复计划
+# Issue 48 多模态图片上下文修复（已实施记录）
+
+> 状态：已实施。本文保留问题背景、边界、实现要点和验收结果；当前实现见 `roles/front_desk.py`，测试见 `tests/test_issue_48_multimodal_images.py`。
 
 ## 背景
 
@@ -9,12 +11,12 @@ Issue 48 的现象：
 - 开启 AngelHeart 后，当前轮最新图片没有进入最终 LLM 请求。
 - 到下一轮时，上一轮图片变成历史上下文，反而可能被模型看到。
 
-当前根因：
+历史根因：
 
 - AngelHeart 重写 `req.contexts` 和 `req.prompt`。
 - 当前事件对应的消息会从 `contexts` 中跳过，避免与 `req.prompt` 重复。
-- `_update_request()` 目前无条件执行 `req.image_urls = []`。
-- 因此当前事件的图片既不在 `contexts`，也不在 `req.image_urls`。
+- 旧版 `_update_request()` 无条件执行 `req.image_urls = []`。
+- 因此旧版当前事件的图片既不在 `contexts`，也不在 `req.image_urls`。
 
 ## 关键边界
 
@@ -29,7 +31,7 @@ Issue 48 的现象：
 
 - 当前轮图片不由 AngelHeart 转 base64。
 - 当前轮图片不塞进 `prompt`。
-- 当前轮图片继续保留在 AstrBot 原生 `req.image_urls` 中，由 AstrBot/provider 下游完成路径、`base64://` 或 data URL 的解析。
+- Provider 支持图片时，当前轮图片沿 AstrBot 原生 `req.image_urls` 链路传递；AngelHeart 会优先使用账本中对应的缓存图片路径，避免引用已失效的临时附件路径。
 
 不能破坏的其他场景：
 
@@ -69,10 +71,9 @@ image_caption_provider_id 非空
 
 期望行为：
 
-- 不把图片传给主模型。
-- 清空或过滤当前/历史图片输入。
-- AngelHeart 使用图片转述模型生成图片描述。
-- prompt 中可以保留 `[图片1]`，并附加对应转述文本。
+- 不把图片直传给主模型；主模型请求中的 `req.image_urls` 会被清空，历史上下文中的图片也会按 Provider 能力过滤。
+- `image_caption_provider_id` 供 `angel_describe_image` 按需图片理解工具使用，不会自动为每张图片生成描述。
+- `prompt` 可以保留 `[图片1]` 等文本锚点；只有主模型实际调用图片理解工具后，才会得到对应细节。
 
 ### 场景 C：主模型支持图片，AngelHeart 也配置了图片转述
 
@@ -90,7 +91,7 @@ image_caption_provider_id 非空
 - 不额外把当前事件图片塞进 prompt，也不把当前事件图片由 AngelHeart 转 base64 后传给主模型。
 - AngelHeart 图片转述配置只在主模型不支持图片时用于当前轮降级；历史图片仍由 ledger/context 逻辑管理。
 
-当前 issue 的核心规则是：主模型支持图片时，当前轮图片原样保留；主模型不支持图片时，才拔掉直传图片并按配置走转述。
+当前 issue 的核心规则是：主模型支持图片时，当前轮图片保留原生直传链路并使用可用的账本缓存路径；主模型不支持图片时，才清空直传图片。
 
 ### 场景 D：主模型不支持图片，AngelHeart 未配置图片转述
 
@@ -178,8 +179,7 @@ AngelHeart 自己需要处理的是进入 ledger 的历史消息。
   "sender_name": "小明",
   "source_message_id": "message-uuid-1",
   "timestamp": 1780000000.0,
-  "chat_id": "aiocqhttp:FriendMessage:123456",
-  "is_processed": false
+  "chat_id": "aiocqhttp:FriendMessage:123456"
 }
 ```
 
@@ -279,7 +279,7 @@ AngelHeart 重写后应类似：
 
 ```json
 {
-  "prompt": "[小明 (ID: 123456)]: 帮我看这两张 [图片1] [图片2]\n\n[图片1描述]: 一张白色猫咪趴在桌上的照片\n[图片2描述]: 一张黑色猫咪坐在窗边的照片",
+  "prompt": "[小明 (ID: 123456)]: 帮我看这两张 [图片1] [图片2]",
   "image_urls": [],
   "contexts": [
     {
@@ -290,40 +290,22 @@ AngelHeart 重写后应类似：
 }
 ```
 
-## 实现计划
+> 上例表示未调用 `angel_describe_image` 时的默认请求；主模型实际调用图片理解工具后，工具结果才会补充图片细节。
 
-1. 增加 provider 能力判断 helper。
-   - 输入：`chat_id`
-   - 输出：当前 provider 是否支持 `image`
+## 实现要点
 
-2. 增加当前轮 prompt 渲染 helper。
-   - 输入：`recent_dialogue`
-   - 输出：带 `[图片N]` 锚点的 prompt 文本
-   - 不处理 base64
-   - 不修改 ledger
+1. 已增加 Provider 图片能力判断：`modalities` 包含 `image`，或未声明/为空时，按兼容策略保留图片。
+2. 已增加当前轮 prompt 图片编号：输入 `recent_dialogue`，输出带跨消息递增 `[图片N]` 锚点的文本，不处理 base64，不修改 ledger。
+3. `_update_request()` 已按 Provider 能力处理当前轮图片：
+   - 不支持图片时清空 `req.image_urls`。
+   - 支持图片时使用当前消息对应的图片路径，并将阻塞聚合中的非当前图片追加到 `extra_user_content_parts`。
+4. 历史 contexts 继续由 `MessageProcessor` 构建；不支持图片的 Provider 会过滤历史图片。
+5. 已补充支持图片、能力未声明、多图编号、聚合图片和无 base64 prompt 等边界测试。
 
-3. 修改 `_update_request()`。
-   - 不再无条件清空 `req.image_urls`
-   - provider 不支持图片时清空当前图片
-   - provider 支持图片时，保留原始 `req.image_urls`
-   - 聚合消息中非当前消息的图片作为 `ImageURLPart` 追加到 `extra_user_content_parts`
+## 验收结果
 
-4. 保持历史 contexts 行为。
-   - 历史消息继续由 `MessageProcessor` 构建。
-   - provider 不支持图片时，继续由 `filter_images_for_provider()` 清理历史图片。
-
-5. 补测试。
-   - 支持图片：`req.image_urls` 保留。
-   - 支持图片 + 已配置 AngelHeart 转述：不强制调用当前轮图片转述。
-   - 不支持图片 + 有 AngelHeart 转述：`req.image_urls` 清空。
-   - 单消息多图编号。
-   - 阻塞聚合多消息多图编号。
-   - prompt 不包含 base64。
-
-## 验收标准
-
-- issue 48 场景下，当前轮最新图片进入最终 LLM 请求。
-- 当前轮图片由 AstrBot 原生 `req.image_urls` 链路处理，不由 AngelHeart 转 base64。
-- 主模型不支持图片时，不传图片给主模型。
-- AngelHeart 图片转述场景不被破坏。
+- Issue 48 场景下，当前轮最新图片会进入最终 LLM 请求。
+- 当前轮图片沿 AstrBot 原生 `req.image_urls` 链路处理，不由 AngelHeart 转 base64。
+- 主模型不支持图片时，不会把图片传给主模型。
+- 已配置图片理解模型时，主模型可通过 `angel_describe_image` 按需获取图片细节，不强制自动转述。
 - 多图和阻塞聚合时，`[图片N]` 顺序稳定且和图片输入顺序一致。

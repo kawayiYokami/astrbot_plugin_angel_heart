@@ -50,7 +50,7 @@
 -   **设计意图**: **专门用于承载与 `prompt` 文本紧密相关的、属于“当前消息”的图片**。
 -   **关键行为**:
     -   **上游自动填充**: 在插件钩子被调用前，框架已从当前 `event` 中解析出图片，并将其 URL 填充到此列表中。
-    -   **插件可覆盖**: 插件可以自由地修改此列表，例如通过 `req.image_urls = []` 将其清空（当图片信息已在 `contexts` 中处理时），或替换为其他图片 `req.image_urls = ["http://new-image.com/a.jpg"]`。
+    -   **按 Provider 能力处理**: 支持 `image` 时保留当前轮图片并沿原生链路传递；不支持 `image` 时才清空，避免把当前图片误删。
     -   在最终的组装流程中，它会与 `prompt` 一起被转换成一个多模态的 `content` 数组。
 
 ---
@@ -69,12 +69,19 @@
 #### 阶段 2：插件介入与修改
 
 -   插件的钩子函数被调用，接收到这个**已经填充好的 `req` 对象**。
--   插件根据自身逻辑，对 `req` 进行**修改**。例如，执行“最佳实践”中的操作：
+-   插件根据自身逻辑，对 `req` 进行**修改**。图片处理不能一概而论，应先判断当前 Provider 的 `modalities`：
+    -   支持 `image`：当前轮图片继续走 AstrBot 原生 `req.image_urls` 链路，避免同时复制到 `contexts`。
+    -   不支持 `image`：清空 `req.image_urls`，并按应用需要过滤或转换上下文中的图片。
+    -   未声明或为空：遵循 AstrBot 的兼容策略，不主动过滤图片。
+
     ```python
-    # 在钩子函数内部
-    req.contexts = build_my_custom_history() # 用插件的精确历史覆盖原生历史
-    req.prompt = "这是我的指令"               # 用纯指令覆盖当前消息文本
-    req.image_urls = []                      # 清空当前图片，因其已在 contexts 中处理
+    # 在钩子函数内部，按 Provider 能力选择图片处理方式
+    req.contexts = build_my_custom_history()
+    req.prompt = "这是我的指令"
+    if provider_supports_images:
+        req.image_urls = current_image_urls
+    else:
+        req.image_urls = []
     ```
 
 #### 阶段 3：Provider 最终组装 (`_prepare_chat_payload`)
@@ -82,7 +89,7 @@
 -   修改后的 `req` 对象继续在框架中传递，最终到达具体的 Provider（如 `ProviderOpenAIOfficial`）。
 -   Provider 的 `_prepare_chat_payload` 方法开始执行最终的组装。
 -   **组装“当前消息” (`new_record`)**：
-    -   它处理**修改后**的 `req.prompt` 和 `req.image_urls`。在我们的最佳实践下，`image_urls` 为空，所以 `new_record` 是一个简单的纯文本消息：
+    -   它处理**修改后**的 `req.prompt` 和 `req.image_urls`。如果当前 Provider 支持图片，`new_record` 会包含文本和原生图片；如果不支持图片，则只保留文本：
         ```json
         { "role": "user", "content": "这是我的指令" }
         ```
@@ -95,33 +102,32 @@
 
 ## 5. 最佳实践与推荐方案
 
-基于对“预填充与修改”模型的理解，解决“上下文混乱”和“图片处理不精确”问题的最佳实践如下：
+基于对“预填充与修改”模型的理解，解决“上下文混乱”和“图片处理不精确”问题时，应遵循以下边界：
 
 1.  **完全控制 `contexts`**：
-    -   在 `@filter.on_llm_request` 钩子中，用插件自己管理的、结构精确的历史记录**覆盖** `req.contexts`。
-    -   这意味着你需要一个函数，能将你自己的 `ConversationLedger` 中的数据，转换为符合 OpenAI `messages` 格式的字典列表。
+    -   在 `@filter.on_llm_request` 钩子中，用插件自己管理的、结构精确的历史记录覆盖 `req.contexts`。
+    -   这意味着你需要一个函数，能将自己的 `ConversationLedger` 数据转换为符合 Provider 要求的消息列表。
 
-2.  **分离指令与数据**：
-    -   将当前用户的输入（包括文本和图片）视为历史的一部分，并将其处理进 `req.contexts` 的最后一条记录中。
-    -   用一个**纯粹的、不包含用户输入的指令性文本**覆盖 `req.prompt`，例如：“根据以上对话历史进行总结”。
-    -   **清空** `req.image_urls` (`req.image_urls = []`)，因为所有图片都应在 `req.contexts` 中被统一管理。
+2.  **当前消息与历史消息分离**：
+    -   当前用户的文本可重建到 `req.prompt`；当前轮图片不要在支持原生图片的 Provider 下重复放进 `contexts`。
+    -   Provider 支持图片时保留 `req.image_urls`；Provider 不支持图片时清空它，并在必要时对历史图片做过滤或文本化处理。
+    -   `modalities` 未声明或为空时，不要仅凭缺少能力声明就主动清理图片。
 
 **示例代码片段（在钩子函数中）：**
 ```python
 # req 是已经由上游填充好的 ProviderRequest 对象
 
-# 1. 从插件 Ledger 构建包含完整历史（含当前消息图片）的 new_contexts
-#    这是你需要实现的核心逻辑
-new_contexts = build_my_structured_history_from_ledger()
+# 1. 从插件 Ledger 构建精确历史；不要把当前轮图片重复放入 contexts
+req.contexts = build_structured_history_from_ledger()
 
-# 2. 完全覆盖原生 contexts
-req.contexts = new_contexts
-
-# 3. 注入纯指令到 prompt
+# 2. 重建当前轮文本
 req.prompt = "任务指令：请根据以上完整的对话历史，分析用户的情绪并给出回应。"
 
-# 4. 确保 image_urls 为空，因为所有图片都已在 new_contexts 中处理
-req.image_urls = []
+# 3. 按当前 Provider 能力处理图片
+if provider_supports_images:
+    req.image_urls = original_current_image_urls
+else:
+    req.image_urls = []
 ```
 
-遵循这一模式，您可以构建出既能精确控制历史上下文（包括多模态内容），又能充分利用 AstrBot 框架的“预填充”便利性，从而实现健壮且可维护的插件。
+不要在未确认 Provider 图片能力时一律清空 `req.image_urls`；这会丢失当前轮图片。

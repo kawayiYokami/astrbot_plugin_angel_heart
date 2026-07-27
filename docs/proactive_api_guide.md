@@ -55,13 +55,15 @@ async def delayed_reply_example(chat_id: str):
 ### 4. 定时触发主动应答
 
 ```python
-import time
+import datetime
 
 async def scheduled_reply_example(chat_id: str):
-    """在指定时间触发主动应答"""
-    # 明天上午9点
-    tomorrow_9am = time.time() + 24 * 3600 + 9 * 3600
-    
+    """在明天上午9点触发主动应答（使用本地时间）"""
+    now = datetime.datetime.now()
+    tomorrow_9am = (now + datetime.timedelta(days=1)).replace(
+        hour=9, minute=0, second=0, microsecond=0
+    ).timestamp()
+
     success = await proactive_manager.trigger_scheduled(
         chat_id=chat_id,
         strategy="定时问候",
