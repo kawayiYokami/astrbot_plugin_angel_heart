@@ -268,7 +268,7 @@ class ReportSummarizerPlugin(star.Star):
 
 一个常见的误区是试图使用 `@filter.on_event_message_type` 钩子来修改提示词。**这是一个错误的做法，它会导致数据库污染！**
 
-### 5.1 为什么是错误的？
+## 6.1 为什么是错误的？
 
 `@filter.on_event_message_type` 位于事件处理流水线的**极早期阶段 (`PreProcessStage`)**。在这个阶段，您修改的是 `AstrMessageEvent` 事件对象本身，相当于直接重写了用户的原始输入。
 
@@ -288,7 +288,7 @@ graph TD
 
 从上图可以看出，由于修改发生得太早，后续所有阶段（包括最终的保存阶段）都将这个被修改过的内容视为“用户的原始输入”，从而导致错误的数据被持久化。
 
-### 5.2 何时应该使用它？
+## 6.2 何时应该使用它？
 
 `@filter.on_event_message_type` 的设计初衷是用于**消息重写 (Message Rewriting)** 或**命令昵称**。例如，您可以用它来将用户的特定暗号或简称（如“查天气”）转换为一个标准的、可被其他插件识别的指令。
 

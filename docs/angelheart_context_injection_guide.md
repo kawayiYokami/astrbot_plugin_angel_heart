@@ -4,7 +4,7 @@
 
 AngelHeart 插件实现了一种智能的上下文注入机制，通过在 AstrBot 事件流中注入结构化的对话上下文，帮助其他插件更好地理解和响应用户交互。
 
-AngelHeart 通过分析对话历史、决策是否回复以及搜索需求等信息，将这些上下文数据以 JSON 字符串的形式注入到 `AstrMessageEvent` 对象的 `angelheart_context` 属性中，供下游插件使用。
+AngelHeart 通过分析对话历史和秘书是否回复的决策，将这些上下文数据以 JSON 字符串的形式注入到 `AstrMessageEvent` 对象的 `angelheart_context` 属性中，供下游插件使用。
 
 ## 上下文数据结构
 
@@ -42,7 +42,7 @@ AngelHeart 通过分析对话历史、决策是否回复以及搜索需求等信
 }
 ```
 
-> 注：`needs_search` 已过时，不再注入；下游请勿依赖该字段。
+AngelHeart 上下文注入的 JSON 只包含聊天记录和秘书决策；下游应以实际返回结构为准，不要假设存在未声明的额外字段。
 
 ## 完整上下文示例
 
@@ -175,20 +175,20 @@ async def conditional_prompt_enhancement(self, event: AstrMessageEvent, request:
         return
 
     decision = context.get('secretary_decision', {})
-    persona_name = decision.get('persona_name', '')
+    reply_strategy = decision.get('reply_strategy', '')
 
-    if persona_name:
-        # 添加人格信息到系统提示
-        personality_prompt = f"你现在扮演 {persona_name} 的角色。"
+    if reply_strategy:
+        # 根据实际存在的秘书决策字段添加提示
+        strategy_prompt = f"本轮建议回复策略：{reply_strategy}。"
         if request.system_prompt:
-            request.system_prompt += f"\n{personality_prompt}"
+            request.system_prompt += f"\n{strategy_prompt}"
         else:
-            request.system_prompt = personality_prompt
+            request.system_prompt = strategy_prompt
 ```
 
-### 示例2：搜索需求处理
+### 示例2：基于关键词添加搜索提示
 
-在需要搜索时添加搜索工具调用：
+在检测到关键词线索时添加搜索提示：
 
 ```python
 @on_llm_request()
@@ -199,17 +199,17 @@ async def handle_search_requirement(self, event: AstrMessageEvent, request: Prov
     if not context:
         return
 
-        decision = context.get('secretary_decision', {})
+    decision = context.get('secretary_decision', {})
 
     if decision.get('keywords'):
-        # 添加搜索相关的系统指令
+        # 关键词只表示秘书提取的主题线索，不代表系统一定需要搜索
         search_instruction = "如果需要查找信息，请使用可用的搜索工具。"
         if request.system_prompt:
             request.system_prompt += f"\n{search_instruction}"
         else:
             request.system_prompt = search_instruction
 
-        logger.info("检测到搜索需求，已添加搜索指令")
+        logger.info("检测到关键词线索，已添加搜索提示")
 ```
 
 ### 示例3：上下文感知的回复过滤
