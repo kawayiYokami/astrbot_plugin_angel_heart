@@ -21,6 +21,10 @@ class AstrMessageEvent:
     pass
 
 
+class FunctionTool:
+    pass
+
+
 class At:
     pass
 
@@ -61,6 +65,7 @@ class ImageURLPart:
 
 
 astrbot_api_event_module.AstrMessageEvent = AstrMessageEvent
+astrbot_api_module.FunctionTool = FunctionTool
 astrbot_components_module.At = At
 astrbot_components_module.File = File
 astrbot_components_module.Image = Image
