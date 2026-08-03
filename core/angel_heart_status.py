@@ -291,7 +291,7 @@ class StatusChecker:
         )
 
     def _detect_wake_word(self, message_content: str) -> bool:
-        """检测正文中是否包含点名昵称。"""
+        """检测正文中是否包含点名昵称（大小写不敏感）。"""
         if not self._alias_detection_enabled():
             return False
 
@@ -299,7 +299,8 @@ class StatusChecker:
         if not aliases or not message_content:
             return False
 
-        return any(alias in message_content for alias in aliases)
+        normalized = message_content.casefold()
+        return any(alias.casefold() in normalized for alias in aliases)
 
     def get_leave_reply_trigger(self, chat_id: str) -> str:
         """返回当前离场消息应触发的一次性回复类型；无触发时返回空字符串。"""

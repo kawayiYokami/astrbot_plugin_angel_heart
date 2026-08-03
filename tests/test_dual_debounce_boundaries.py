@@ -1075,6 +1075,14 @@ class TestEventWakeDetection:
         e = DummyEvent("w1", message_str="草王在吗")
         assert self.checker.is_event_wake(e) is True
 
+    def test_wake_by_alias_case_insensitive(self):
+        config = make_config(wake_reply_overrides={"alias": "AngelHeart|草王"})
+        checker = StatusChecker(config, MagicMock(silenced_until={}))
+        e = DummyEvent("w1", message_str="angelheart 在吗")
+        assert checker.is_event_wake(e) is True
+        e = DummyEvent("w1", message_str="aNgElHeArT 帮我看下")
+        assert checker.is_event_wake(e) is True
+
     def test_non_wake_normal_text(self):
         e = DummyEvent("w2", message_str="今天天气不错")
         assert self.checker.is_event_wake(e) is False
