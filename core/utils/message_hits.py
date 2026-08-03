@@ -84,7 +84,7 @@ def build_message_hits(
     hits: List[Dict[str, str]] = []
     if is_at_self:
         hits.append({"type": "at_self"})
-    for phrase in match_phrases(body_text, alias_phrases, casefold=False):
+    for phrase in match_phrases(body_text, alias_phrases, casefold=True):
         hits.append({"type": "alias", "phrase": phrase})
     for phrase in match_phrases(body_text, focus_phrases, casefold=True):
         hits.append({"type": "focus", "phrase": phrase})
