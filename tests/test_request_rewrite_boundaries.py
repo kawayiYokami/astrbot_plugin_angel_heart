@@ -215,8 +215,8 @@ def test_group_rewrite_keeps_assistant_history_in_contexts_and_only_current_mess
     assert temporary_contexts[1]["sender_id"] == "angelheart-reply-length"
     assert "已有其他工作" in temporary_contexts[0]["content"][0]["text"]
     assert "第三条当前消息" not in temporary_contexts[0]["content"][0]["text"]
-    assert "【硬性长度约束】整段回复必须不超过 20 字。" in temporary_contexts[1]["content"][0]["text"]
-    assert "只给结论，不要铺垫、解释、列点或补问。超字数视为失败。" in temporary_contexts[1]["content"][0]["text"]
+    assert "回复尽量简短，通常一两句话、20 字左右即可说清。" in temporary_contexts[1]["content"][0]["text"]
+    assert "不要正反面讲解，直接给出你认为的最佳结论，不需要推理过程。" in temporary_contexts[1]["content"][0]["text"]
     assert temporary_contexts[1]["angelheart_focus"] is False
     assert req.system_prompt == "BASE SYSTEM"
 
@@ -257,8 +257,8 @@ def test_group_rewrite_uses_focus_reply_length_when_focus_instruction_hits():
         if message.get("sender_id") == "angelheart-reply-length"
     )
     assert length_context["angelheart_focus"] is True
-    assert "【硬性长度约束】请认真回答，但整段回复必须不超过 200 字。" in length_context["content"][0]["text"]
-    assert "先结论，后必要依据；不要注水、不要重复。超字数视为失败。" in length_context["content"][0]["text"]
+    assert "请认真回答：先给结论，再给必要依据，长度以 200 字左右为宜。" in length_context["content"][0]["text"]
+    assert "如果是分析的，不要正反面讲解，直接给出你认为的最佳结论，只给出必要的关键推理。" in length_context["content"][0]["text"]
 
 
 def test_private_rewrite_does_not_inject_reply_length_reminder():
@@ -302,8 +302,8 @@ def test_private_rewrite_does_not_inject_reply_length_reminder():
     assert all(
         message.get("sender_id") != "angelheart-reply-length" for message in req.contexts
     )
-    assert "【硬性长度约束】" not in req.prompt
-    assert "整段回复必须不超过" not in req.prompt
+    assert "回复尽量简短" not in req.prompt
+    assert "长度以" not in req.prompt
 
 
 def test_group_rewrite_replaces_current_astrbot_image_attachment_path_with_ledger_cache_path():
