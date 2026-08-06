@@ -763,8 +763,6 @@ body,
 }
 
 .content-inner {
-  max-width: 920px;
-  margin: 0 auto;
   padding: 20px 28px;
 }
 
