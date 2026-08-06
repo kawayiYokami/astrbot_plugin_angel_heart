@@ -95,6 +95,12 @@ class FrontDesk:
         # 唤醒判定复用 StatusChecker
         self.status_checker = StatusChecker(config_manager, angel_context)
 
+        # 来源登记（见过的人群/私聊，供 WebUI 认群）；由 main.py 注入
+        self.chat_sources = None
+
+        # 最近决策存储（每群最近一条，供 WebUI 状态栏）；由 main.py 注入
+        self.last_decisions = None
+
         # secretary 引用将由 main.py 设置
         self.secretary = None
 
@@ -358,9 +364,11 @@ class FrontDesk:
 
         metadata = build_message_metadata(
             body_text=body_text,
-            alias_phrases=parse_pipe_phrases(getattr(self.config_manager, "alias", "")),
+            alias_phrases=parse_pipe_phrases(
+                getattr(self.config_manager.for_chat(chat_id), "alias", "")
+            ),
             focus_phrases=parse_space_phrases(
-                getattr(self.config_manager, "focus_instructions", "")
+                getattr(self.config_manager.for_chat(chat_id), "focus_instructions", "")
             ),
             is_at_self=is_at_self,
         )
@@ -393,6 +401,36 @@ class FrontDesk:
         # 6. 将消息添加到 Ledger。上下文清理由压缩策略统一控制，不再因离场状态触发。
         self.context.conversation_ledger.add_message(chat_id, new_message)
 
+        # 7. 登记来源（供 WebUI 认群）：群聊取群名，私聊取发送者昵称，均为上游同步字段。
+        self._record_chat_source(chat_id, event)
+
+    def _record_chat_source(self, chat_id: str, event) -> None:
+        """登记来源显示名，供绑定页认群。
+
+        显示名全部取上游同步字段，不走异步 API：
+        - 群聊：event.message_obj.group.group_name（aiocqhttp 已从 OneBot 事件填入）
+        - 私聊：event.message_obj.sender.nickname
+        """
+        store = self.chat_sources
+        if store is None:
+            return
+        try:
+            message_obj = getattr(event, "message_obj", None)
+            display_name = ""
+            kind = "unknown"
+            group = getattr(message_obj, "group", None) if message_obj else None
+            if group is not None and getattr(group, "group_id", None):
+                kind = "group"
+                display_name = str(getattr(group, "group_name", "") or "")
+            else:
+                sender = getattr(message_obj, "sender", None) if message_obj else None
+                if sender is not None and getattr(sender, "user_id", None):
+                    kind = "private"
+                    display_name = str(getattr(sender, "nickname", "") or "")
+            store.record(chat_id, display_name, kind)
+        except Exception as e:
+            logger.debug(f"AngelHeart[{chat_id}]: 来源登记失败: {e}")
+
     async def handle_event(self, event: AstrMessageEvent):
         """
         处理新消息事件 - 集成4状态机制重构版
@@ -416,8 +454,9 @@ class FrontDesk:
             # 2. 闭嘴状态检查
             muted = chat_id in self.context.silenced_until and current_time < self.context.silenced_until[chat_id]
             unmuted_now = False
+            cm = self.config_manager.for_chat(chat_id)
             if muted:
-                speak_words_str = self.config_manager.speak_words
+                speak_words_str = cm.speak_words
                 if speak_words_str:
                     speak_words = [
                         word.strip() for word in speak_words_str.split("|") if word.strip()
@@ -444,14 +483,14 @@ class FrontDesk:
 
             # 3. 掌嘴词检测
             if not unmuted_now:
-                slap_words_str = self.config_manager.slap_words
+                slap_words_str = cm.slap_words
                 if slap_words_str:
                     slap_words = [
                         word.strip() for word in slap_words_str.split("|") if word.strip()
                     ]
                     for word in slap_words:
                         if word in message_content:
-                            silence_duration = self.config_manager.silence_duration
+                            silence_duration = cm.silence_duration
                             self.context.silenced_until[chat_id] = (
                                 current_time + silence_duration
                             )
@@ -471,7 +510,7 @@ class FrontDesk:
                 logger.debug(
                     f"AngelHeart[{chat_id}]: 事件未命中额外聊天唤醒前缀，已缓存但跳过秘书分析。"
                 )
-                if self.config_manager.block_unapproved_wake_non_command:
+                if cm.block_unapproved_wake_non_command:
                     logger.debug(
                         f"AngelHeart[{chat_id}]: 已启用未批准非命令消息阻断，停止后续主 LLM 处理。"
                     )
@@ -511,12 +550,15 @@ class FrontDesk:
 
         is_wake = self.status_checker.is_event_wake(event)
         is_present = self.context.is_present(chat_id)
+        cm = self.config_manager.for_chat(chat_id)
+        # 入场门槛：开启「仅点名入场」时只有点名消息能进场；关闭时任何消息都进场处理
+        can_enter = is_wake or not cm.enter_on_mention_only
         leave_reply_trigger = ""
-        if not is_wake and not is_present:
+        if not can_enter and not is_present:
             leave_reply_trigger = self.status_checker.get_leave_reply_trigger(chat_id)
 
-        # 离场唤醒：先标记进场，再进入助理防抖
-        if is_wake and not is_present:
+        # 离场进场：先标记进场，再进入助理防抖
+        if can_enter and not is_present:
             # 入场整理：收口离场历史（规则整理，不主动 LLM 摘要）
             # 与补种二选一：做过入场整理后，激活路径禁止再补种
             try:
@@ -713,7 +755,7 @@ class FrontDesk:
                 )
                 return
 
-            timeout = self.config_manager.observation_timeout
+            timeout = self.config_manager.for_chat(chat_id).observation_timeout
             if current_time - status_start_time >= timeout:
                 logger.info(
                     f"AngelHeart[{chat_id}]: 在场超时({timeout}秒)，转为离场"
@@ -781,6 +823,7 @@ class FrontDesk:
                     f"AngelHeart[{chat_id}]: 秘书决策 action=reply "
                     f"reason={decision.reply_strategy or '未说明'}"
                 )
+                self._record_last_decision(chat_id, True, decision.reply_strategy)
                 await self._execute_secretary_decision(decision, event, chat_id)
                 return
 
@@ -789,14 +832,16 @@ class FrontDesk:
                     f"AngelHeart[{chat_id}]: 秘书决策 action=no_reply "
                     f"reason={decision.reply_strategy or '未说明'}"
                 )
+                self._record_last_decision(chat_id, False, decision.reply_strategy)
             else:
                 logger.warning(
                     f"AngelHeart[{chat_id}]: 秘书决策 action=no_decision reason=analysis_failed"
                 )
+                self._record_last_decision(chat_id, False, "分析失败")
 
             if (
                 event.is_at_or_wake_command
-                and self.context.config_manager.block_unapproved_wake_non_command
+                and self.context.config_manager.for_chat(chat_id).block_unapproved_wake_non_command
             ):
                 logger.debug(
                     f"AngelHeart[{chat_id}]: 上游唤醒聊天事件未获批准，已停止后续主 LLM 处理。"
@@ -851,6 +896,15 @@ class FrontDesk:
                 reason="secretary_error",
             )
             event.stop_event()
+
+    def _record_last_decision(self, chat_id: str, should_reply: bool, summary: str) -> None:
+        """记录该群最近一次秘书决策（供 WebUI 状态栏）；store 未注入或失败只 debug 不打断。"""
+        if self.last_decisions is None:
+            return
+        try:
+            self.last_decisions.record(chat_id, should_reply, summary)
+        except Exception as e:
+            logger.debug(f"AngelHeart[{chat_id}]: 记录最近决策失败: {e}")
 
     async def _execute_secretary_decision(
         self, decision, event: AstrMessageEvent, chat_id: str
@@ -923,13 +977,13 @@ class FrontDesk:
                     event.set_extra("angelheart_assistant_invoked", True)
                 await self.context.debounce_manager.start_assistant_rest(
                     chat_id,
-                    self.config_manager.waiting_time,
+                    self.config_manager.for_chat(chat_id).waiting_time,
                     reason="assistant_invoked",
                 )
             except Exception as e:
                 logger.warning(f"AngelHeart[{chat_id}]: 启动助理休息失败: {e}")
 
-            if not self._config_manager.debug_mode:
+            if not self.config_manager.for_chat(chat_id).debug_mode:
                 event.is_at_or_wake_command = True
                 logger.debug(f"AngelHeart[{chat_id}]: 已设置唤醒主脑标志")
                 # 秘书判断结束即释放单飞；助理生成/发送不再占用。
@@ -1588,7 +1642,7 @@ class FrontDesk:
                 return body_text
         return convert_content_to_string(message.get("content", ""))
 
-    def _message_has_focus_hit(self, message: Dict[str, Any] | None) -> bool:
+    def _message_has_focus_hit(self, message: Dict[str, Any] | None, chat_id: str = "") -> bool:
         """读取入库时写好的焦点命中。"""
         if not isinstance(message, dict):
             return False
@@ -1598,7 +1652,7 @@ class FrontDesk:
         # 兼容旧消息：只回退到 body_text / 纯 content，不再扫昵称字段
         text = self._extract_message_plain_text(message)
         phrases = self._parse_space_separated_phrases(
-            getattr(self.config_manager, "focus_instructions", "")
+            getattr(self.config_manager.for_chat(chat_id), "focus_instructions", "")
         )
         if not text or not phrases:
             return False
@@ -1621,10 +1675,11 @@ class FrontDesk:
                 return True
         return False
 
-    def _build_reply_length_reminder(self, focus: bool) -> str:
+    def _build_reply_length_reminder(self, focus: bool, chat_id: str = "") -> str:
         """构建常规/焦点字数系统提醒。"""
-        normal_limit = int(getattr(self.config_manager, "normal_reply_max_chars", 20) or 20)
-        focus_limit = int(getattr(self.config_manager, "focus_reply_max_chars", 200) or 200)
+        cm = self.config_manager.for_chat(chat_id)
+        normal_limit = int(getattr(cm, "normal_reply_max_chars", 20) or 20)
+        focus_limit = int(getattr(cm, "focus_reply_max_chars", 200) or 200)
         normal_limit = max(1, normal_limit)
         focus_limit = max(normal_limit, focus_limit)
         if focus:
@@ -1657,11 +1712,11 @@ class FrontDesk:
                 continue
             if str(message.get("role", "") or "").lower() == "assistant":
                 continue
-            if self._message_has_focus_hit(message):
+            if self._message_has_focus_hit(message, chat_id):
                 focus = True
                 break
 
-        reminder = self._build_reply_length_reminder(focus)
+        reminder = self._build_reply_length_reminder(focus, chat_id)
         return {
             "role": "user",
             "content": [
@@ -1936,7 +1991,7 @@ class FrontDesk:
         """
         logger.debug(f"AngelHeart[{chat_id}]: 开始重构LLM请求体...")
 
-        alias = self.config_manager.alias
+        alias = self.config_manager.for_chat(chat_id).alias
         current_message_id = self._get_event_message_id(event)
         should_mark_processed = False
         scene_hint = None

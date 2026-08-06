@@ -119,18 +119,19 @@ class LLMAnalyzer:
             self.is_ready = False
             logger.error(f"AngelHeart分析器: Prompt模板重新加载时发生错误: {e}")
 
-    def _parse_response(self, response_text: str, alias: str) -> SecretaryDecision:
+    def _parse_response(self, response_text: str, alias: str, chat_id: str = "") -> SecretaryDecision:
         """
         解析AI模型的响应文本并返回SecretaryDecision对象
 
         Args:
             response_text (str): AI模型的响应文本
             alias (str): AI的昵称
+            chat_id (str): 会话ID，用于按群解析配置
 
         Returns:
             SecretaryDecision: 解析后的决策对象
         """
-        return self._parse_and_validate_decision(response_text, alias)
+        return self._parse_and_validate_decision(response_text, alias, chat_id)
 
     async def _call_ai_model(self, prompt: str, chat_id: str) -> str:
         """
@@ -190,13 +191,14 @@ class LLMAnalyzer:
         historical_context: List[Dict],
         recent_dialogue: List[Dict],
         work_ledger_text: str = "",
+        chat_id: str = "",
     ) -> str:
         """
         使用给定的对话历史构建分析提示词
         """
         # 分别格式化历史上下文和最近对话，并添加 XML 包裹
-        historical_body = self._format_conversation_history(historical_context)
-        recent_body = self._format_conversation_history(recent_dialogue)
+        historical_body = self._format_conversation_history(historical_context, chat_id)
+        recent_body = self._format_conversation_history(recent_dialogue, chat_id)
 
         historical_text = f"<已回应消息>\n{historical_body}\n</已回应消息>" if historical_body else " "
         recent_text = f"<未回应消息>\n{recent_body}\n</未回应消息>" if recent_body else " "
@@ -207,18 +209,22 @@ class LLMAnalyzer:
                 "AngelHeart分析器: 格式化后的对话历史为空，将生成一个空的分析提示词。"
             )
 
+        # 按群聊解析配置（未绑定模板时回退全局配置）
+        cm = self.config_manager.for_chat(chat_id) if self.config_manager else None
+
         # 获取配置中的昵称
-        alias = self.config_manager.alias if self.config_manager else "AngelHeart"
+        alias = cm.alias if cm else "AngelHeart"
 
         # 使用直接的字符串替换来构建提示词，规避.format()方法对特殊字符的解析问题
         base_prompt = self.base_prompt_template
         base_prompt = base_prompt.replace("{historical_context}", historical_text)
         base_prompt = base_prompt.replace("{recent_dialogue}", recent_text)
-        base_prompt = base_prompt.replace("{reply_strategy_guide}", self.strategy_guide)
+        base_prompt = base_prompt.replace(
+            "{reply_strategy_guide}", cm.reply_strategy_guide if cm else ""
+        )
         base_prompt = base_prompt.replace("{alias}", alias)
         base_prompt = base_prompt.replace(
-            "{ai_self_identity}",
-            self.config_manager.ai_self_identity if self.config_manager else "",
+            "{ai_self_identity}", cm.ai_self_identity if cm else ""
         )
 
         # 动态追加工作账本（第三人称）
@@ -243,7 +249,8 @@ class LLMAnalyzer:
         分析对话历史，做出结构化的决策 (JSON)
         """
         # 获取昵称
-        alias = self.config_manager.alias if self.config_manager else "AngelHeart"
+        cm = self.config_manager.for_chat(chat_id) if self.config_manager else None
+        alias = cm.alias if cm else "AngelHeart"
 
         if not self.analyzer_model_name:
             logger.debug("AngelHeart分析器: 分析模型未配置, 跳过分析。")
@@ -265,7 +272,10 @@ class LLMAnalyzer:
         # 1. 调用轻量级AI进行分析
         logger.debug("AngelHeart分析器: 准备调用轻量级AI进行分析...")
         prompt = self._build_prompt(
-            historical_context, recent_dialogue, work_ledger_text=work_ledger_text
+            historical_context,
+            recent_dialogue,
+            work_ledger_text=work_ledger_text,
+            chat_id=chat_id,
         )
 
         # 2. 增强检查：如果生成的提示词为空，则记录警告日志并返回一个明确的决策
@@ -284,7 +294,7 @@ class LLMAnalyzer:
         try:
             response_text = await self._call_ai_model(prompt, chat_id)
             # 调用新方法解析和验证响应，并传递 alias
-            return self._parse_response(response_text, alias)
+            return self._parse_response(response_text, alias, chat_id)
         except (json.JSONDecodeError, KeyError) as e:
             logger.warning(
                 f"AngelHeart分析器: AI返回的JSON格式或内容有误: {e}. 原始响应: {response_text[:200]}..."
@@ -305,7 +315,7 @@ class LLMAnalyzer:
         )
 
     def _parse_and_validate_decision(
-        self, response_text: str, alias: str
+        self, response_text: str, alias: str, chat_id: str = ""
     ) -> SecretaryDecision:
         """解析并验证来自AI的响应文本，构建SecretaryDecision对象"""
 
@@ -455,10 +465,11 @@ class LLMAnalyzer:
 
         # 正向条件：必须有正当理由才能回复
         if decision.should_reply and self.config_manager:
+            cm = self.config_manager.for_chat(chat_id) if chat_id else None
             has_reason = (
                 decision.is_questioned
                 or decision.is_interesting
-                or self.config_manager.reply_even_not_questioned
+                or bool(cm.reply_even_not_questioned if cm else False)
             )
             if not has_reason:
                 logger.info(
@@ -469,7 +480,7 @@ class LLMAnalyzer:
 
         return decision
 
-    def _format_conversation_history(self, conversations: List[Dict]) -> str:
+    def _format_conversation_history(self, conversations: List[Dict], chat_id: str = "") -> str:
         """
         格式化对话历史，生成统一的日志式格式。
 
@@ -505,7 +516,8 @@ class LLMAnalyzer:
                 continue  # 跳过分隔符本身，不添加到最终输出
 
             # 使用公共的工具函数格式化消息，确保使用统一的 XML 格式
-            alias = self.config_manager.alias if self.config_manager else "AngelHeart"
+            cm = self.config_manager.for_chat(chat_id) if self.config_manager and chat_id else self.config_manager
+            alias = cm.alias if cm else "AngelHeart"
             formatted_message = format_message_for_llm(conv, alias)
             lines.append(formatted_message)
 

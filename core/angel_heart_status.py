@@ -202,16 +202,16 @@ class StatusChecker:
             latest_user_message = self._get_latest_user_message(chat_id)
             if not latest_user_message:
                 return False
-            return self._message_has_alias_hit(latest_user_message)
+            return self._message_has_alias_hit(latest_user_message, chat_id)
         except Exception as e:
             logger.debug(f"AngelHeart[{chat_id}]: 检查被点名状态失败: {e}")
             return False
 
-    def _message_has_alias_hit(self, message: Dict) -> bool:
+    def _message_has_alias_hit(self, message: Dict, chat_id: str) -> bool:
         """读取消息 metadata 中的 alias 命中；旧消息回退到 body_text。"""
         if not isinstance(message, dict):
             return False
-        if not self._alias_detection_enabled():
+        if not self._alias_detection_enabled(chat_id):
             return False
         metadata = message.get("metadata")
         if isinstance(metadata, dict) and "hits" in metadata:
@@ -221,7 +221,7 @@ class StatusChecker:
             body_text = str(metadata.get("body_text", "") or "")
         if not body_text:
             body_text = self._extract_message_content(message)
-        return self._detect_wake_word(body_text)
+        return self._detect_wake_word(body_text, chat_id)
 
     def is_event_wake(self, event) -> bool:
         """判断当前事件本身是否为点名。
@@ -244,7 +244,7 @@ class StatusChecker:
             if isinstance(metadata, dict) and "hits" in metadata:
                 if metadata_has_hit(metadata, "at_self"):
                     return True
-                if self._alias_detection_enabled() and metadata_has_hit(metadata, "alias"):
+                if self._alias_detection_enabled(chat_id) and metadata_has_hit(metadata, "alias"):
                     return True
                 return False
 
@@ -272,7 +272,7 @@ class StatusChecker:
                     body_text = extract_plain_body_from_components(event.get_messages() or [])
                 except Exception:
                     body_text = ""
-            return self._detect_wake_word(body_text)
+            return self._detect_wake_word(body_text, chat_id)
         except Exception as e:
             logger.debug(f"AngelHeart: 当前事件点名判定失败: {e}")
             return False
@@ -283,19 +283,21 @@ class StatusChecker:
         silenced_until = self.angel_context.silenced_until.get(chat_id, 0)
         return current_time < silenced_until
 
-    def _alias_detection_enabled(self) -> bool:
+    def _alias_detection_enabled(self, chat_id: str) -> bool:
         """点名昵称检测是否启用。"""
+        cm = self.config_manager.for_chat(chat_id)
         return bool(
-            self.config_manager.analysis_on_mention_only
-            or self.config_manager.force_reply_when_summoned
+            cm.enter_on_mention_only
+            or cm.force_reply_when_summoned
         )
 
-    def _detect_wake_word(self, message_content: str) -> bool:
+    def _detect_wake_word(self, message_content: str, chat_id: str) -> bool:
         """检测正文中是否包含点名昵称（大小写不敏感）。"""
-        if not self._alias_detection_enabled():
+        if not self._alias_detection_enabled(chat_id):
             return False
 
-        aliases = parse_pipe_phrases(self.config_manager.alias)
+        cm = self.config_manager.for_chat(chat_id)
+        aliases = parse_pipe_phrases(cm.alias)
         if not aliases or not message_content:
             return False
 
@@ -307,13 +309,14 @@ class StatusChecker:
         try:
             if self.angel_context.is_leave_reply_in_cooldown(chat_id):
                 return ""
+            cm = self.config_manager.for_chat(chat_id)
             if (
-                self.config_manager.leave_echo_reply
+                cm.leave_echo_reply
                 and self._detect_echo_chamber(chat_id)
             ):
                 return "echo_chamber"
             if (
-                self.config_manager.leave_dense_reply
+                cm.leave_dense_reply
                 and self._detect_dense_conversation(chat_id)
             ):
                 return "dense_conversation"
@@ -337,9 +340,10 @@ class StatusChecker:
                 return False
 
             # 统计窗口内每个纯文字内容的出现次数
-            threshold = self.config_manager.echo_detection_threshold
+            cm = self.config_manager.for_chat(chat_id)
+            threshold = cm.echo_detection_threshold
             content_count = {}  # content -> count
-            window = self.config_manager.echo_detection_window
+            window = cm.echo_detection_window
             cutoff_time = time.time() - window
 
             for msg in all_messages:
@@ -407,10 +411,11 @@ class StatusChecker:
             )
 
             # 获取配置参数
-            window = self.config_manager.dense_conversation_window
+            cm = self.config_manager.for_chat(chat_id)
+            window = cm.dense_conversation_window
             cutoff_time = time.time() - window
-            message_threshold = self.config_manager.dense_conversation_threshold
-            participant_threshold = self.config_manager.min_participant_count
+            message_threshold = cm.dense_conversation_threshold
+            participant_threshold = cm.min_participant_count
 
             # 统计时间窗口内的消息
             message_count = 0

@@ -398,6 +398,15 @@ class ConversationLedger:
         with self._lock:
             return ledger["messages"].copy()  # 返回副本避免外部修改
 
+    def get_all_chat_ids(self) -> List[str]:
+        """返回已知会话 ID 列表（有消息记录或摘要的会话）。"""
+        with self._lock:
+            return [
+                chat_id
+                for chat_id, ledger in self._ledgers.items()
+                if ledger.get("messages") or ledger.get("current_summary")
+            ]
+
     def set_messages(self, chat_id: str, messages: List[Dict]):
         """
         设置指定会话的消息列表。

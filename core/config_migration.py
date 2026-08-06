@@ -18,7 +18,6 @@ _PLUGIN_DIR_NAME = "astrbot_plugin_angel_heart"
 _MIGRATION_MAP = {
     # timing
     "waiting_time": ("timing", "waiting_time"),
-    "no_reply_cooldown": ("timing", "no_reply_cooldown"),
     "observation_timeout": ("timing", "observation_timeout"),
     # leave_reply
     "leave_echo_reply": ("leave_reply", "leave_echo_reply"),
@@ -30,7 +29,6 @@ _MIGRATION_MAP = {
     "min_participant_count": ("leave_reply", "min_participant_count"),
     "familiarity_cooldown_duration": ("leave_reply", "familiarity_cooldown_duration"),
     # wake_interaction
-    "analysis_on_mention_only": ("wake_interaction", "analysis_on_mention_only"),
     "force_reply_when_summoned": ("wake_interaction", "force_reply_when_summoned"),
     "block_unapproved_wake_non_command": ("wake_interaction", "block_unapproved_wake_non_command"),
     "alias": ("wake_interaction", "alias"),
@@ -63,14 +61,22 @@ _DEPRECATED_FLAT_KEYS = {
     "tool_decoration_enabled",
     "tool_decoration_cooldown",
     "tool_decorations",
+    "no_reply_cooldown",
+    # 旧分析机制字段：被 enter_on_mention_only（入场机制）完全替代，直接废弃不迁移
+    "analysis_on_mention_only",
 }
 
 _DEPRECATED_GROUPED_KEYS = {
     "timing": {
         "llm_timeout",
+        "no_reply_cooldown",
     },
     "leave_reply": {
         "familiarity_timeout",
+    },
+    "wake_interaction": {
+        # 旧分析机制字段：被 enter_on_mention_only（入场机制）完全替代，直接废弃不迁移
+        "analysis_on_mention_only",
     },
     "comfort": {
         "patience_interval",
@@ -137,7 +143,11 @@ def run_migration():
         and any(sub_key in config[group_name] for sub_key in sub_keys)
         for group_name, sub_keys in _DEPRECATED_GROUPED_KEYS.items()
     )
-    if not needs_migration and not has_deprecated_keys and not has_deprecated_grouped_keys:
+    if (
+        not needs_migration
+        and not has_deprecated_keys
+        and not has_deprecated_grouped_keys
+    ):
         return
 
     # 执行迁移

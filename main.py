@@ -10,6 +10,7 @@ AngelHeart插件 - 天使心智能群聊/私聊交互插件
 
 import time
 import json
+import os
 from typing import Any
 
 from astrbot.api.star import Star, Context, register
@@ -38,6 +39,7 @@ from .core.utils.message_utils import (
     serialize_agent_run_message,
 )
 from .core.angel_heart_context import AngelHeartContext
+from .core.chat_profile import ChatProfileStore
 from .core.runtime_task_tracker import RuntimeTaskTracker, track_runtime_handler
 from .tools.image_understanding import AngelDescribeImageTool
 
@@ -45,7 +47,20 @@ from .tools.image_understanding import AngelDescribeImageTool
 run_migration()
 
 
-@register("astrbot_plugin_angel_heart", "kawayiYokami", "天使心秘书，让astrbot拥有极其聪明，有分寸的群聊介入，和极其完备的群聊上下文管理", "0.8.11", "https://github.com/kawayiYokami/astrbot_plugin_angel_heart")
+def _plugin_version() -> str:
+    """从 metadata.yaml 读取版本号，避免与 @register 双处维护。"""
+    try:
+        meta_path = os.path.join(os.path.dirname(__file__), "metadata.yaml")
+        with open(meta_path, encoding="utf-8") as f:
+            for line in f:
+                if line.startswith("version:"):
+                    return line.split(":", 1)[1].strip()
+    except (OSError, ValueError):
+        pass
+    return "0.0.0"
+
+
+@register("astrbot_plugin_angel_heart", "kawayiYokami", "天使心秘书，让astrbot拥有极其聪明，有分寸的群聊介入，和极其完备的群聊上下文管理", _plugin_version(), "https://github.com/kawayiYokami/astrbot_plugin_angel_heart")
 class AngelHeartPlugin(Star):
     """AngelHeart插件 - 专注的智能回复员"""
 
@@ -58,6 +73,18 @@ class AngelHeartPlugin(Star):
 
         # -- 获取插件数据目录 --
         plugin_data_dir = StarTools.get_data_dir("astrbot_plugin_angel_heart")
+
+        # -- 群聊独立配置模板存储 --
+        self.profile_store = ChatProfileStore(plugin_data_dir)
+        self.config_manager.attach_profile_store(self.profile_store)
+
+        # -- 来源登记（见过的人群/私聊，供 WebUI 认群）--
+        from .core.chat_sources import ChatSourcesStore
+        self.chat_sources = ChatSourcesStore(plugin_data_dir)
+
+        # -- 每群最近一次秘书决策（供 WebUI 状态栏）--
+        from .core.last_decisions import LastDecisionStore
+        self.last_decisions = LastDecisionStore(plugin_data_dir)
 
         # -- 创建 AngelHeartContext 全局上下文（包含 ConversationLedger）--
         self.angel_context = AngelHeartContext(self.config_manager, self.context, plugin_data_dir)
@@ -75,9 +102,28 @@ class AngelHeartPlugin(Star):
             self.config_manager, self.context, self.angel_context
         )
         self.front_desk = FrontDesk(self.config_manager, self.angel_context)
+        self.front_desk.chat_sources = self.chat_sources
+        self.front_desk.last_decisions = self.last_decisions
 
         # 建立必要的相互引用
         self.front_desk.secretary = self.secretary
+
+        # -- 注册 WebUI API 路由（群聊独立配置管理页）--
+        try:
+            from .web_api import register_all_routes
+            register_all_routes(
+                self.context,
+                self.profile_store,
+                self.config_manager,
+                self.angel_context.conversation_ledger,
+                self.chat_sources,
+                self.angel_context.status_transition_manager,
+                self.angel_context.debounce_manager,
+                self.last_decisions,
+            )
+            logger.info("AngelHeart: 已注册群聊配置 WebUI API 路由")
+        except Exception as e:  # pragma: no cover - 兼容旧版 AstrBot
+            logger.warning(f"AngelHeart: WebUI API 路由注册失败（不影响核心功能）: {e}")
 
         logger.info("💖 AngelHeart智能回复员初始化完成 (事件扣押机制 V2 已启用)")
 
@@ -221,6 +267,8 @@ class AngelHeartPlugin(Star):
     def reload_config(self, new_config: dict):
         """重新加载配置"""
         self.config_manager = ConfigManager(new_config or {})
+        # 群聊独立配置模板存储保持同一实例，重新挂载
+        self.config_manager.attach_profile_store(self.profile_store)
         # 更新角色与调度器的配置管理器
         self.secretary.config_manager = self.config_manager
         self.front_desk.config_manager = self.config_manager
