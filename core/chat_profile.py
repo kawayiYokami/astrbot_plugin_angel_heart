@@ -266,6 +266,12 @@ class ChatProfileStore:
         parts = str(chat_id or "").split(":")
         return parts[-1] if parts else ""
 
+    @staticmethod
+    def _is_private_origin(chat_id: str) -> bool:
+        """判断完整 origin 是否私聊类型（FriendMessage/PrivateMessage 等）。"""
+        raw = str(chat_id or "")
+        return ":FriendMessage:" in raw or ":PrivateMessage:" in raw
+
     def _resolve_key(self, chat_id: str) -> str:
         """按绑定 key 匹配，支持双向：完整 origin 与纯群号互查。
 
@@ -273,14 +279,22 @@ class ChatProfileStore:
         1. 查询 key 本身就是绑定 key
         2. 查询 key 的后缀（纯群号）是绑定 key
         3. 遍历绑定 key，其后缀等于查询 key 或查询 key 的后缀
+
+        私聊与群聊绑定隔离：私聊查询只做精确匹配；群聊查询的后缀匹配
+        跳过私聊类型的绑定 key。纯群号绑定来自群聊白名单（AstrBot 配置只有群号），
+        同号码私聊不得复用群聊模板，反之亦然。
         """
         raw = str(chat_id or "")
         if raw in self._bindings:
+            return raw
+        if self._is_private_origin(raw):
             return raw
         suffix = self._suffix_key(raw)
         if suffix and suffix in self._bindings:
             return suffix
         for bound in self._bindings:
+            if self._is_private_origin(bound):
+                continue
             if self._suffix_key(bound) == raw or (
                 suffix and self._suffix_key(bound) == suffix
             ):

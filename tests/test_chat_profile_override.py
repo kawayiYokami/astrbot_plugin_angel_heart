@@ -143,6 +143,33 @@ def test_suffix_match_does_not_cross_match_other_group(manager, store):
     assert view.waiting_time == 30.0  # 未绑定，回退全局
 
 
+def test_private_origin_does_not_match_plain_group_binding(manager, store):
+    """私聊查询不得复用同号码的纯群号绑定（白名单群号只服务群聊）。"""
+    manager.attach_profile_store(store)
+    store.create_template("t", config={"timing": {"waiting_time": 5.0}})
+    tpl = store.list_templates()[0]
+    # 白名单来源：纯群号绑定
+    store.set_binding("830624502", tpl["id"])
+
+    # 群聊查询命中
+    assert manager.for_chat("default:GroupMessage:830624502").waiting_time == 5.0
+    # 同号码私聊查询不命中，回退全局
+    assert manager.for_chat("default:FriendMessage:830624502").waiting_time == 30.0
+    assert store.get_binding("default:FriendMessage:830624502") == ""
+
+
+def test_private_origin_exact_binding_still_works(manager, store):
+    """私聊完整 origin 精确绑定后，私聊查询命中；同号群聊不受影响。"""
+    manager.attach_profile_store(store)
+    store.create_template("t", config={"timing": {"waiting_time": 5.0}})
+    tpl = store.list_templates()[0]
+    store.set_binding("default:FriendMessage:289104862", tpl["id"])
+
+    assert manager.for_chat("default:FriendMessage:289104862").waiting_time == 5.0
+    # 同号群聊没有绑定，回退全局
+    assert manager.for_chat("default:GroupMessage:289104862").waiting_time == 30.0
+
+
 def test_for_chat_empty_id_logs_warning_and_falls_back_to_global(manager, caplog, monkeypatch):
     """空 chat_id 属于无 ID 读取异常路径：记 warning 暴露漏传，但只回退全局不抛异常。"""
     import logging
