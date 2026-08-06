@@ -65,6 +65,19 @@ from astrbot_plugin_angel_heart.core.angel_heart_status import (
 from astrbot_plugin_angel_heart.models.analysis_result import SecretaryDecision
 
 
+class FakeClock:
+    """可推进的假时钟，注入 WorkLedger(time_func=...) 构造超时状态。"""
+
+    def __init__(self, now: float = 1000.0):
+        self.now = now
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
 class DummyEvent:
     def __init__(self, name: str, message_str: str = "hello", chat_id: str = "group:1"):
         self.name = name
@@ -948,6 +961,48 @@ class TestDebounceManagerBoundaries:
 
         work_ledger.complete_work("g1", "work-a", status="done", result_summary="已回复")
         assert await asyncio.wait_for(ticket, timeout=0.20) == PROCESS
+        await dm.finish_secretary_dispatch(
+            "g1",
+            event.extras["angelheart_secretary_dispatch_id"],
+            reason="test_done",
+        )
+
+    @pytest.mark.asyncio
+    async def test_orphan_running_work_expires_and_patrol_passes(self):
+        """孤儿 running（complete_work 永不触发）超时后自动失效，巡检放行不再死锁。
+
+        钉死 issue #64：主脑失败/流式回复漏收口时，running 工作残留会导致
+        assistant_busy 门闩无限重试；超时兜底应让其自愈。
+        """
+        clock = FakeClock(1000.0)
+        work_ledger = WorkLedger(running_timeout=0.05, time_func=clock)
+        dm = DebounceManager(
+            make_config(assistant_debounce_time=0.05, secretary_debounce_time=0.10),
+            work_ledger=work_ledger,
+        )
+        # 孤儿工作：登记后从未 complete_work
+        work_ledger.start_work(
+            chat_id="g1",
+            work_id="orphan",
+            trigger_message_id="1",
+            trigger_summary="孤儿工作",
+            kind="assistant",
+        )
+        # 模拟长时间未收口
+        clock.advance(100)
+
+        event = DummyEvent("patrol-after-orphan-expired")
+        ticket = await dm.schedule(
+            chat_id="g1",
+            event=event,
+            sender_id="b",
+            message_id="2",
+            is_wake=False,
+            is_present=True,
+        )
+        # 巡检到期：孤儿已超时失效，门闩不再阻断，正常放行进入秘书
+        assert await asyncio.wait_for(ticket, timeout=0.30) == PROCESS
+        assert dm.has_secretary_dispatch("g1") is True
         await dm.finish_secretary_dispatch(
             "g1",
             event.extras["angelheart_secretary_dispatch_id"],

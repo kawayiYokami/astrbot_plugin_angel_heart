@@ -13,9 +13,13 @@
 
 from __future__ import annotations
 
+import logging
+import threading
 import time
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -45,11 +49,25 @@ class WorkItem:
 
 
 class WorkLedger:
-    """按会话维护工作账本。"""
+    """按会话维护工作账本。
 
-    def __init__(self, retain_finished: int = 8):
+    同步方法（无 await）全部在可重入锁内执行，保证多任务并发下
+    _items 与 WorkItem 状态的读写原子性。
+    """
+
+    def __init__(
+        self,
+        retain_finished: int = 8,
+        running_timeout: float = 300.0,
+        time_func: Optional[Callable[[], float]] = None,
+    ):
         self._items: Dict[str, Dict[str, WorkItem]] = {}
         self.retain_finished = max(1, int(retain_finished))
+        # running 超时自动失效：防止 complete_work 漏触发（如流式回复/主脑失败）
+        # 导致孤儿 running 永久阻断 assistant_busy 门闩。<=0 表示不启用。
+        self.running_timeout = float(running_timeout)
+        self._lock = threading.RLock()
+        self._time = time_func or time.time
 
     def start_work(
         self,
@@ -69,11 +87,45 @@ class WorkLedger:
             trigger_summary=(trigger_summary or "").strip() or "未命名工作",
             status="running",
             kind=str(kind or ""),
+            started_at=self._time(),
         )
-        bucket = self._items.setdefault(chat_id, {})
-        bucket[work_id] = item
-        self._trim(chat_id)
+        with self._lock:
+            bucket = self._items.setdefault(chat_id, {})
+            # 同群互斥兜底：新工作开始即关闭该 chat 的旧 running，
+            # 避免并发放行残留的 running 继续阻断秘书巡检。
+            now = self._time()
+            for old in bucket.values():
+                if old.status == "running":
+                    old.status = "failed"
+                    old.result_summary = "被新工作替换"
+                    old.ended_at = now
+                    logger.debug(
+                        f"AngelHeart[{chat_id}]: 关闭旧 running 工作 "
+                        f"work_id={old.work_id} 原因=被新工作替换 "
+                        f"新工作={work_id} running_timeout={self.running_timeout:.0f}s"
+                    )
+            bucket[work_id] = item
+            self._trim(chat_id)
         return item
+
+    def _expire_stale_running(self, bucket: Dict[str, WorkItem]) -> None:
+        """把超时未收口的 running 工作惰性标记为 failed。"""
+        if self.running_timeout <= 0:
+            return
+        now = self._time()
+        for item in bucket.values():
+            if (
+                item.status == "running"
+                and (now - item.started_at) >= self.running_timeout
+            ):
+                item.status = "failed"
+                item.result_summary = "运行超时自动关闭"
+                item.ended_at = now
+                logger.debug(
+                    f"AngelHeart[{item.chat_id}]: 关闭孤儿 running 工作 "
+                    f"work_id={item.work_id} 原因=运行超时自动关闭 "
+                    f"running_timeout={self.running_timeout:.0f}s"
+                )
 
     def complete_work(
         self,
@@ -85,25 +137,30 @@ class WorkLedger:
     ) -> Optional[WorkItem]:
         chat_id = str(chat_id or "")
         work_id = str(work_id or "")
-        bucket = self._items.get(chat_id) or {}
-        item = bucket.get(work_id)
-        if not item:
-            return None
-        item.status = status if status in ("done", "failed", "running") else "done"
-        item.result_summary = (result_summary or "").strip()
-        item.ended_at = time.time()
-        self._trim(chat_id)
+        with self._lock:
+            bucket = self._items.get(chat_id) or {}
+            item = bucket.get(work_id)
+            if not item:
+                return None
+            item.status = status if status in ("done", "failed", "running") else "done"
+            item.result_summary = (result_summary or "").strip()
+            item.ended_at = self._time()
+            self._trim(chat_id)
         return item
 
     def get_active_works(self, chat_id: str) -> List[WorkItem]:
-        bucket = self._items.get(str(chat_id or "")) or {}
-        return [w for w in bucket.values() if w.status == "running"]
+        with self._lock:
+            bucket = self._items.get(str(chat_id or "")) or {}
+            self._expire_stale_running(bucket)
+            return [w for w in bucket.values() if w.status == "running"]
 
     def get_recent_works(self, chat_id: str, limit: int = 8) -> List[WorkItem]:
-        bucket = self._items.get(str(chat_id or "")) or {}
-        items = list(bucket.values())
-        items.sort(key=lambda w: w.started_at, reverse=True)
-        return items[: max(1, int(limit))]
+        with self._lock:
+            bucket = self._items.get(str(chat_id or "")) or {}
+            self._expire_stale_running(bucket)
+            items = list(bucket.values())
+            items.sort(key=lambda w: w.started_at, reverse=True)
+            return items[: max(1, int(limit))]
 
     def format_for_secretary(self, chat_id: str, current_work_id: str = "") -> str:
         """第三人称：给秘书。
@@ -185,10 +242,12 @@ class WorkLedger:
         return "\n".join(lines)
 
     def clear_chat(self, chat_id: str) -> None:
-        self._items.pop(str(chat_id or ""), None)
+        with self._lock:
+            self._items.pop(str(chat_id or ""), None)
 
     def clear(self) -> None:
-        self._items.clear()
+        with self._lock:
+            self._items.clear()
 
     def _trim(self, chat_id: str) -> None:
         bucket = self._items.get(chat_id) or {}
