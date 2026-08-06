@@ -181,6 +181,29 @@ async def test_validation_errors(api_app):
 
 
 @pytest.mark.asyncio
+async def test_update_profile_rejects_non_dict_config(api_app):
+    """update_profile 传非 dict 的 config 应拒绝，避免存坏数据。"""
+    client = api_app.test_client()
+    resp = await client.post(
+        "/api/plug/astrbot_plugin_angel_heart/profiles/create",
+        json={"name": "tpl", "from_global": True},
+    )
+    tpl_id = (await resp.get_json())["data"]["id"]
+
+    resp = await client.post(
+        "/api/plug/astrbot_plugin_angel_heart/profiles/update",
+        json={"id": tpl_id, "config": "not-a-dict"},
+    )
+    data = await resp.get_json()
+    assert data["status"] == "error"
+
+    # 模板配置未被污染
+    resp = await client.get("/api/plug/astrbot_plugin_angel_heart/profiles")
+    templates = (await resp.get_json())["data"]["templates"]
+    assert isinstance(templates[0]["config"], dict)
+
+
+@pytest.mark.asyncio
 async def test_chat_status_merges_runtime_state(tmp_path):
     """chat_status 合并状态/能量/巡检/最近决策/绑定；依赖缺失时优雅降级。"""
     from quart import Quart

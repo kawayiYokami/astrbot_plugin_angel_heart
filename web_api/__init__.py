@@ -127,7 +127,10 @@ class ProfileAPI:
         if "description" in payload:
             patch["description"] = str(payload.get("description") or "").strip()
         if "config" in payload:
-            patch["config"] = payload.get("config")
+            cfg = payload.get("config")
+            if not isinstance(cfg, dict):
+                return _err("config 必须是 JSON 对象")
+            patch["config"] = cfg
         if not patch:
             return _err("没有可更新的字段")
         template = self.profile_store.update_template(template_id, patch)
