@@ -37,6 +37,8 @@ class ChatSourcesStore:
                     data = json.load(f)
             except (json.JSONDecodeError, OSError, TypeError):
                 data = {}
+        if not isinstance(data, dict):
+            data = {}
         sources = data.get("sources", {})
         if isinstance(sources, dict):
             self._sources = {

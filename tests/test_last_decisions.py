@@ -62,3 +62,13 @@ def test_corrupted_file_falls_back_empty(tmp_path):
     with open(os.path.join(str(tmp_path), STORE_FILE_NAME), "r", encoding="utf-8") as f:
         data = json.load(f)
     assert data["decisions"]["default:GroupMessage:10001"]["should_reply"] is True
+
+
+def test_array_root_file_falls_back_empty(tmp_path):
+    """JSON 内容为合法数组（非 dict 根节点）时不能崩溃，按空存储恢复。"""
+    with open(os.path.join(str(tmp_path), STORE_FILE_NAME), "w", encoding="utf-8") as f:
+        f.write("[]")
+    store = LastDecisionStore(str(tmp_path))
+    assert store.list() == []
+    store.record("default:GroupMessage:10001", False, "继续观察")
+    assert store.get("default:GroupMessage:10001")["should_reply"] is False

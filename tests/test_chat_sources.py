@@ -86,11 +86,21 @@ def test_corrupted_file_falls_back_empty(tmp_path):
     assert store.list_sources() == []
 
 
+def test_array_root_file_falls_back_empty(tmp_path):
+    """JSON 内容为合法数组（非 dict 根节点）时不能崩溃，按空存储恢复。"""
+    file_path = os.path.join(str(tmp_path), STORE_FILE_NAME)
+    with open(file_path, "w", encoding="utf-8") as f:
+        f.write("[]")
+    store = ChatSourcesStore(str(tmp_path))
+    assert store.list_sources() == []
+    store.record("g1", "群1", "group")
+    assert store.list_sources()[0]["chat_id"] == "g1"
+
+
 def test_file_format(tmp_path):
     store = ChatSourcesStore(str(tmp_path))
     store.record("g1", "群1", "group")
-    data = json.loads(
-        open(os.path.join(str(tmp_path), STORE_FILE_NAME), encoding="utf-8").read()
-    )
+    with open(os.path.join(str(tmp_path), STORE_FILE_NAME), encoding="utf-8") as f:
+        data = json.load(f)
     assert data["version"] == 1
     assert "g1" in data["sources"]

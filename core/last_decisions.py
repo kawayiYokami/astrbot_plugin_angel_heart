@@ -35,6 +35,8 @@ class LastDecisionStore:
                     data = json.load(f)
             except (json.JSONDecodeError, OSError, TypeError):
                 data = {}
+        if not isinstance(data, dict):
+            data = {}
         decisions = data.get("decisions", {})
         if isinstance(decisions, dict):
             self._decisions = {
