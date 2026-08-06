@@ -78,42 +78,51 @@ class DebounceManager:
         self._version_seq += 1
         return self._version_seq
 
-    def _assistant_delay(self) -> float:
-        return max(0.05, float(getattr(self.config_manager, "assistant_debounce_time", 1.0)))
+    def _assistant_delay(self, chat_id: str) -> float:
+        cm = self.config_manager.for_chat(chat_id)
+        return max(0.05, float(getattr(cm, "assistant_debounce_time", 1.0)))
 
-    def _secretary_delay(self) -> float:
-        return max(0.05, float(getattr(self.config_manager, "secretary_debounce_time", self.config_manager.waiting_time)))
+    def _secretary_delay(self, chat_id: str) -> float:
+        cm = self.config_manager.for_chat(chat_id)
+        return max(0.05, float(getattr(cm, "secretary_debounce_time", cm.waiting_time)))
 
-    def _accelerate_delay(self) -> float:
-        return max(0.05, float(getattr(self.config_manager, "accelerate_debounce_time", 1.0)))
+    def _accelerate_delay(self, chat_id: str) -> float:
+        cm = self.config_manager.for_chat(chat_id)
+        return max(0.05, float(getattr(cm, "accelerate_debounce_time", 1.0)))
 
-    def _initial_energy(self) -> float:
-        return float(getattr(self.config_manager, "initial_energy", INITIAL_ENERGY))
+    def _initial_energy(self, chat_id: str) -> float:
+        cm = self.config_manager.for_chat(chat_id)
+        return float(getattr(cm, "initial_energy", INITIAL_ENERGY))
 
-    def _maximum_energy(self) -> float:
-        return float(getattr(self.config_manager, "max_energy", MAXIMUM_ENERGY))
+    def _maximum_energy(self, chat_id: str) -> float:
+        cm = self.config_manager.for_chat(chat_id)
+        return float(getattr(cm, "max_energy", MAXIMUM_ENERGY))
 
-    def _minimum_energy(self) -> float:
-        return float(getattr(self.config_manager, "min_energy", MINIMUM_ENERGY))
+    def _minimum_energy(self, chat_id: str) -> float:
+        cm = self.config_manager.for_chat(chat_id)
+        return float(getattr(cm, "min_energy", MINIMUM_ENERGY))
 
-    def _energy_recovery_per_second(self) -> float:
+    def _energy_recovery_per_second(self, chat_id: str) -> float:
+        cm = self.config_manager.for_chat(chat_id)
         return float(
             getattr(
-                self.config_manager,
+                cm,
                 "recovery_per_second",
                 ENERGY_RECOVERY_PER_SECOND,
             )
         )
 
-    def _base_reply_energy_cost(self) -> float:
+    def _base_reply_energy_cost(self, chat_id: str) -> float:
+        cm = self.config_manager.for_chat(chat_id)
         return float(
-            getattr(self.config_manager, "base_reply_cost", BASE_REPLY_ENERGY_COST)
+            getattr(cm, "base_reply_cost", BASE_REPLY_ENERGY_COST)
         )
 
-    def _reply_energy_cost_per_character(self) -> float:
+    def _reply_energy_cost_per_character(self, chat_id: str) -> float:
+        cm = self.config_manager.for_chat(chat_id)
         return float(
             getattr(
-                self.config_manager,
+                cm,
                 "reply_cost_per_character",
                 ENERGY_COST_PER_CHARACTER,
             )
@@ -123,7 +132,7 @@ class DebounceManager:
         chat_id = str(chat_id or "")
         state = self.energy_states.get(chat_id)
         if state is None:
-            state = ChatEnergyState(energy=self._initial_energy())
+            state = ChatEnergyState(energy=self._initial_energy(chat_id))
             self.energy_states[chat_id] = state
         return state
 
@@ -133,8 +142,8 @@ class DebounceManager:
         now = time.time()
         elapsed = max(0.0, now - state.updated_at)
         state.energy = min(
-            self._maximum_energy(),
-            state.energy + elapsed * self._energy_recovery_per_second(),
+            self._maximum_energy(chat_id),
+            state.energy + elapsed * self._energy_recovery_per_second(chat_id),
         )
         state.updated_at = now
         return state
@@ -174,14 +183,14 @@ class DebounceManager:
             return False
 
         character_count = self._effective_character_count(message_chain)
-        cost = self._base_reply_energy_cost() + character_count * self._reply_energy_cost_per_character()
+        cost = self._base_reply_energy_cost(chat_id) + character_count * self._reply_energy_cost_per_character(chat_id)
         async with self._lock:
             try:
                 if event.get_extra("angelheart_energy_charged", False):
                     return False
                 state = self._get_energy_state(chat_id)
                 energy_before = state.energy
-                state.energy = max(self._minimum_energy(), state.energy - cost)
+                state.energy = max(self._minimum_energy(chat_id), state.energy - cost)
                 energy_after = state.energy
                 state.updated_at = time.time()
                 event.set_extra("angelheart_energy_charged", True)
@@ -250,6 +259,46 @@ class DebounceManager:
         """
         return str(chat_id or "") in self._secretary_dispatching
 
+    async def patrol_snapshot(self, chat_id: str) -> Dict[str, Any]:
+        """返回该会话当前的巡检/等待快照，供 WebUI 状态栏展示。
+
+        返回：
+        {
+            "waiting": "secretary" | "assistant" | "rest" | "",
+            "remaining": 剩余秒数,
+            "total": 本轮等待总秒数,
+        }
+        优先级：秘书防抖 > 点名防抖 > 助理休息。
+        """
+        chat_id = str(chat_id or "")
+        now = time.time()
+        async with self._lock:
+            record = self._secretary.get(chat_id)
+            if record is not None:
+                remaining = max(0.0, record.created_at + record.delay - now)
+                return {
+                    "waiting": "secretary",
+                    "remaining": round(remaining, 1),
+                    "total": round(float(record.delay), 1),
+                }
+            assistant_keys = [key for key in self._assistant if key[0] == chat_id]
+            if assistant_keys:
+                record = self._assistant[assistant_keys[-1]]
+                remaining = max(0.0, record.created_at + record.delay - now)
+                return {
+                    "waiting": "assistant",
+                    "remaining": round(remaining, 1),
+                    "total": round(float(record.delay), 1),
+                }
+            rest_remaining = self._remaining_assistant_rest(chat_id)
+            if rest_remaining > 0:
+                return {
+                    "waiting": "rest",
+                    "remaining": round(rest_remaining, 1),
+                    "total": round(rest_remaining, 1),
+                }
+            return {"waiting": "", "remaining": 0.0, "total": 0.0}
+
     def _remaining_assistant_rest(self, chat_id: str) -> float:
         """读取助理休息剩余时间；仅在 _lock 内调用。"""
         chat_id = str(chat_id or "")
@@ -285,7 +334,7 @@ class DebounceManager:
             record.kind = "secretary"
             self._secretary[record.chat_id] = record
 
-        record.delay = self._secretary_delay()
+        record.delay = self._secretary_delay(record.chat_id)
         record.created_at = time.time()
         record.timer = asyncio.create_task(self._timer_handler(record))
         label = self._record_label(record.kind)
@@ -426,7 +475,7 @@ class DebounceManager:
                 sender_id=sender_id,
                 message_id=message_id,
                 kind="assistant",
-                delay=self._accelerate_delay(),
+                delay=self._accelerate_delay(chat_id),
                 must_reply=True,
                 keep_start=True,
                 reason="assistant_wake_accelerate",
@@ -443,7 +492,7 @@ class DebounceManager:
                 sender_id=sender_id,
                 message_id=message_id,
                 kind="secretary",
-                delay=self._accelerate_delay(),
+                delay=self._accelerate_delay(chat_id),
                 must_reply=True,
                 keep_start=True,
                 reason="secretary_wake_accelerate",
@@ -458,7 +507,7 @@ class DebounceManager:
             sender_id=sender_id,
             message_id=message_id,
             kind="assistant",
-            delay=self._assistant_delay(),
+            delay=self._assistant_delay(chat_id),
             must_reply=True,
             reason="assistant_wake_create",
         )
@@ -486,7 +535,7 @@ class DebounceManager:
                 sender_id=sender_id,
                 message_id=message_id,
                 kind="assistant",
-                delay=self._assistant_delay(),
+                delay=self._assistant_delay(chat_id),
                 must_reply=existing_assistant.must_reply,
                 keep_start=True,
                 reason="assistant_boundary_update",
@@ -517,7 +566,7 @@ class DebounceManager:
                     sender_id=sender_id,
                     message_id=message_id,
                     kind="secretary",
-                    delay=self._secretary_delay(),
+                    delay=self._secretary_delay(chat_id),
                     must_reply=True,
                     keep_start=True,
                     reason="leave_reply_boundary_update",
@@ -532,7 +581,7 @@ class DebounceManager:
                 sender_id=sender_id,
                 message_id=message_id,
                 kind="secretary",
-                delay=self._secretary_delay(),
+                delay=self._secretary_delay(chat_id),
                 must_reply=True,
                 reason="leave_reply_create",
                 leave_reply_trigger=leave_reply_trigger,
@@ -549,7 +598,7 @@ class DebounceManager:
                 sender_id=sender_id,
                 message_id=message_id,
                 kind="secretary",
-                delay=self._secretary_delay(),
+                delay=self._secretary_delay(chat_id),
                 must_reply=existing_secretary.must_reply,
                 keep_start=True,
                 reason="secretary_boundary_update",
@@ -572,7 +621,7 @@ class DebounceManager:
             sender_id=sender_id,
             message_id=message_id,
             kind="secretary",
-            delay=self._secretary_delay(),
+            delay=self._secretary_delay(chat_id),
             must_reply=False,
             reason="secretary_create",
         )

@@ -18,7 +18,6 @@ _PLUGIN_DIR_NAME = "astrbot_plugin_angel_heart"
 _MIGRATION_MAP = {
     # timing
     "waiting_time": ("timing", "waiting_time"),
-    "no_reply_cooldown": ("timing", "no_reply_cooldown"),
     "observation_timeout": ("timing", "observation_timeout"),
     # leave_reply
     "leave_echo_reply": ("leave_reply", "leave_echo_reply"),
@@ -30,7 +29,7 @@ _MIGRATION_MAP = {
     "min_participant_count": ("leave_reply", "min_participant_count"),
     "familiarity_cooldown_duration": ("leave_reply", "familiarity_cooldown_duration"),
     # wake_interaction
-    "analysis_on_mention_only": ("wake_interaction", "analysis_on_mention_only"),
+    "analysis_on_mention_only": ("wake_interaction", "enter_on_mention_only"),
     "force_reply_when_summoned": ("wake_interaction", "force_reply_when_summoned"),
     "block_unapproved_wake_non_command": ("wake_interaction", "block_unapproved_wake_non_command"),
     "alias": ("wake_interaction", "alias"),
@@ -63,11 +62,13 @@ _DEPRECATED_FLAT_KEYS = {
     "tool_decoration_enabled",
     "tool_decoration_cooldown",
     "tool_decorations",
+    "no_reply_cooldown",
 }
 
 _DEPRECATED_GROUPED_KEYS = {
     "timing": {
         "llm_timeout",
+        "no_reply_cooldown",
     },
     "leave_reply": {
         "familiarity_timeout",

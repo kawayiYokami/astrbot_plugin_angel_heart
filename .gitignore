@@ -19,3 +19,9 @@ config.local.yaml
 .claude/
 !.claude/skills/
 !.claude/commands/
+
+# WebUI
+webui/node_modules/
+
+# 运行时遗留数据（cmd_config.json / t2i_templates 等，非源码）
+data/

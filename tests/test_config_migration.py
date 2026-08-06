@@ -60,4 +60,4 @@ def test_migration_removes_llm_timeout_but_preserves_active_cooldowns(tmp_path, 
     migrated = json.loads(config_path.read_text(encoding="utf-8-sig"))
     assert "llm_timeout" not in migrated["timing"]
     assert migrated["timing"]["waiting_time"] == 14
-    assert migrated["timing"]["no_reply_cooldown"] == 7
+    assert "no_reply_cooldown" not in migrated["timing"]
