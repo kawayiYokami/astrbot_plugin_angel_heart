@@ -6,7 +6,10 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 try:
     from astrbot.api.web import error_response, json_response, request
@@ -181,15 +184,15 @@ class ProfileAPI:
                     item["chat_id"] for item in self.chat_sources.list_sources()
                 )
         except Exception:
-            pass
+            logger.debug("AngelHeart: 读取来源登记失败", exc_info=True)
         try:
             known.extend(self.conversation_ledger.get_all_chat_ids() or [])
         except Exception:
-            pass
+            logger.debug("AngelHeart: 读取 ledger 会话列表失败", exc_info=True)
         try:
             known.extend(self.config_manager.chat_ids or [])
         except Exception:
-            pass
+            logger.debug("AngelHeart: 读取白名单群聊失败", exc_info=True)
         seen = set()
         chats = []
         for raw in known:
@@ -209,7 +212,7 @@ class ProfileAPI:
                         display_name = entry.get("display_name", "")
                         kind = entry.get("kind", "")
                 except Exception:
-                    pass
+                    logger.debug("AngelHeart: 读取来源详情失败", exc_info=True)
             chats.append(
                 {
                     "chat_id": chat_id,
