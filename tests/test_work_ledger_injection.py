@@ -121,7 +121,7 @@ class FakeClock:
 
 class TestWorkLedgerLifecycle:
     def test_start_work_closes_old_running(self):
-        """新工作登记即关闭同 chat 旧 running，防止孤儿残留阻断门闩。"""
+        """新工作登记即关闭同 chat 旧 running，且不影响其他 chat。"""
         wl = WorkLedger()
         wl.start_work(
             chat_id="g1",
@@ -133,6 +133,14 @@ class TestWorkLedgerLifecycle:
         assert [w.work_id for w in wl.get_active_works("g1")] == ["w1"]
 
         wl.start_work(
+            chat_id="g2",
+            work_id="other-chat-work",
+            trigger_message_id="m-other",
+            trigger_summary="其他聊天的工作",
+            kind="assistant",
+        )
+
+        wl.start_work(
             chat_id="g1",
             work_id="w2",
             trigger_message_id="m2",
@@ -141,6 +149,9 @@ class TestWorkLedgerLifecycle:
         )
         active = wl.get_active_works("g1")
         assert [w.work_id for w in active] == ["w2"]
+        assert [w.work_id for w in wl.get_active_works("g2")] == [
+            "other-chat-work"
+        ]
         old = wl.get_recent_works("g1", limit=8)
         w1 = next(w for w in old if w.work_id == "w1")
         assert w1.status == "failed"
@@ -163,6 +174,35 @@ class TestWorkLedgerLifecycle:
         orphan = wl.get_recent_works("g1", limit=8)[0]
         assert orphan.status == "failed"
         assert orphan.result_summary == "运行超时自动关闭"
+
+    def test_stale_running_expires_with_zero_origin_clock(self):
+        """时钟从 0 起点时（started_at == 0.0）超时判定仍生效。"""
+        clock = FakeClock(0.0)
+        wl = WorkLedger(running_timeout=10.0, time_func=clock)
+        wl.start_work(
+            chat_id="g1",
+            work_id="orphan",
+            trigger_message_id="m1",
+            trigger_summary="永不收口的工作",
+            kind="assistant",
+        )
+        assert [w.work_id for w in wl.get_active_works("g1")] == ["orphan"]
+        clock.advance(10)
+        assert wl.get_active_works("g1") == []
+
+    def test_stale_running_expires_exactly_at_boundary(self):
+        """刚好达到 running_timeout 时即过期（>= 语义）。"""
+        clock = FakeClock(100.0)
+        wl = WorkLedger(running_timeout=5.0, time_func=clock)
+        wl.start_work(
+            chat_id="g1",
+            work_id="orphan",
+            trigger_message_id="m1",
+            trigger_summary="永不收口的工作",
+            kind="assistant",
+        )
+        clock.advance(5)
+        assert wl.get_active_works("g1") == []
 
     def test_running_timeout_disabled_when_non_positive(self):
         """running_timeout <= 0 时不启用超时失效。"""

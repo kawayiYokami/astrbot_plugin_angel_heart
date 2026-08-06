@@ -116,8 +116,7 @@ class WorkLedger:
         for item in bucket.values():
             if (
                 item.status == "running"
-                and item.started_at
-                and (now - item.started_at) > self.running_timeout
+                and (now - item.started_at) >= self.running_timeout
             ):
                 item.status = "failed"
                 item.result_summary = "运行超时自动关闭"
