@@ -43,6 +43,7 @@ from astrbot_plugin_angel_heart.core.work_ledger import WorkLedger
 
 def _front_desk():
     config = MagicMock()
+    config.for_chat.return_value = config
     config.alias = "fairy"
     config.image_caption_provider_id = ""
     config.focus_instructions = "分析 总结 好好想想 为什么 到底"

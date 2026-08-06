@@ -4,6 +4,13 @@ AngelHeart 插件 - 配置管理器
 支持新版嵌套 object 结构，兼容旧版扁平结构读取。
 """
 
+try:
+    from astrbot.api import logger
+except ImportError:
+    import logging
+
+    logger = logging.getLogger(__name__)
+
 
 class ConfigManager:
     """
@@ -16,13 +23,48 @@ class ConfigManager:
         "leave_reply": {"leave_echo_reply": false, ...},
         ...
     }
+
+    按群聊覆盖：通过 attach_profile_store() 挂载 ChatProfileStore 后，
+    for_chat(chat_id) 返回的视图在读取模板字段时优先返回该群聊绑定模板的值，
+    未出现在模板中的字段回退全局配置。
     """
 
     def __init__(self, config_data: dict):
         self._config = config_data or {}
+        self._profile_store = None
+        self._active_chat_id = ""
+
+    def attach_profile_store(self, profile_store) -> None:
+        """挂载群聊配置模板存储；重复挂载会替换旧引用。"""
+        self._profile_store = profile_store
+
+    def for_chat(self, chat_id: str) -> "ConfigManager":
+        """返回按群聊覆盖的配置视图（共享全局配置与模板存储）。
+
+        调用方应在事件处理链上显式传入 chat_id，禁止依赖 contextvar：
+        防抖到期放行运行在 asyncio.create_task 的新任务中，上下文会丢失。
+
+        chat_id 为空属于「无 ID 读取」异常路径，不静默回退全局，
+        记 warning 暴露调用方漏传问题（不抛异常，避免打断运行时）。
+        """
+        if not chat_id:
+            logger.warning("AngelHeart: for_chat 收到空 chat_id，本次读取将回退全局配置，请检查调用方是否漏传")
+        view = ConfigManager(self._config)
+        view._profile_store = self._profile_store
+        view._active_chat_id = str(chat_id or "")
+        return view
 
     def _get_grouped(self, group: str, key: str, default=None):
-        """从分组中读取配置，兼容旧的扁平格式"""
+        """从分组中读取配置，兼容旧的扁平格式。
+
+        优先命中当前群聊绑定模板的覆盖值；其次读全局嵌套结构；最后回退旧扁平 key。
+        """
+        if self._profile_store is not None and self._active_chat_id:
+            override = self._profile_store.resolve_override(self._active_chat_id)
+            if override:
+                grp = override.get(group)
+                if isinstance(grp, dict) and key in grp:
+                    return grp[key]
         # 优先从新的嵌套结构读取
         grp = self._config.get(group)
         if isinstance(grp, dict) and key in grp:
@@ -52,22 +94,18 @@ class ConfigManager:
 
     @property
     def assistant_debounce_time(self) -> float:
-        """助理防抖等待时长（秒）。"""
+        """点名等待时间（秒）。"""
         return self._get_grouped("timing", "assistant_debounce_time", 1.0)
 
     @property
     def secretary_debounce_time(self) -> float:
-        """前台巡检最长等待时长（秒）。默认复用 waiting_time。"""
+        """前台巡检最长等待时间（秒）。默认复用 waiting_time。"""
         return self._get_grouped("timing", "secretary_debounce_time", self.waiting_time)
 
     @property
     def accelerate_debounce_time(self) -> float:
-        """加速防抖等待时长（秒）。"""
+        """连续点名加速等待时间（秒）。"""
         return self._get_grouped("timing", "accelerate_debounce_time", 1.0)
-
-    @property
-    def no_reply_cooldown(self) -> float:
-        return self._get_grouped("timing", "no_reply_cooldown", 3.0)
 
     @property
     def observation_timeout(self) -> int:
@@ -163,8 +201,9 @@ class ConfigManager:
     # ========== wake_interaction ==========
 
     @property
-    def analysis_on_mention_only(self) -> bool:
-        return self._get_grouped("wake_interaction", "analysis_on_mention_only", False)
+    def enter_on_mention_only(self) -> bool:
+        """仅点名入场：开启后离场时只有点名消息能进场，关闭后任何消息都入场处理。"""
+        return self._get_grouped("wake_interaction", "enter_on_mention_only", True)
 
     @property
     def force_reply_when_summoned(self) -> bool:
@@ -287,7 +326,7 @@ class ConfigManager:
             },
             "wake_interaction": {
                 "alias": self.alias,
-                "analysis_on_mention_only": self.analysis_on_mention_only,
+                "enter_on_mention_only": self.enter_on_mention_only,
                 "force_reply_when_summoned": self.force_reply_when_summoned,
             },
             "reply_length": {

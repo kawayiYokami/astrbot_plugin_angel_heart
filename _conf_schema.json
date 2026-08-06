@@ -189,11 +189,11 @@
     "description": "[点名与交互] 点名词与静默控制",
     "hint": "控制前台如何识别点名、助理昵称如何匹配，以及闭嘴/张嘴静默行为。",
     "items": {
-      "analysis_on_mention_only": {
+      "enter_on_mention_only": {
         "type": "bool",
-        "description": "仅在被点名时分析",
-        "hint": "启用后，前台仅在消息中包含人格名称或助理昵称时才会进行分析。",
-        "default": false
+        "description": "仅点名入场",
+        "hint": "启用后，离场时只有点名消息（@或昵称）能入场；关闭后任何消息都会入场处理。",
+        "default": true
       },
       "force_reply_when_summoned": {
         "type": "bool",

@@ -223,8 +223,10 @@ class TestWorkLedgerLifecycle:
 class TestAnalyzerPromptInjection:
     def test_build_prompt_appends_work_ledger(self):
         config = MagicMock()
+        config.for_chat.return_value = config
         config.alias = "草王"
         config.ai_self_identity = "测试身份"
+        config.reply_strategy_guide = "策略"
         analyzer = LLMAnalyzer("mock", MagicMock(), "策略", config)
         analyzer.base_prompt_template = (
             "BASE\n{historical_context}\n{recent_dialogue}\n"
@@ -246,6 +248,7 @@ class TestTemporaryWorkContext:
         from astrbot_plugin_angel_heart.roles.front_desk import FrontDesk
 
         config = MagicMock()
+        config.for_chat.return_value = config
         config.alias = "草王"
         angel = MagicMock()
         angel.work_ledger = WorkLedger()

@@ -144,7 +144,6 @@ def make_config(
         "accelerate_debounce_time": 0.05,
         "waiting_time": 0.08,
         "observation_timeout": 60,
-        "no_reply_cooldown": 0.01,
     }
     timing.update(timing_overrides)
     leave_reply = {"familiarity_cooldown_duration": 1800}
@@ -155,7 +154,7 @@ def make_config(
         "alias": "草王|纳西妲",
         "force_reply_when_summoned": True,
         "reply_even_not_questioned": False,
-        "analysis_on_mention_only": True,
+        "enter_on_mention_only": True,
     }
     wake_interaction.update(wake_reply_overrides or {})
     return ConfigManager(
@@ -540,44 +539,6 @@ class TestDebounceManagerBoundaries:
         await dm.finish_secretary_dispatch(
             "g1",
             leave_event.extras["angelheart_secretary_dispatch_id"],
-            reason="test_done",
-        )
-
-    @pytest.mark.asyncio
-    async def test_no_reply_cooldown_has_no_scheduling_effect(self):
-        dm = DebounceManager(
-            make_config(secretary_debounce_time=0.05, no_reply_cooldown=0.07)
-        )
-        first = DummyEvent("first")
-        first_future = await dm.schedule(
-            chat_id="g1",
-            event=first,
-            sender_id="a",
-            message_id="1",
-            is_wake=False,
-            is_present=True,
-        )
-        assert await first_future == PROCESS
-        await dm.finish_secretary_dispatch(
-            "g1",
-            first.extras["angelheart_secretary_dispatch_id"],
-            cooldown_seconds=0.07,
-            reason="no_reply",
-        )
-
-        second = DummyEvent("second")
-        second_future = await dm.schedule(
-            chat_id="g1",
-            event=second,
-            sender_id="b",
-            message_id="2",
-            is_wake=False,
-            is_present=True,
-        )
-        assert await asyncio.wait_for(second_future, timeout=0.10) == PROCESS
-        await dm.finish_secretary_dispatch(
-            "g1",
-            second.extras["angelheart_secretary_dispatch_id"],
             reason="test_done",
         )
 
@@ -1512,7 +1473,7 @@ class TestSecretaryDispatchCompletion:
     async def test_no_reply_only_releases_dispatch(self):
         from astrbot_plugin_angel_heart.roles.front_desk import FrontDesk
 
-        config = make_config(no_reply_cooldown=0.12)
+        config = make_config()
         angel = MagicMock()
         angel.astr_context = MagicMock()
         angel.debounce_manager.finish_secretary_dispatch = AsyncMock(return_value=True)
