@@ -24,7 +24,7 @@ interface Bridge {
 
 declare global {
   interface Window {
-    AstrBotPluginPage: Bridge
+    AstrBotPluginPage?: Bridge
   }
 }
 
