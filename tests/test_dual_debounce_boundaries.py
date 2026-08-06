@@ -65,6 +65,19 @@ from astrbot_plugin_angel_heart.core.angel_heart_status import (
 from astrbot_plugin_angel_heart.models.analysis_result import SecretaryDecision
 
 
+class FakeClock:
+    """可推进的假时钟，注入 WorkLedger(time_func=...) 构造超时状态。"""
+
+    def __init__(self, now: float = 1000.0):
+        self.now = now
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
 class DummyEvent:
     def __init__(self, name: str, message_str: str = "hello", chat_id: str = "group:1"):
         self.name = name
@@ -1000,7 +1013,8 @@ class TestDebounceManagerBoundaries:
         钉死 issue #64：主脑失败/流式回复漏收口时，running 工作残留会导致
         assistant_busy 门闩无限重试；超时兜底应让其自愈。
         """
-        work_ledger = WorkLedger(running_timeout=0.05)
+        clock = FakeClock(1000.0)
+        work_ledger = WorkLedger(running_timeout=0.05, time_func=clock)
         dm = DebounceManager(
             make_config(assistant_debounce_time=0.05, secretary_debounce_time=0.10),
             work_ledger=work_ledger,
@@ -1014,7 +1028,7 @@ class TestDebounceManagerBoundaries:
             kind="assistant",
         )
         # 模拟长时间未收口
-        work_ledger._items["g1"]["orphan"].started_at -= 100
+        clock.advance(100)
 
         event = DummyEvent("patrol-after-orphan-expired")
         ticket = await dm.schedule(

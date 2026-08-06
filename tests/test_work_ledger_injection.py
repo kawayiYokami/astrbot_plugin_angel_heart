@@ -106,6 +106,19 @@ class TestWorkLedgerFormat:
         assert recent[0].result_summary == "已回复"
 
 
+class FakeClock:
+    """可推进的假时钟，注入 WorkLedger(time_func=...) 构造超时状态。"""
+
+    def __init__(self, now: float = 1000.0):
+        self.now = now
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
 class TestWorkLedgerLifecycle:
     def test_start_work_closes_old_running(self):
         """新工作登记即关闭同 chat 旧 running，防止孤儿残留阻断门闩。"""
@@ -135,7 +148,8 @@ class TestWorkLedgerLifecycle:
 
     def test_stale_running_expires_after_timeout(self):
         """孤儿 running 超过阈值后惰性失效，不再计入 active。"""
-        wl = WorkLedger(running_timeout=0.05)
+        clock = FakeClock(1000.0)
+        wl = WorkLedger(running_timeout=0.05, time_func=clock)
         wl.start_work(
             chat_id="g1",
             work_id="orphan",
@@ -143,7 +157,8 @@ class TestWorkLedgerLifecycle:
             trigger_summary="永不收口的工作",
             kind="assistant",
         )
-        wl._items["g1"]["orphan"].started_at -= 100
+        assert [w.work_id for w in wl.get_active_works("g1")] == ["orphan"]
+        clock.advance(100)
         assert wl.get_active_works("g1") == []
         orphan = wl.get_recent_works("g1", limit=8)[0]
         assert orphan.status == "failed"
@@ -151,7 +166,8 @@ class TestWorkLedgerLifecycle:
 
     def test_running_timeout_disabled_when_non_positive(self):
         """running_timeout <= 0 时不启用超时失效。"""
-        wl = WorkLedger(running_timeout=0)
+        clock = FakeClock(1000.0)
+        wl = WorkLedger(running_timeout=0, time_func=clock)
         wl.start_work(
             chat_id="g1",
             work_id="w1",
@@ -159,7 +175,7 @@ class TestWorkLedgerLifecycle:
             trigger_summary="任务A",
             kind="assistant",
         )
-        wl._items["g1"]["w1"].started_at -= 100
+        clock.advance(100)
         active = wl.get_active_works("g1")
         assert [w.work_id for w in active] == ["w1"]
 
