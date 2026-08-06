@@ -307,15 +307,15 @@ def register_all_routes(
     )
 
     routes = [
-        (f"/astrbot_plugin_angel_heart/profiles", api.list_profiles, ["GET"], "模板列表与绑定总览"),
-        (f"/astrbot_plugin_angel_heart/profiles/create", api.create_profile, ["POST"], "新建配置模板"),
-        (f"/astrbot_plugin_angel_heart/profiles/update", api.update_profile, ["POST"], "更新配置模板"),
-        (f"/astrbot_plugin_angel_heart/profiles/delete", api.delete_profile, ["POST"], "删除配置模板"),
-        (f"/astrbot_plugin_angel_heart/bindings", api.list_bindings, ["GET"], "群聊绑定列表"),
-        (f"/astrbot_plugin_angel_heart/bindings/set", api.set_binding, ["POST"], "设置/解除群聊绑定"),
-        (f"/astrbot_plugin_angel_heart/chats", api.list_chats, ["GET"], "已知群聊列表"),
-        (f"/astrbot_plugin_angel_heart/chat_sources", api.list_chat_sources, ["GET"], "来源登记列表"),
-        (f"/astrbot_plugin_angel_heart/chat_status", api.chat_status, ["GET"], "群聊状态仪表盘"),
+        ("/astrbot_plugin_angel_heart/profiles", api.list_profiles, ["GET"], "模板列表与绑定总览"),
+        ("/astrbot_plugin_angel_heart/profiles/create", api.create_profile, ["POST"], "新建配置模板"),
+        ("/astrbot_plugin_angel_heart/profiles/update", api.update_profile, ["POST"], "更新配置模板"),
+        ("/astrbot_plugin_angel_heart/profiles/delete", api.delete_profile, ["POST"], "删除配置模板"),
+        ("/astrbot_plugin_angel_heart/bindings", api.list_bindings, ["GET"], "群聊绑定列表"),
+        ("/astrbot_plugin_angel_heart/bindings/set", api.set_binding, ["POST"], "设置/解除群聊绑定"),
+        ("/astrbot_plugin_angel_heart/chats", api.list_chats, ["GET"], "已知群聊列表"),
+        ("/astrbot_plugin_angel_heart/chat_sources", api.list_chat_sources, ["GET"], "来源登记列表"),
+        ("/astrbot_plugin_angel_heart/chat_status", api.chat_status, ["GET"], "群聊状态仪表盘"),
     ]
 
     for path, handler, methods, description in routes:
