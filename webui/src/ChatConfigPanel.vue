@@ -451,6 +451,7 @@ async function saveTemplate() {
   try {
     await apiPost('profiles/update', {
       id: currentTemplate.value.id,
+      description: currentTemplate.value.description,
       config: buildConfig(),
     })
     message.success('配置已保存')
