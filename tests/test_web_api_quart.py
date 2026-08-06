@@ -261,14 +261,20 @@ async def test_chat_status_merges_runtime_state(tmp_path):
 
 @pytest.mark.asyncio
 async def test_chat_status_without_runtime_refs_falls_back(api_app):
-    """未注入状态/防抖/决策引用时，字段降级为空值，不报错。"""
+    """未注入状态/防抖/决策引用时，字段降级为默认形状，不报错。"""
     client = api_app.test_client()
     resp = await client.get("/api/plug/astrbot_plugin_angel_heart/chat_status")
     items = (await resp.get_json())["data"]
     assert len(items) == 1  # ledger 提供 chat:g:1
     item = items[0]
     assert item["chat_id"] == "chat:g:1"
-    assert item["status"] == {}
+    assert item["status"] == {
+        "current_status": "Unknown",
+        "duration_seconds": 0,
+        "duration_minutes": 0,
+        "has_assistant_debounce": False,
+        "has_secretary_debounce": False,
+    }
     assert item["energy"] is None
     assert item["patrol"] == {"waiting": "", "remaining": 0.0, "total": 0.0}
     assert item["last_decision"] is None

@@ -246,7 +246,14 @@ class ProfileAPI:
         items = []
         for chat in self._known_chats():
             chat_id = chat["chat_id"]
-            status = {}
+            # 降级时给完整默认形状，与前端 ChatStatusItem.status 必填契约一致
+            status = {
+                "current_status": "Unknown",
+                "duration_seconds": 0,
+                "duration_minutes": 0,
+                "has_assistant_debounce": False,
+                "has_secretary_debounce": False,
+            }
             if self.status_transition_manager is not None:
                 try:
                     status = self.status_transition_manager.get_status_summary(chat_id)
