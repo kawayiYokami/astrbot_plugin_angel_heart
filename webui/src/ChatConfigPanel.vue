@@ -8,7 +8,11 @@
           新建模板
         </n-button>
       </div>
-      <div class="global-card" :class="{ active: !selectedId }" @click="selectTemplate(null)">
+      <div class="monitor-card" :class="{ active: viewMode === 'monitor' }" @click="switchMonitor">
+        <div class="global-name">群聊监控</div>
+        <div class="global-desc">在场状态、巡检与最近决策</div>
+      </div>
+      <div class="global-card" :class="{ active: viewMode === 'config' && !selectedId }" @click="selectTemplate(null)">
         <div class="global-name">全局配置（默认）</div>
         <div class="global-desc">未绑定群聊使用此配置</div>
       </div>
@@ -18,7 +22,7 @@
             v-for="tpl in templates"
             :key="tpl.id"
             class="template-item"
-            :class="{ active: selectedId === tpl.id }"
+            :class="{ active: viewMode === 'config' && selectedId === tpl.id }"
             @click="selectTemplate(tpl.id)"
           >
             <div class="template-name">{{ tpl.name }}</div>
@@ -66,8 +70,63 @@
     <main class="content">
       <n-scrollbar class="content-scroll">
       <div class="content-inner">
+      <!-- 群聊监控 -->
+      <template v-if="viewMode === 'monitor'">
+        <div class="content-header">
+          <h2>群聊监控</h2>
+          <span class="content-sub">在场状态、巡检与最近决策，每 3 秒自动刷新</span>
+        </div>
+        <div class="status-grid">
+          <div v-for="item in statusItems" :key="item.chat_id" class="status-card">
+            <div class="status-chat">
+              <template v-if="item.display_name">{{ item.display_name }}</template>
+              <span v-else class="status-chat-placeholder">未命名</span>
+              <span class="status-chat-id">{{ item.chat_id }}</span>
+            </div>
+            <div class="status-meta">
+              <span
+                class="status-badge"
+                :class="item.status.current_status === 'OBSERVATION' ? 'on' : 'off'"
+              >
+                {{ item.status.current_status === 'OBSERVATION' ? '在场' : '离场' }}
+              </span>
+              <span class="status-energy">能量 {{ fmtEnergy(item.energy) }}</span>
+            </div>
+            <div class="status-line">
+              <span class="status-label">巡检</span>
+              <span v-if="item.patrol.waiting" class="status-value">
+                {{ patrolLabel(item.patrol.waiting) }} {{ item.patrol.remaining }}/{{ item.patrol.total }}s
+              </span>
+              <span v-else class="status-value">空闲</span>
+            </div>
+            <div class="status-line">
+              <span class="status-label">最近决策</span>
+              <span v-if="item.last_decision" class="status-value">
+                {{ item.last_decision.should_reply ? '回复' : '不回' }} ·
+                {{ decisionTime(item.last_decision.decided_at) }} ·
+                {{ item.last_decision.summary || '无说明' }}
+              </span>
+              <span v-else class="status-value">暂无</span>
+            </div>
+            <div class="status-binding">
+              <n-select
+                :value="item.template_id"
+                size="small"
+                :options="bindingOptions(item.chat_id)"
+                @update:value="(v: string) => setChatBinding(item.chat_id, v)"
+              />
+            </div>
+          </div>
+          <n-empty
+            v-if="!statusItems.length"
+            size="small"
+            description="暂无群聊（群聊产生消息后才会出现在这里）"
+          />
+        </div>
+      </template>
+
       <!-- 全局配置概览 -->
-      <template v-if="!selectedId">
+      <template v-else-if="!selectedId">
         <div class="content-header">
           <h2>全局配置</h2>
           <span class="content-sub">未绑定群聊使用的默认配置，在 AstrBot 插件设置中修改</span>
@@ -145,61 +204,6 @@
       </n-scrollbar>
     </main>
 
-    <!-- 右侧：群聊状态 -->
-    <aside class="status-sidebar">
-      <div class="status-header">
-        <div class="brand">群聊状态</div>
-      </div>
-      <n-scrollbar class="status-scroll">
-        <div class="status-list">
-          <div v-for="item in statusItems" :key="item.chat_id" class="status-card">
-            <div class="status-chat">
-              <template v-if="item.display_name">{{ item.display_name }}</template>
-              <span class="status-chat-id">{{ item.chat_id }}</span>
-            </div>
-            <div class="status-meta">
-              <span
-                class="status-badge"
-                :class="item.status.current_status === 'OBSERVATION' ? 'on' : 'off'"
-              >
-                {{ item.status.current_status === 'OBSERVATION' ? '在场' : '离场' }}
-              </span>
-              <span class="status-energy">能量 {{ fmtEnergy(item.energy) }}</span>
-            </div>
-            <div class="status-line">
-              <span class="status-label">巡检</span>
-              <span v-if="item.patrol.waiting" class="status-value">
-                {{ patrolLabel(item.patrol.waiting) }} {{ item.patrol.remaining }}/{{ item.patrol.total }}s
-              </span>
-              <span v-else class="status-value">空闲</span>
-            </div>
-            <div class="status-line">
-              <span class="status-label">最近决策</span>
-              <span v-if="item.last_decision" class="status-value">
-                {{ item.last_decision.should_reply ? '回复' : '不回' }} ·
-                {{ decisionTime(item.last_decision.decided_at) }} ·
-                {{ item.last_decision.summary || '无说明' }}
-              </span>
-              <span v-else class="status-value">暂无</span>
-            </div>
-            <div class="status-binding">
-              <n-select
-                :value="item.template_id"
-                size="small"
-                :options="bindingOptions(item.chat_id)"
-                @update:value="(v: string) => setChatBinding(item.chat_id, v)"
-              />
-            </div>
-          </div>
-          <n-empty
-            v-if="!statusItems.length"
-            size="small"
-            description="暂无群聊（群聊产生消息后才会出现在这里）"
-          />
-        </div>
-      </n-scrollbar>
-    </aside>
-
     <!-- 新建模板弹窗 -->
     <n-modal
       v-model:show="createModalVisible"
@@ -272,6 +276,7 @@ const templates = ref<TemplateDetail[]>([])
 const globalConfig = ref<TemplateConfig | null>(null)
 const chats = ref<ChatItem[]>([])
 const statusItems = ref<ChatStatusItem[]>([])
+const viewMode = ref<'config' | 'monitor'>('config')
 const selectedId = ref<string | null>(null)
 const saving = ref(false)
 let statusTimer: ReturnType<typeof setInterval> | null = null
@@ -289,6 +294,10 @@ const currentTemplate = computed(() =>
 
 function bindingCount(templateId: string): number {
   return chats.value.filter((c) => c.template_id === templateId).length
+}
+
+function switchMonitor() {
+  viewMode.value = viewMode.value === 'monitor' ? 'config' : 'monitor'
 }
 
 function displayValue(v: unknown): string {
@@ -318,6 +327,7 @@ function decisionTime(ts: number): string {
 }
 
 function selectTemplate(id: string | null) {
+  viewMode.value = 'config'
   selectedId.value = id
   if (!id) return
   const tpl = templates.value.find((t) => t.id === id)
@@ -450,6 +460,7 @@ async function setChatBinding(chatId: string, templateId: string) {
 }
 
 async function refreshStatus() {
+  if (viewMode.value !== 'monitor') return
   try {
     const list = await apiGet<ChatStatusItem[]>('chat_status')
     statusItems.value = list || []
@@ -556,13 +567,25 @@ body,
   transition: all 0.2s;
 }
 
-.global-card:hover {
+.global-card:hover,
+.monitor-card:hover {
   border-color: #44444c;
 }
 
-.global-card.active {
+.global-card.active,
+.monitor-card.active {
   border-color: #63e2b7;
   background: #2a3a35;
+}
+
+.monitor-card {
+  margin: 12px 12px 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #2a2a31;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: all 0.2s;
 }
 
 .global-name {
@@ -754,32 +777,10 @@ body,
   width: 180px;
 }
 
-.status-sidebar {
-  width: 320px;
-  min-width: 320px;
-  background: #222228;
-  border-left: 1px solid #33333a;
-  display: flex;
-  flex-direction: column;
-}
-
-.status-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 14px 16px;
-  border-bottom: 1px solid #33333a;
-}
-
-.status-scroll {
-  flex: 1;
-}
-
-.status-list {
-  padding: 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
+.status-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 12px;
 }
 
 .status-card {
@@ -811,6 +812,12 @@ body,
   font-weight: 400;
   color: #888;
   font-family: 'Consolas', 'Courier New', monospace;
+}
+
+.status-chat-placeholder {
+  font-size: 13px;
+  font-weight: 600;
+  color: #666;
 }
 
 .status-meta {
