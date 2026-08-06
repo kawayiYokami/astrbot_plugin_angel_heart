@@ -54,6 +54,12 @@ _MIGRATION_MAP = {
     "strip_markdown_enabled": ("debug", "strip_markdown_enabled"),
 }
 
+# 分组内键重命名：旧的 object key -> (group, 旧子 key, 新子 key)
+# 用于分组结构已经存在但子键改名的场景（如 wake_interaction.analysis_on_mention_only -> enter_on_mention_only）。
+_GROUP_KEY_RENAMES = {
+    ("wake_interaction", "analysis_on_mention_only"): "enter_on_mention_only",
+}
+
 _DEPRECATED_FLAT_KEYS = {
     "llm_timeout",
     "familiarity_timeout",
@@ -132,13 +138,22 @@ def run_migration():
 
     # 检查是否需要迁移（如果已经有 object 分组且没有旧扁平 key，说明已迁移）
     needs_migration = any(key in config for key in _MIGRATION_MAP)
+    needs_group_rename = any(
+        isinstance(config.get(group), dict) and old_sub in config[group]
+        for (group, old_sub) in _GROUP_KEY_RENAMES
+    )
     has_deprecated_keys = any(key in config for key in _DEPRECATED_FLAT_KEYS)
     has_deprecated_grouped_keys = any(
         isinstance(config.get(group_name), dict)
         and any(sub_key in config[group_name] for sub_key in sub_keys)
         for group_name, sub_keys in _DEPRECATED_GROUPED_KEYS.items()
     )
-    if not needs_migration and not has_deprecated_keys and not has_deprecated_grouped_keys:
+    if (
+        not needs_migration
+        and not needs_group_rename
+        and not has_deprecated_keys
+        and not has_deprecated_grouped_keys
+    ):
         return
 
     # 执行迁移
@@ -163,6 +178,17 @@ def run_migration():
 
         # 删除旧的扁平 key
         del config[old_key]
+
+    # 执行分组内键重命名（旧子键 -> 新子键，目标存在时保留目标值）
+    for (group, old_sub), new_sub in _GROUP_KEY_RENAMES.items():
+        group_config = config.get(group)
+        if not isinstance(group_config, dict) or old_sub not in group_config:
+            continue
+        if new_sub not in group_config:
+            group_config[new_sub] = group_config[old_sub]
+            migrated_count += 1
+        del group_config[old_sub]
+        removed_count += 1
 
     for old_key in _DEPRECATED_FLAT_KEYS:
         if old_key in config:
