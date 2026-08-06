@@ -10,6 +10,7 @@ AngelHeart插件 - 天使心智能群聊/私聊交互插件
 
 import time
 import json
+import os
 from typing import Any
 
 from astrbot.api.star import Star, Context, register
@@ -46,7 +47,20 @@ from .tools.image_understanding import AngelDescribeImageTool
 run_migration()
 
 
-@register("astrbot_plugin_angel_heart", "kawayiYokami", "天使心秘书，让astrbot拥有极其聪明，有分寸的群聊介入，和极其完备的群聊上下文管理", "0.8.11", "https://github.com/kawayiYokami/astrbot_plugin_angel_heart")
+def _plugin_version() -> str:
+    """从 metadata.yaml 读取版本号，避免与 @register 双处维护。"""
+    try:
+        meta_path = os.path.join(os.path.dirname(__file__), "metadata.yaml")
+        with open(meta_path, encoding="utf-8") as f:
+            for line in f:
+                if line.startswith("version:"):
+                    return line.split(":", 1)[1].strip()
+    except (OSError, ValueError):
+        pass
+    return "0.0.0"
+
+
+@register("astrbot_plugin_angel_heart", "kawayiYokami", "天使心秘书，让astrbot拥有极其聪明，有分寸的群聊介入，和极其完备的群聊上下文管理", _plugin_version(), "https://github.com/kawayiYokami/astrbot_plugin_angel_heart")
 class AngelHeartPlugin(Star):
     """AngelHeart插件 - 专注的智能回复员"""
 
