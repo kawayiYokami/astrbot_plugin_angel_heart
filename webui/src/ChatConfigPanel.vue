@@ -5,16 +5,27 @@
       <div class="sidebar-header">
         <div class="brand">群聊独立配置</div>
         <n-button size="small" type="primary" @click="openCreateModal">
+          <template #icon><Icon icon="lucide:plus" /></template>
           新建模板
         </n-button>
       </div>
       <div class="monitor-card" :class="{ active: viewMode === 'monitor' }" @click="switchMonitor">
-        <div class="global-name">群聊监控</div>
-        <div class="global-desc">在场状态、巡检与最近决策</div>
+        <div class="nav-item">
+          <Icon icon="lucide:activity" class="nav-icon" />
+          <div>
+            <div class="global-name">群聊监控</div>
+            <div class="global-desc">在场状态、巡检与最近决策</div>
+          </div>
+        </div>
       </div>
       <div class="global-card" :class="{ active: viewMode === 'config' && !selectedId }" @click="selectTemplate(null)">
-        <div class="global-name">全局配置（默认）</div>
-        <div class="global-desc">未绑定群聊使用此配置</div>
+        <div class="nav-item">
+          <Icon icon="lucide:settings" class="nav-icon" />
+          <div>
+            <div class="global-name">全局配置（默认）</div>
+            <div class="global-desc">未绑定群聊使用此配置</div>
+          </div>
+        </div>
       </div>
       <n-scrollbar class="sidebar-scroll">
         <div class="template-list">
@@ -25,7 +36,10 @@
             :class="{ active: viewMode === 'config' && selectedId === tpl.id }"
             @click="selectTemplate(tpl.id)"
           >
-            <div class="template-name">{{ tpl.name }}</div>
+            <div class="template-title">
+              <Icon icon="lucide:file-text" class="template-icon" />
+              <span class="template-name">{{ tpl.name }}</span>
+            </div>
             <div class="template-desc">
               {{ tpl.description || '无描述' }}
               <span v-if="bindingCount(tpl.id)" class="binding-badge">
@@ -33,10 +47,16 @@
               </span>
             </div>
             <div class="template-actions" @click.stop>
-              <n-button size="tiny" quaternary @click="openRenameModal(tpl)">重命名</n-button>
+              <n-button size="tiny" quaternary @click="openRenameModal(tpl)">
+                <template #icon><Icon icon="lucide:pencil" /></template>
+                重命名
+              </n-button>
               <n-popconfirm @positive-click="deleteTemplate(tpl.id)">
                 <template #trigger>
-                  <n-button size="tiny" quaternary type="error">删除</n-button>
+                  <n-button size="tiny" quaternary type="error">
+                    <template #icon><Icon icon="lucide:trash-2" /></template>
+                    删除
+                  </n-button>
                 </template>
                 删除后绑定它的群聊将回退到全局配置
               </n-popconfirm>
@@ -80,7 +100,9 @@
           <div v-for="item in statusItems" :key="item.chat_id" class="status-card">
             <div class="status-chat">
               <template v-if="item.display_name">{{ item.display_name }}</template>
-              <span v-else class="status-chat-placeholder">未命名</span>
+              <span v-else class="status-chat-placeholder">
+                <Icon icon="lucide:user-x" class="inline-icon" /> 未命名
+              </span>
               <span class="status-chat-id">{{ item.chat_id }}</span>
             </div>
             <div class="status-meta">
@@ -90,11 +112,14 @@
               >
                 {{ item.status.current_status === 'OBSERVATION' ? '在场' : '离场' }}
               </span>
-              <span class="status-energy">能量 {{ fmtEnergy(item.energy) }}</span>
+              <span class="status-energy">
+                <Icon icon="lucide:zap" class="inline-icon" /> 能量 {{ fmtEnergy(item.energy) }}
+              </span>
             </div>
             <div class="status-line">
               <span class="status-label">巡检</span>
               <span v-if="item.patrol.waiting" class="status-value">
+                <Icon icon="lucide:timer" class="inline-icon" />
                 {{ patrolLabel(item.patrol.waiting) }} {{ item.patrol.remaining }}/{{ item.patrol.total }}s
               </span>
               <span v-else class="status-value">空闲</span>
@@ -102,6 +127,7 @@
             <div class="status-line">
               <span class="status-label">最近决策</span>
               <span v-if="item.last_decision" class="status-value">
+                <Icon icon="lucide:message-square" class="inline-icon" />
                 {{ item.last_decision.should_reply ? '回复' : '不回' }} ·
                 {{ decisionTime(item.last_decision.decided_at) }} ·
                 {{ item.last_decision.summary || '无说明' }}
@@ -157,6 +183,7 @@
           <h2>{{ currentTemplate?.name }}</h2>
           <div class="content-actions">
             <n-button size="small" type="primary" :loading="saving" @click="saveTemplate">
+              <template #icon><Icon icon="lucide:save" /></template>
               保存
             </n-button>
           </div>
@@ -586,6 +613,45 @@ body,
   cursor: pointer;
   border: 1px solid transparent;
   transition: all 0.2s;
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.nav-icon {
+  width: 18px;
+  height: 18px;
+  color: #888;
+  flex-shrink: 0;
+}
+
+.global-card.active .nav-icon,
+.monitor-card.active .nav-icon {
+  color: #63e2b7;
+}
+
+.template-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.template-icon {
+  width: 14px;
+  height: 14px;
+  color: #888;
+  flex-shrink: 0;
+}
+
+.inline-icon {
+  width: 13px;
+  height: 13px;
+  vertical-align: -2px;
+  margin-right: 2px;
+  color: #888;
 }
 
 .global-name {
