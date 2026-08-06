@@ -63,9 +63,9 @@ def test_migration_removes_llm_timeout_but_preserves_active_cooldowns(tmp_path, 
     assert "no_reply_cooldown" not in migrated["timing"]
 
 
-def test_migration_renames_grouped_analysis_on_mention_only(tmp_path, monkeypatch):
-    """旧分组键 wake_interaction.analysis_on_mention_only 应迁移为
-    enter_on_mention_only，保留用户设置的 false，不得被默认 true 覆盖。"""
+def test_migration_discards_grouped_analysis_on_mention_only(tmp_path, monkeypatch):
+    """旧分组键 wake_interaction.analysis_on_mention_only 是旧分析机制字段，
+    与新入场机制 enter_on_mention_only 完全无关，直接废弃删除，不迁移旧值。"""
     config_path = tmp_path / "config.json"
     config_path.write_text(
         json.dumps(
@@ -85,12 +85,35 @@ def test_migration_renames_grouped_analysis_on_mention_only(tmp_path, monkeypatc
 
     migrated = json.loads(config_path.read_text(encoding="utf-8-sig"))
     assert "analysis_on_mention_only" not in migrated["wake_interaction"]
-    assert migrated["wake_interaction"]["enter_on_mention_only"] is False
+    assert "enter_on_mention_only" not in migrated["wake_interaction"]
     assert migrated["wake_interaction"]["alias"] == "小天使"
 
 
-def test_migration_grouped_rename_preserves_existing_target(tmp_path, monkeypatch):
-    """目标键 enter_on_mention_only 已存在时保留目标值，旧键仅删除。"""
+def test_migration_discards_flat_analysis_on_mention_only(tmp_path, monkeypatch):
+    """旧扁平键 analysis_on_mention_only 同样废弃删除，不迁移到新字段。"""
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "analysis_on_mention_only": False,
+                "alias": "小天使",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(config_migration, "_find_config_path", lambda: str(config_path))
+
+    config_migration.run_migration()
+
+    migrated = json.loads(config_path.read_text(encoding="utf-8-sig"))
+    assert "analysis_on_mention_only" not in migrated
+    assert "enter_on_mention_only" not in migrated
+    assert migrated["wake_interaction"]["alias"] == "小天使"
+
+
+def test_migration_preserves_existing_enter_on_mention_only(tmp_path, monkeypatch):
+    """新入场字段 enter_on_mention_only 已存在时原样保留，不受旧字段影响。"""
     config_path = tmp_path / "config.json"
     config_path.write_text(
         json.dumps(
