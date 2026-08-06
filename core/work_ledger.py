@@ -47,9 +47,12 @@ class WorkItem:
 class WorkLedger:
     """按会话维护工作账本。"""
 
-    def __init__(self, retain_finished: int = 8):
+    def __init__(self, retain_finished: int = 8, running_timeout: float = 300.0):
         self._items: Dict[str, Dict[str, WorkItem]] = {}
         self.retain_finished = max(1, int(retain_finished))
+        # running 超时自动失效：防止 complete_work 漏触发（如流式回复/主脑失败）
+        # 导致孤儿 running 永久阻断 assistant_busy 门闩。<=0 表示不启用。
+        self.running_timeout = float(running_timeout)
 
     def start_work(
         self,
@@ -71,9 +74,32 @@ class WorkLedger:
             kind=str(kind or ""),
         )
         bucket = self._items.setdefault(chat_id, {})
+        # 同群互斥兜底：新工作开始即关闭该 chat 的旧 running，
+        # 避免并发放行残留的 running 继续阻断秘书巡检。
+        now = time.time()
+        for old in bucket.values():
+            if old.status == "running":
+                old.status = "failed"
+                old.result_summary = "被新工作替换"
+                old.ended_at = now
         bucket[work_id] = item
         self._trim(chat_id)
         return item
+
+    def _expire_stale_running(self, bucket: Dict[str, WorkItem]) -> None:
+        """把超时未收口的 running 工作惰性标记为 failed。"""
+        if self.running_timeout <= 0:
+            return
+        now = time.time()
+        for item in bucket.values():
+            if (
+                item.status == "running"
+                and item.started_at
+                and (now - item.started_at) > self.running_timeout
+            ):
+                item.status = "failed"
+                item.result_summary = "运行超时自动关闭"
+                item.ended_at = now
 
     def complete_work(
         self,
@@ -97,10 +123,12 @@ class WorkLedger:
 
     def get_active_works(self, chat_id: str) -> List[WorkItem]:
         bucket = self._items.get(str(chat_id or "")) or {}
+        self._expire_stale_running(bucket)
         return [w for w in bucket.values() if w.status == "running"]
 
     def get_recent_works(self, chat_id: str, limit: int = 8) -> List[WorkItem]:
         bucket = self._items.get(str(chat_id or "")) or {}
+        self._expire_stale_running(bucket)
         items = list(bucket.values())
         items.sort(key=lambda w: w.started_at, reverse=True)
         return items[: max(1, int(limit))]

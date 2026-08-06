@@ -106,6 +106,64 @@ class TestWorkLedgerFormat:
         assert recent[0].result_summary == "已回复"
 
 
+class TestWorkLedgerLifecycle:
+    def test_start_work_closes_old_running(self):
+        """新工作登记即关闭同 chat 旧 running，防止孤儿残留阻断门闩。"""
+        wl = WorkLedger()
+        wl.start_work(
+            chat_id="g1",
+            work_id="w1",
+            trigger_message_id="m1",
+            trigger_summary="任务A",
+            kind="assistant",
+        )
+        assert [w.work_id for w in wl.get_active_works("g1")] == ["w1"]
+
+        wl.start_work(
+            chat_id="g1",
+            work_id="w2",
+            trigger_message_id="m2",
+            trigger_summary="任务B",
+            kind="assistant",
+        )
+        active = wl.get_active_works("g1")
+        assert [w.work_id for w in active] == ["w2"]
+        old = wl.get_recent_works("g1", limit=8)
+        w1 = next(w for w in old if w.work_id == "w1")
+        assert w1.status == "failed"
+        assert w1.result_summary == "被新工作替换"
+
+    def test_stale_running_expires_after_timeout(self):
+        """孤儿 running 超过阈值后惰性失效，不再计入 active。"""
+        wl = WorkLedger(running_timeout=0.05)
+        wl.start_work(
+            chat_id="g1",
+            work_id="orphan",
+            trigger_message_id="m1",
+            trigger_summary="永不收口的工作",
+            kind="assistant",
+        )
+        wl._items["g1"]["orphan"].started_at -= 100
+        assert wl.get_active_works("g1") == []
+        orphan = wl.get_recent_works("g1", limit=8)[0]
+        assert orphan.status == "failed"
+        assert orphan.result_summary == "运行超时自动关闭"
+
+    def test_running_timeout_disabled_when_non_positive(self):
+        """running_timeout <= 0 时不启用超时失效。"""
+        wl = WorkLedger(running_timeout=0)
+        wl.start_work(
+            chat_id="g1",
+            work_id="w1",
+            trigger_message_id="m1",
+            trigger_summary="任务A",
+            kind="assistant",
+        )
+        wl._items["g1"]["w1"].started_at -= 100
+        active = wl.get_active_works("g1")
+        assert [w.work_id for w in active] == ["w1"]
+
+
 class TestAnalyzerPromptInjection:
     def test_build_prompt_appends_work_ledger(self):
         config = MagicMock()
