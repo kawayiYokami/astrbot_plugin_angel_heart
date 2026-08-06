@@ -283,7 +283,10 @@ class DebounceManager:
                 }
             assistant_keys = [key for key in self._assistant if key[0] == chat_id]
             if assistant_keys:
-                record = self._assistant[assistant_keys[-1]]
+                record = min(
+                    (self._assistant[key] for key in assistant_keys),
+                    key=lambda r: r.created_at + r.delay,
+                )
                 remaining = max(0.0, record.created_at + record.delay - now)
                 return {
                     "waiting": "assistant",
