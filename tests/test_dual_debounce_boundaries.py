@@ -1470,6 +1470,76 @@ class TestSecretaryDispatchCompletion:
         )
 
     @pytest.mark.asyncio
+    async def test_generate_reply_strategy_freezes_decision_context(self):
+        """离场应答策略生成必须把账本快照固化到事件，供执行链取用。"""
+        from astrbot_plugin_angel_heart.core.fishing_direct_reply import (
+            FishingDirectReply,
+        )
+
+        angel = MagicMock()
+        angel.debounce_manager.get_end_message_id.return_value = "echo-1"
+        historical = [{"role": "system", "content": "摘要"}]
+        recent = [{"source_message_id": "echo-1", "content": "复读"}]
+        angel.conversation_ledger.get_context_snapshot.return_value = (
+            historical,
+            recent,
+            2.0,
+        )
+        fdr = FishingDirectReply(make_config(), angel)
+        event = DummyEvent("echo-1", chat_id="aiocqhttp:GroupMessage:1")
+
+        decision = await fdr.generate_reply_strategy(
+            event.unified_msg_origin, event, "echo_chamber"
+        )
+
+        assert decision.should_reply is True
+        frozen = event.get_extra("angelheart_decision_context")
+        assert frozen == {
+            "historical_context": historical,
+            "recent_dialogue": recent,
+            "boundary_ts": 2.0,
+            "boundary_message_id": "echo-1",
+        }
+
+    @pytest.mark.asyncio
+    async def test_leave_reply_full_chain_executes_with_frozen_context(self):
+        """离场应答完整链路：真实策略生成 + 真实执行决策，不得抛「秘书决策上下文缺失」。"""
+        from astrbot_plugin_angel_heart.roles.front_desk import FrontDesk
+
+        angel = MagicMock()
+        angel.astr_context = MagicMock()
+        angel.debounce_manager.get_leave_reply_trigger.return_value = "echo_chamber"
+        angel.debounce_manager.get_end_message_id.return_value = "echo-1"
+        historical = [{"role": "system", "content": "摘要"}]
+        recent = [{"source_message_id": "echo-1", "content": "复读"}]
+        angel.conversation_ledger.get_context_snapshot.return_value = (
+            historical,
+            recent,
+            2.0,
+        )
+        fd = FrontDesk(make_config(), angel)
+        fd.secretary = MagicMock()
+        fd.secretary.handle_message_by_state = AsyncMock()
+        fd._process_decision_result = AsyncMock()
+        event = DummyEvent("echo-1", chat_id="aiocqhttp:GroupMessage:1")
+
+        # 不 mock fishing_reply.generate_reply_strategy，走真实实现
+        await fd._call_secretary_and_execute(event, event.unified_msg_origin)
+
+        # 离场应答不经过秘书分析
+        fd.secretary.handle_message_by_state.assert_not_awaited()
+        # 决策上下文已固化到事件
+        frozen = event.get_extra("angelheart_decision_context")
+        assert frozen is not None
+        assert frozen["recent_dialogue"] == recent
+        assert frozen["historical_context"] == historical
+        # 执行链拿到同一份切片继续，不再抛「秘书决策上下文缺失」
+        fd._process_decision_result.assert_awaited_once()
+        call_args = fd._process_decision_result.await_args
+        assert call_args.args[1] == recent
+        assert call_args.args[2] == historical
+
+    @pytest.mark.asyncio
     async def test_no_reply_only_releases_dispatch(self):
         from astrbot_plugin_angel_heart.roles.front_desk import FrontDesk
 

@@ -50,6 +50,35 @@ class FishingDirectReply:
         try:
             logger.debug(f"AngelHeart[{chat_id}]: 生成离场应答策略，触发类型: {trigger_type}")
 
+            # 0. 固化决策上下文：与秘书路径保持一致，主脑 rewrite 必须用同一份切片。
+            #    缺失时执行链 _get_decision_context_for_rewrite 群聊分支会返回 None 并抛异常。
+            try:
+                boundary_message_id = self.angel_context.debounce_manager.get_end_message_id(
+                    event
+                )
+                if not boundary_message_id:
+                    boundary_message_id = str(
+                        getattr(getattr(event, "message_obj", None), "message_id", "")
+                        or ""
+                    )
+                historical_context, recent_dialogue, boundary_ts = (
+                    self.angel_context.conversation_ledger.get_context_snapshot(
+                        chat_id, boundary_message_id
+                    )
+                )
+                if hasattr(event, "set_extra"):
+                    event.set_extra(
+                        "angelheart_decision_context",
+                        {
+                            "historical_context": historical_context,
+                            "recent_dialogue": recent_dialogue,
+                            "boundary_ts": boundary_ts,
+                            "boundary_message_id": boundary_message_id,
+                        },
+                    )
+            except Exception as e:
+                logger.warning(f"AngelHeart[{chat_id}]: 固化离场应答决策上下文失败: {e}")
+
             # 1. 根据触发类型选择策略
             if trigger_type == "echo_chamber":
                 strategy = "跟紧复读队形"
