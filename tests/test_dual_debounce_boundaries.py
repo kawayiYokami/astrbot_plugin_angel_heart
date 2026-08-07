@@ -1617,6 +1617,63 @@ class TestSecretaryDispatchCompletion:
         assert event.is_at_or_wake_command is True
         assert event.is_stopped() is False
 
+    @pytest.mark.asyncio
+    async def test_secretary_error_lets_assistant_handle(self):
+        """秘书链路异常时放行事件，让主脑无脑处理，而不是 stop 导致不回复。"""
+        from astrbot_plugin_angel_heart.roles.front_desk import FrontDesk
+
+        angel = MagicMock()
+        angel.astr_context = MagicMock()
+        angel.debounce_manager.finish_secretary_dispatch = AsyncMock(return_value=True)
+        angel.debounce_manager.get_leave_reply_trigger.return_value = ""
+        fd = FrontDesk(make_config(), angel)
+        fd.secretary = MagicMock()
+        fd.secretary.handle_message_by_state = AsyncMock(
+            side_effect=RuntimeError("秘书决策上下文缺失")
+        )
+        event = DummyEvent("secretary-error", chat_id="GroupMessage:1")
+        event.set_extra("angelheart_secretary_dispatch_id", "dispatch-error")
+
+        await fd._call_secretary_and_execute(event, event.unified_msg_origin)
+
+        # 秘书死了，事件不被拦死，放行主脑
+        assert event.is_stopped() is False
+        assert event.is_at_or_wake_command is True
+        angel.debounce_manager.finish_secretary_dispatch.assert_awaited_once_with(
+            event.unified_msg_origin,
+            "dispatch-error",
+            cooldown_seconds=0.0,
+            reason="secretary_error",
+        )
+
+    @pytest.mark.asyncio
+    async def test_secretary_error_debug_mode_keeps_handling(self):
+        """调试模式下秘书异常：仍不拦死事件，但不在非唤醒场景伪造唤醒标志。"""
+        from astrbot_plugin_angel_heart.roles.front_desk import FrontDesk
+
+        angel = MagicMock()
+        angel.astr_context = MagicMock()
+        angel.debounce_manager.finish_secretary_dispatch = AsyncMock(return_value=True)
+        angel.debounce_manager.get_leave_reply_trigger.return_value = ""
+        config = make_config()
+        fd = FrontDesk(config, angel)
+        fd.secretary = MagicMock()
+        fd.secretary.handle_message_by_state = AsyncMock(
+            side_effect=RuntimeError("分析失败")
+        )
+        event = DummyEvent("secretary-error-debug", chat_id="GroupMessage:1")
+        event.set_extra("angelheart_secretary_dispatch_id", "dispatch-error-debug")
+
+        await fd._call_secretary_and_execute(event, event.unified_msg_origin)
+
+        assert event.is_stopped() is False
+        angel.debounce_manager.finish_secretary_dispatch.assert_awaited_once_with(
+            event.unified_msg_origin,
+            "dispatch-error-debug",
+            cooldown_seconds=0.0,
+            reason="secretary_error",
+        )
+
 
 class TestFrontDeskPrivateAndGroupRouting:
     @pytest.mark.asyncio
