@@ -50,6 +50,45 @@ class FishingDirectReply:
         try:
             logger.debug(f"AngelHeart[{chat_id}]: 生成离场应答策略，触发类型: {trigger_type}")
 
+            # 0. 固化决策上下文：与秘书路径保持一致，主脑 rewrite 必须用同一份切片。
+            #    缺失时执行链 _get_decision_context_for_rewrite 群聊分支会返回 None 并抛异常。
+            #
+            # 原子性说明（为何不做跨管理器联合 API）：
+            # - 边界 ID 来自事件 extra（防抖调度时已固化），不是现场读取共享状态；
+            # - 账本快照读取 get_all_messages 自带 _lock，且两行之间无 await，无竞态窗口；
+            # - 快照按边界 ID 包含式截断（_slice_messages_through_id），新入账消息也会被切掉，
+            #   不会出现"边界说 5、内容含 6"。
+            #
+            # 边界消息为何不会被整理收掉：
+            # - 整理（_rule_organize）只从最新消息往前保留预算内消息，旧消息才收进摘要；
+            # - 离场应答的边界消息 = 触发本轮防抖的最新消息，必在保留区内，不会被收掉。
+            try:
+                boundary_message_id = self.angel_context.debounce_manager.get_end_message_id(
+                    event
+                )
+                if not boundary_message_id:
+                    boundary_message_id = str(
+                        getattr(getattr(event, "message_obj", None), "message_id", "")
+                        or ""
+                    )
+                historical_context, recent_dialogue, boundary_ts = (
+                    self.angel_context.conversation_ledger.get_context_snapshot(
+                        chat_id, boundary_message_id
+                    )
+                )
+                if hasattr(event, "set_extra"):
+                    event.set_extra(
+                        "angelheart_decision_context",
+                        {
+                            "historical_context": historical_context,
+                            "recent_dialogue": recent_dialogue,
+                            "boundary_ts": boundary_ts,
+                            "boundary_message_id": boundary_message_id,
+                        },
+                    )
+            except Exception as e:
+                logger.warning(f"AngelHeart[{chat_id}]: 固化离场应答决策上下文失败: {e}")
+
             # 1. 根据触发类型选择策略
             if trigger_type == "echo_chamber":
                 strategy = "跟紧复读队形"
