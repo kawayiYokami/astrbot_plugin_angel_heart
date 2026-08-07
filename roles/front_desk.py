@@ -895,7 +895,13 @@ class FrontDesk:
                 cooldown_seconds=0.0,
                 reason="secretary_error",
             )
-            event.stop_event()
+            # 秘书兜底：秘书链路异常时放行，让主脑无脑处理，而不是 stop 导致不回复。
+            # 秘书是"拦"的角色；秘书死了，助理应该照常干活，不能陪葬。
+            if not self.config_manager.for_chat(chat_id).debug_mode:
+                event.is_at_or_wake_command = True
+                logger.debug(
+                    f"AngelHeart[{chat_id}]: 秘书异常，放行主脑无脑处理"
+                )
 
     def _record_last_decision(self, chat_id: str, should_reply: bool, summary: str) -> None:
         """记录该群最近一次秘书决策（供 WebUI 状态栏）；store 未注入或失败只 debug 不打断。"""

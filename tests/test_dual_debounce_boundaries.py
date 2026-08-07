@@ -1470,6 +1470,164 @@ class TestSecretaryDispatchCompletion:
         )
 
     @pytest.mark.asyncio
+    async def test_generate_reply_strategy_freezes_decision_context(self):
+        """离场应答策略生成必须把账本快照固化到事件，供执行链取用。"""
+        from astrbot_plugin_angel_heart.core.fishing_direct_reply import (
+            FishingDirectReply,
+        )
+
+        angel = MagicMock()
+        angel.debounce_manager.get_end_message_id.return_value = "echo-1"
+        historical = [{"role": "system", "content": "摘要"}]
+        recent = [{"source_message_id": "echo-1", "content": "复读"}]
+        angel.conversation_ledger.get_context_snapshot.return_value = (
+            historical,
+            recent,
+            2.0,
+        )
+        fdr = FishingDirectReply(make_config(), angel)
+        event = DummyEvent("echo-1", chat_id="aiocqhttp:GroupMessage:1")
+
+        decision = await fdr.generate_reply_strategy(
+            event.unified_msg_origin, event, "echo_chamber"
+        )
+
+        assert decision.should_reply is True
+        frozen = event.get_extra("angelheart_decision_context")
+        assert frozen == {
+            "historical_context": historical,
+            "recent_dialogue": recent,
+            "boundary_ts": 2.0,
+            "boundary_message_id": "echo-1",
+        }
+
+    @pytest.mark.asyncio
+    async def test_leave_reply_full_chain_executes_with_frozen_context(self):
+        """离场应答完整链路：真实策略生成 + 真实执行决策，不得抛「秘书决策上下文缺失」。"""
+        from astrbot_plugin_angel_heart.roles.front_desk import FrontDesk
+
+        angel = MagicMock()
+        angel.astr_context = MagicMock()
+        angel.debounce_manager.get_leave_reply_trigger.return_value = "echo_chamber"
+        angel.debounce_manager.get_end_message_id.return_value = "echo-1"
+        historical = [{"role": "system", "content": "摘要"}]
+        recent = [{"source_message_id": "echo-1", "content": "复读"}]
+        angel.conversation_ledger.get_context_snapshot.return_value = (
+            historical,
+            recent,
+            2.0,
+        )
+        fd = FrontDesk(make_config(), angel)
+        fd.secretary = MagicMock()
+        fd.secretary.handle_message_by_state = AsyncMock()
+        fd._process_decision_result = AsyncMock()
+        event = DummyEvent("echo-1", chat_id="aiocqhttp:GroupMessage:1")
+
+        # 不 mock fishing_reply.generate_reply_strategy，走真实实现
+        await fd._call_secretary_and_execute(event, event.unified_msg_origin)
+
+        # 离场应答不经过秘书分析
+        fd.secretary.handle_message_by_state.assert_not_awaited()
+        # 决策上下文已固化到事件
+        frozen = event.get_extra("angelheart_decision_context")
+        assert frozen is not None
+        assert frozen["recent_dialogue"] == recent
+        assert frozen["historical_context"] == historical
+        # 执行链拿到同一份切片继续，不再抛「秘书决策上下文缺失」
+        fd._process_decision_result.assert_awaited_once()
+        call_args = fd._process_decision_result.await_args
+        assert call_args.args[1] == recent
+        assert call_args.args[2] == historical
+
+    @pytest.mark.asyncio
+    async def test_leave_reply_snapshot_truncates_at_boundary(self, tmp_path):
+        """真实账本：快照按边界 ID 包含式截断，边界后新消息不会混入。"""
+        from astrbot_plugin_angel_heart.core.conversation_ledger import (
+            ConversationLedger,
+        )
+        from astrbot_plugin_angel_heart.core.fishing_direct_reply import (
+            FishingDirectReply,
+        )
+
+        chat_id = "aiocqhttp:GroupMessage:1"
+        ledger = ConversationLedger(make_config(), tmp_path, astr_context=None)
+        for i in range(1, 7):
+            ledger.add_message(
+                chat_id,
+                {
+                    "role": "user",
+                    "content": f"msg-{i}",
+                    "sender_id": f"u{i}",
+                    "sender_name": f"user{i}",
+                    "timestamp": float(i),
+                    "chat_id": chat_id,
+                    "source_message_id": f"msg-{i}",
+                },
+            )
+        angel = MagicMock()
+        angel.debounce_manager.get_end_message_id.return_value = "msg-5"
+        angel.conversation_ledger = ledger
+        fdr = FishingDirectReply(make_config(), angel)
+        event = DummyEvent("msg-5", chat_id=chat_id)
+
+        await fdr.generate_reply_strategy(
+            event.unified_msg_origin, event, "echo_chamber"
+        )
+
+        frozen = event.get_extra("angelheart_decision_context")
+        source_ids = [
+            m.get("source_message_id") for m in frozen["recent_dialogue"]
+        ]
+        # 边界包含式截断：含 msg-5，不含 msg-6
+        assert "msg-6" not in source_ids
+        assert source_ids[-1] == "msg-5"
+
+    @pytest.mark.asyncio
+    async def test_leave_reply_snapshot_falls_back_to_event_message_id(
+        self, tmp_path
+    ):
+        """get_end_message_id 为空时，回退使用事件消息 ID 作为边界。"""
+        from astrbot_plugin_angel_heart.core.conversation_ledger import (
+            ConversationLedger,
+        )
+        from astrbot_plugin_angel_heart.core.fishing_direct_reply import (
+            FishingDirectReply,
+        )
+
+        chat_id = "aiocqhttp:GroupMessage:1"
+        ledger = ConversationLedger(make_config(), tmp_path, astr_context=None)
+        for i in range(1, 5):
+            ledger.add_message(
+                chat_id,
+                {
+                    "role": "user",
+                    "content": f"msg-{i}",
+                    "sender_id": f"u{i}",
+                    "sender_name": f"user{i}",
+                    "timestamp": float(i),
+                    "chat_id": chat_id,
+                    "source_message_id": f"msg-{i}",
+                },
+            )
+        angel = MagicMock()
+        angel.debounce_manager.get_end_message_id.return_value = ""
+        angel.conversation_ledger = ledger
+        fdr = FishingDirectReply(make_config(), angel)
+        event = DummyEvent("msg-3", chat_id=chat_id)
+
+        await fdr.generate_reply_strategy(
+            event.unified_msg_origin, event, "echo_chamber"
+        )
+
+        frozen = event.get_extra("angelheart_decision_context")
+        source_ids = [
+            m.get("source_message_id") for m in frozen["recent_dialogue"]
+        ]
+        # 回退到事件消息 ID：含 msg-3，不含 msg-4
+        assert "msg-4" not in source_ids
+        assert source_ids[-1] == "msg-3"
+
+    @pytest.mark.asyncio
     async def test_no_reply_only_releases_dispatch(self):
         from astrbot_plugin_angel_heart.roles.front_desk import FrontDesk
 
@@ -1546,6 +1704,66 @@ class TestSecretaryDispatchCompletion:
         )
         assert event.is_at_or_wake_command is True
         assert event.is_stopped() is False
+
+    @pytest.mark.asyncio
+    async def test_secretary_error_lets_assistant_handle(self):
+        """秘书链路异常时放行事件，让主脑无脑处理，而不是 stop 导致不回复。"""
+        from astrbot_plugin_angel_heart.roles.front_desk import FrontDesk
+
+        angel = MagicMock()
+        angel.astr_context = MagicMock()
+        angel.debounce_manager.finish_secretary_dispatch = AsyncMock(return_value=True)
+        angel.debounce_manager.get_leave_reply_trigger.return_value = ""
+        fd = FrontDesk(make_config(), angel)
+        fd.secretary = MagicMock()
+        fd.secretary.handle_message_by_state = AsyncMock(
+            side_effect=RuntimeError("秘书决策上下文缺失")
+        )
+        event = DummyEvent("secretary-error", chat_id="GroupMessage:1")
+        event.set_extra("angelheart_secretary_dispatch_id", "dispatch-error")
+
+        await fd._call_secretary_and_execute(event, event.unified_msg_origin)
+
+        # 秘书死了，事件不被拦死，放行主脑
+        assert event.is_stopped() is False
+        assert event.is_at_or_wake_command is True
+        angel.debounce_manager.finish_secretary_dispatch.assert_awaited_once_with(
+            event.unified_msg_origin,
+            "dispatch-error",
+            cooldown_seconds=0.0,
+            reason="secretary_error",
+        )
+
+    @pytest.mark.asyncio
+    async def test_secretary_error_debug_mode_keeps_handling(self):
+        """调试模式下秘书异常：仍不拦死事件，但不在非唤醒场景伪造唤醒标志。"""
+        from astrbot_plugin_angel_heart.roles.front_desk import FrontDesk
+
+        angel = MagicMock()
+        angel.astr_context = MagicMock()
+        angel.debounce_manager.finish_secretary_dispatch = AsyncMock(return_value=True)
+        angel.debounce_manager.get_leave_reply_trigger.return_value = ""
+        config = make_config()
+        config._config["debug"]["debug_mode"] = True
+        fd = FrontDesk(config, angel)
+        fd.secretary = MagicMock()
+        fd.secretary.handle_message_by_state = AsyncMock(
+            side_effect=RuntimeError("分析失败")
+        )
+        event = DummyEvent("secretary-error-debug", chat_id="GroupMessage:1")
+        event.set_extra("angelheart_secretary_dispatch_id", "dispatch-error-debug")
+
+        await fd._call_secretary_and_execute(event, event.unified_msg_origin)
+
+        # 调试模式下不伪造唤醒标志，但事件仍不被拦死
+        assert event.is_stopped() is False
+        assert event.is_at_or_wake_command is False
+        angel.debounce_manager.finish_secretary_dispatch.assert_awaited_once_with(
+            event.unified_msg_origin,
+            "dispatch-error-debug",
+            cooldown_seconds=0.0,
+            reason="secretary_error",
+        )
 
 
 class TestFrontDeskPrivateAndGroupRouting:
