@@ -84,7 +84,7 @@ def test_non_template_fields_unaffected(manager, store):
     store.set_binding("chat:g:1", tpl["id"])
 
     view = manager.for_chat("chat:g:1")
-    assert view.debug_mode is False
+    assert view.strip_markdown_enabled is True
     assert view.whitelist_enabled is False
 
 

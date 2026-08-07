@@ -296,15 +296,11 @@ class ConfigManager:
             return grp["forgetting_timeout"]
         return self._config.get("context_forgetting_timeout", 86400)
 
-    # ========== debug ==========
-
-    @property
-    def debug_mode(self) -> bool:
-        return self._get_grouped("debug", "debug_mode", False)
+    # ========== output_rewrite ==========
 
     @property
     def strip_markdown_enabled(self) -> bool:
-        return self._get_grouped("debug", "strip_markdown_enabled", True)
+        return self._get_grouped("output_rewrite", "strip_markdown_enabled", True)
 
     # ========== 工具方法 ==========
 

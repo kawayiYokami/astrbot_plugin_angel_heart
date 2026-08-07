@@ -49,8 +49,7 @@ _MIGRATION_MAP = {
     "context_tool_retain_tokens": ("context_compression", "tool_retain_tokens"),
     "context_forgetting_timeout": ("context_compression", "forgetting_timeout"),
     # debug
-    "debug_mode": ("debug", "debug_mode"),
-    "strip_markdown_enabled": ("debug", "strip_markdown_enabled"),
+    "strip_markdown_enabled": ("output_rewrite", "strip_markdown_enabled"),
 }
 
 _DEPRECATED_FLAT_KEYS = {
@@ -62,6 +61,8 @@ _DEPRECATED_FLAT_KEYS = {
     "tool_decoration_cooldown",
     "tool_decorations",
     "no_reply_cooldown",
+    # 调试模式已删除：被秘书异常放行兜底完全替代，直接废弃不迁移
+    "debug_mode",
     # 旧分析机制字段：被 enter_on_mention_only（入场机制）完全替代，直接废弃不迁移
     "analysis_on_mention_only",
 }
@@ -143,10 +144,13 @@ def run_migration():
         and any(sub_key in config[group_name] for sub_key in sub_keys)
         for group_name, sub_keys in _DEPRECATED_GROUPED_KEYS.items()
     )
+    # 旧 debug 分组整体改名 output_rewrite（调试模式已删除）
+    has_debug_group = isinstance(config.get("debug"), dict)
     if (
         not needs_migration
         and not has_deprecated_keys
         and not has_deprecated_grouped_keys
+        and not has_debug_group
     ):
         return
 
@@ -188,6 +192,26 @@ def run_migration():
                 removed_count += 1
         if not group_config:
             del config[group_name]
+
+    # 旧 debug 分组整体改名 output_rewrite：strip_markdown_enabled 保留，debug_mode 丢弃
+    if has_debug_group:
+        debug_group = config.pop("debug")
+        if isinstance(debug_group, dict):
+            output_group = config.setdefault("output_rewrite", {})
+            if not isinstance(output_group, dict):
+                output_group = {}
+                config["output_rewrite"] = output_group
+            if (
+                "strip_markdown_enabled" in debug_group
+                and "strip_markdown_enabled" not in output_group
+            ):
+                output_group["strip_markdown_enabled"] = debug_group[
+                    "strip_markdown_enabled"
+                ]
+                migrated_count += 1
+            if not output_group:
+                del config["output_rewrite"]
+            removed_count += 1
 
     if migrated_count > 0 or removed_count > 0:
         try:
