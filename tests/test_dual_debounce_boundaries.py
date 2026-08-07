@@ -1744,6 +1744,7 @@ class TestSecretaryDispatchCompletion:
         angel.debounce_manager.finish_secretary_dispatch = AsyncMock(return_value=True)
         angel.debounce_manager.get_leave_reply_trigger.return_value = ""
         config = make_config()
+        config._config["debug"]["debug_mode"] = True
         fd = FrontDesk(config, angel)
         fd.secretary = MagicMock()
         fd.secretary.handle_message_by_state = AsyncMock(
@@ -1754,7 +1755,9 @@ class TestSecretaryDispatchCompletion:
 
         await fd._call_secretary_and_execute(event, event.unified_msg_origin)
 
+        # 调试模式下不伪造唤醒标志，但事件仍不被拦死
         assert event.is_stopped() is False
+        assert event.is_at_or_wake_command is False
         angel.debounce_manager.finish_secretary_dispatch.assert_awaited_once_with(
             event.unified_msg_origin,
             "dispatch-error-debug",
