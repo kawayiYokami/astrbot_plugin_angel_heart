@@ -1540,6 +1540,94 @@ class TestSecretaryDispatchCompletion:
         assert call_args.args[2] == historical
 
     @pytest.mark.asyncio
+    async def test_leave_reply_snapshot_truncates_at_boundary(self, tmp_path):
+        """真实账本：快照按边界 ID 包含式截断，边界后新消息不会混入。"""
+        from astrbot_plugin_angel_heart.core.conversation_ledger import (
+            ConversationLedger,
+        )
+        from astrbot_plugin_angel_heart.core.fishing_direct_reply import (
+            FishingDirectReply,
+        )
+
+        chat_id = "aiocqhttp:GroupMessage:1"
+        ledger = ConversationLedger(make_config(), tmp_path, astr_context=None)
+        for i in range(1, 7):
+            ledger.add_message(
+                chat_id,
+                {
+                    "role": "user",
+                    "content": f"msg-{i}",
+                    "sender_id": f"u{i}",
+                    "sender_name": f"user{i}",
+                    "timestamp": float(i),
+                    "chat_id": chat_id,
+                    "source_message_id": f"msg-{i}",
+                },
+            )
+        angel = MagicMock()
+        angel.debounce_manager.get_end_message_id.return_value = "msg-5"
+        angel.conversation_ledger = ledger
+        fdr = FishingDirectReply(make_config(), angel)
+        event = DummyEvent("msg-5", chat_id=chat_id)
+
+        await fdr.generate_reply_strategy(
+            event.unified_msg_origin, event, "echo_chamber"
+        )
+
+        frozen = event.get_extra("angelheart_decision_context")
+        source_ids = [
+            m.get("source_message_id") for m in frozen["recent_dialogue"]
+        ]
+        # 边界包含式截断：含 msg-5，不含 msg-6
+        assert "msg-6" not in source_ids
+        assert source_ids[-1] == "msg-5"
+
+    @pytest.mark.asyncio
+    async def test_leave_reply_snapshot_falls_back_to_event_message_id(
+        self, tmp_path
+    ):
+        """get_end_message_id 为空时，回退使用事件消息 ID 作为边界。"""
+        from astrbot_plugin_angel_heart.core.conversation_ledger import (
+            ConversationLedger,
+        )
+        from astrbot_plugin_angel_heart.core.fishing_direct_reply import (
+            FishingDirectReply,
+        )
+
+        chat_id = "aiocqhttp:GroupMessage:1"
+        ledger = ConversationLedger(make_config(), tmp_path, astr_context=None)
+        for i in range(1, 5):
+            ledger.add_message(
+                chat_id,
+                {
+                    "role": "user",
+                    "content": f"msg-{i}",
+                    "sender_id": f"u{i}",
+                    "sender_name": f"user{i}",
+                    "timestamp": float(i),
+                    "chat_id": chat_id,
+                    "source_message_id": f"msg-{i}",
+                },
+            )
+        angel = MagicMock()
+        angel.debounce_manager.get_end_message_id.return_value = ""
+        angel.conversation_ledger = ledger
+        fdr = FishingDirectReply(make_config(), angel)
+        event = DummyEvent("msg-3", chat_id=chat_id)
+
+        await fdr.generate_reply_strategy(
+            event.unified_msg_origin, event, "echo_chamber"
+        )
+
+        frozen = event.get_extra("angelheart_decision_context")
+        source_ids = [
+            m.get("source_message_id") for m in frozen["recent_dialogue"]
+        ]
+        # 回退到事件消息 ID：含 msg-3，不含 msg-4
+        assert "msg-4" not in source_ids
+        assert source_ids[-1] == "msg-3"
+
+    @pytest.mark.asyncio
     async def test_no_reply_only_releases_dispatch(self):
         from astrbot_plugin_angel_heart.roles.front_desk import FrontDesk
 
