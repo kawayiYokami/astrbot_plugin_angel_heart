@@ -5,7 +5,11 @@ AngelHeart 插件 - 核心工具模块
 
 # 从各个子模块导入函数
 from .time_utils import get_latest_message_time, format_relative_time, get_beijing_time_str
-from .content_utils import convert_content_to_string, strip_markdown
+from .content_utils import (
+    convert_content_to_string,
+    strip_markdown,
+    strip_period_before_newline,
+)
 from .message_hits import (
     build_message_metadata,
     extract_plain_body_from_components,
@@ -35,6 +39,7 @@ __all__ = [
     # 内容处理相关
     'convert_content_to_string',
     'strip_markdown',
+    'strip_period_before_newline',
 
     # 正文命中相关
     'build_message_metadata',

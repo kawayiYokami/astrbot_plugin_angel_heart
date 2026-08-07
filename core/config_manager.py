@@ -302,6 +302,10 @@ class ConfigManager:
     def strip_markdown_enabled(self) -> bool:
         return self._get_grouped("output_rewrite", "strip_markdown_enabled", True)
 
+    @property
+    def strip_period_before_newline(self) -> bool:
+        return self._get_grouped("output_rewrite", "strip_period_before_newline", False)
+
     # ========== 工具方法 ==========
 
     def get_config_summary(self) -> dict:

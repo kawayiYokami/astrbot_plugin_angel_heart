@@ -33,7 +33,7 @@ from .core.config_manager import ConfigManager
 from .core.config_migration import run_migration
 from .roles.front_desk import FrontDesk
 from .roles.secretary import Secretary
-from .core.utils import strip_markdown
+from .core.utils import strip_markdown, strip_period_before_newline
 from .core.utils.message_utils import (
     extract_completed_agent_messages,
     serialize_agent_run_message,
@@ -500,6 +500,19 @@ class AngelHeartPlugin(Star):
                                 )
             else:
                 logger.debug(f"AngelHeart[{chat_id}]: Markdown清洗已禁用，跳过清洗步骤。")
+
+            # 3. 句末句号清理：换行符之前的中文句号清理掉
+            if self.config_manager.strip_period_before_newline:
+                for i, component in enumerate(message_chain):
+                    if isinstance(component, Plain):
+                        original_text = component.text
+                        if original_text:
+                            cleaned_text = strip_period_before_newline(original_text)
+                            if cleaned_text != original_text:
+                                message_chain[i] = Plain(text=cleaned_text)
+                                logger.debug(
+                                    f"AngelHeart[{chat_id}]: 已清理句末句号: '{original_text[:50]}...' -> '{cleaned_text[:50]}...'"
+                                )
 
             await self.angel_context.debounce_manager.charge_reply_energy(
                 event, message_chain

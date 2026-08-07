@@ -93,3 +93,17 @@ def strip_markdown(text: str) -> str:
             cleaned_text = stripped[:-1] + cleaned_text[len(stripped) :]
 
     return cleaned_text
+
+
+def strip_period_before_newline(text: str) -> str:
+    """
+    清理换行符之前的中文句号。
+
+    特征：换行符（\\n / \\r\\n）之前的中文句号「。」，清理掉该句号，保留换行。
+    例如：
+        "你好。\n明天见。" -> "你好\n明天见"
+        "第一行。\r\n第二行。" -> "第一行\r\n第二行"
+    """
+    if not text:
+        return text
+    return re.sub(r"。(\r?\n)", r"\1", text)
