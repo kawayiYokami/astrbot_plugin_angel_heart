@@ -325,17 +325,11 @@
     }
   },
 
-  "debug": {
+  "output_rewrite": {
     "type": "object",
-    "description": "[调试功能] 调试与显示",
-    "hint": "开发调试相关的配置项。",
+    "description": "[输出处理] 输出重写",
+    "hint": "发送前对回复内容的输出处理配置。",
     "items": {
-      "debug_mode": {
-        "type": "bool",
-        "description": "调试模式",
-        "hint": "启用后，分析器建议回复时仅记录日志，不会回复。",
-        "default": false
-      },
       "strip_markdown_enabled": {
         "type": "bool",
         "description": "启用Markdown清洗",

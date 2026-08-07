@@ -35,7 +35,53 @@ def test_migration_removes_retired_comfort_config(tmp_path, monkeypatch):
     assert "patience_interval" not in migrated
     assert "comfort_words" not in migrated
     assert "comfort" not in migrated
-    assert migrated["debug"] == {"debug_mode": True}
+    # debug 分组整体改名为 output_rewrite，debug_mode 废弃不迁移
+    assert "debug" not in migrated
+    assert migrated.get("output_rewrite") is None
+
+
+def test_migration_moves_debug_group_to_output_rewrite(tmp_path, monkeypatch):
+    """旧 debug 分组改名 output_rewrite，strip_markdown_enabled 保留，debug_mode 丢弃。"""
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "debug": {
+                    "debug_mode": True,
+                    "strip_markdown_enabled": False,
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(config_migration, "_find_config_path", lambda: str(config_path))
+
+    config_migration.run_migration()
+
+    migrated = json.loads(config_path.read_text(encoding="utf-8-sig"))
+    assert "debug" not in migrated
+    assert migrated["output_rewrite"] == {"strip_markdown_enabled": False}
+
+
+def test_migration_flat_debug_mode_is_removed(tmp_path, monkeypatch):
+    """扁平 debug_mode 直接废弃删除，不再迁移。"""
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "debug_mode": True,
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(config_migration, "_find_config_path", lambda: str(config_path))
+
+    config_migration.run_migration()
+
+    migrated = json.loads(config_path.read_text(encoding="utf-8-sig"))
+    assert "debug_mode" not in migrated
 
 
 def test_migration_removes_llm_timeout_but_preserves_active_cooldowns(tmp_path, monkeypatch):

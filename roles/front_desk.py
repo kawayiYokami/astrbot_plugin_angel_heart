@@ -897,11 +897,10 @@ class FrontDesk:
             )
             # 秘书兜底：秘书链路异常时放行，让主脑无脑处理，而不是 stop 导致不回复。
             # 秘书是"拦"的角色；秘书死了，助理应该照常干活，不能陪葬。
-            if not self.config_manager.for_chat(chat_id).debug_mode:
-                event.is_at_or_wake_command = True
-                logger.debug(
-                    f"AngelHeart[{chat_id}]: 秘书异常，放行主脑无脑处理"
-                )
+            event.is_at_or_wake_command = True
+            logger.debug(
+                f"AngelHeart[{chat_id}]: 秘书异常，放行主脑无脑处理"
+            )
 
     def _record_last_decision(self, chat_id: str, should_reply: bool, summary: str) -> None:
         """记录该群最近一次秘书决策（供 WebUI 状态栏）；store 未注入或失败只 debug 不打断。"""
@@ -989,38 +988,15 @@ class FrontDesk:
             except Exception as e:
                 logger.warning(f"AngelHeart[{chat_id}]: 启动助理休息失败: {e}")
 
-            if not self.config_manager.for_chat(chat_id).debug_mode:
-                event.is_at_or_wake_command = True
-                logger.debug(f"AngelHeart[{chat_id}]: 已设置唤醒主脑标志")
-                # 秘书判断结束即释放单飞；助理生成/发送不再占用。
-                await self._finish_secretary_dispatch(
-                    event,
-                    chat_id,
-                    cooldown_seconds=0.0,
-                    reason="reply_handoff",
-                )
-            else:
-                logger.debug(f"AngelHeart[{chat_id}]: 调试模式已启用，阻止了实际唤醒。")
-                try:
-                    work_id = ""
-                    if hasattr(event, "get_extra"):
-                        work_id = str(event.get_extra("angelheart_work_id", "") or "")
-                    if not work_id:
-                        work_id = self._get_event_message_id(event)
-                    self.context.work_ledger.complete_work(
-                        chat_id,
-                        work_id,
-                        status="done",
-                        result_summary="debug跳过发送",
-                    )
-                except Exception:
-                    pass
-                await self._finish_secretary_dispatch(
-                    event,
-                    chat_id,
-                    cooldown_seconds=0.0,
-                    reason="debug_skip_send",
-                )
+            event.is_at_or_wake_command = True
+            logger.debug(f"AngelHeart[{chat_id}]: 已设置唤醒主脑标志")
+            # 秘书判断结束即释放单飞；助理生成/发送不再占用。
+            await self._finish_secretary_dispatch(
+                event,
+                chat_id,
+                cooldown_seconds=0.0,
+                reason="reply_handoff",
+            )
             # 需要回复时，由主框架继续处理该事件（一事件一子代理）
 
     async def _ensure_minimum_context(self, chat_id: str, event: AstrMessageEvent):

@@ -54,7 +54,7 @@ class DummyConfig(ConfigManager):
                 "wake_interaction": {},
                 "leave_reply": {},
                 "access_control": {},
-                "debug": {},
+                "output_rewrite": {},
                 "personality": {},
             }
         )
