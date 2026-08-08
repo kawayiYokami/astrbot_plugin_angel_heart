@@ -13,8 +13,8 @@
         <div class="nav-item">
           <Icon icon="lucide:activity" class="nav-icon" />
           <div>
-            <div class="global-name">群聊监控</div>
-            <div class="global-desc">在场状态、巡检与最近决策</div>
+            <div class="global-name">联系人监控</div>
+            <div class="global-desc">群聊与私聊的在场状态、巡检与最近决策</div>
           </div>
         </div>
       </div>
@@ -90,14 +90,19 @@
     <main class="content">
       <n-scrollbar class="content-scroll">
       <div class="content-inner">
-      <!-- 群聊监控 -->
+      <!-- 联系人监控 -->
       <template v-if="viewMode === 'monitor'">
         <div class="content-header">
-          <h2>群聊监控</h2>
-          <span class="content-sub">在场状态、巡检与最近决策，每 3 秒自动刷新</span>
+          <h2>联系人监控</h2>
+          <span class="content-sub">群聊与私聊的在场状态、巡检与最近决策，每 3 秒自动刷新</span>
         </div>
+        <n-radio-group v-model:value="kindFilter" size="small" class="kind-filter">
+          <n-radio-button value="all">全部</n-radio-button>
+          <n-radio-button value="group">群聊</n-radio-button>
+          <n-radio-button value="private">私聊</n-radio-button>
+        </n-radio-group>
         <div class="status-grid">
-          <div v-for="item in statusItems" :key="item.chat_id" class="status-card">
+          <div v-for="item in filteredStatusItems" :key="item.chat_id" class="status-card">
             <div class="status-chat">
               <template v-if="item.display_name">{{ item.display_name }}</template>
               <span v-else class="status-chat-placeholder">
@@ -144,9 +149,9 @@
             </div>
           </div>
           <n-empty
-            v-if="!statusItems.length"
+            v-if="!filteredStatusItems.length"
             size="small"
-            description="暂无群聊（群聊产生消息后才会出现在这里）"
+            :description="kindFilter === 'all' ? '暂无联系人（产生消息后才会出现在这里）' : (kindFilter === 'group' ? '暂无群聊' : '暂无私聊')"
           />
         </div>
       </template>
@@ -279,6 +284,7 @@ import {
   NModal,
   NPopconfirm,
   NRadio,
+  NRadioButton,
   NRadioGroup,
   NScrollbar,
   NSelect,
@@ -303,6 +309,7 @@ const templates = ref<TemplateDetail[]>([])
 const globalConfig = ref<TemplateConfig | null>(null)
 const chats = ref<ChatItem[]>([])
 const statusItems = ref<ChatStatusItem[]>([])
+const kindFilter = ref<'all' | 'group' | 'private'>('all')
 const viewMode = ref<'config' | 'monitor'>('config')
 const selectedId = ref<string | null>(null)
 const saving = ref(false)
@@ -318,6 +325,18 @@ let renameTarget: TemplateDetail | null = null
 const currentTemplate = computed(() =>
   templates.value.find((t) => t.id === selectedId.value) ?? null
 )
+
+const filteredStatusItems = computed(() => {
+  if (kindFilter.value === 'all') return statusItems.value
+  return statusItems.value.filter((item) => effectiveKind(item) === kindFilter.value)
+})
+
+// kind 缺失（来源登记未覆盖，如白名单纯群号）时按 chat_id 形态兜底推断
+function effectiveKind(item: ChatStatusItem): string {
+  if (item.kind === 'group' || item.kind === 'private') return item.kind
+  if (/:FriendMessage:|:PrivateMessage:/.test(item.chat_id)) return 'private'
+  return 'group'
+}
 
 function bindingCount(templateId: string): number {
   return chats.value.filter((c) => c.template_id === templateId).length
@@ -846,6 +865,10 @@ body,
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
   gap: 12px;
+}
+
+.kind-filter {
+  margin-bottom: 12px;
 }
 
 .status-card {
