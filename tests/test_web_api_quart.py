@@ -4,6 +4,8 @@ conftest.py 已提供 astrbot 桩且不含 astrbot.api.web 子模块，
 因此 web_api 导入时自动走 quart 回退分支（HAS_WEB_API=False）。
 """
 
+import time
+
 import pytest
 
 from core.chat_profile import ChatProfileStore
@@ -257,6 +259,79 @@ async def test_chat_status_merges_runtime_state(tmp_path):
     assert item["patrol"] == {"waiting": "secretary", "remaining": 5.0, "total": 30.0}
     assert item["last_decision"]["should_reply"] is True
     assert item["last_decision"]["summary"] == "话题相关"
+
+
+@pytest.mark.asyncio
+async def test_chat_status_observation_timeout_display(tmp_path):
+    """在场超时推断：超过 observation_timeout 的在场展示为离场，未超时保持在场。"""
+    from quart import Quart
+
+    from core.chat_sources import ChatSourcesStore
+
+    store = ChatProfileStore(str(tmp_path))
+    manager = ConfigManager({})
+    ledger = type("Ledger", (), {"get_all_chat_ids": staticmethod(lambda: ["default:GroupMessage:10001"])})()
+    sources = ChatSourcesStore(str(tmp_path))
+    sources.record("default:GroupMessage:10001", "测试群", "group")
+    now = time.time()
+
+    class FakeStatusManager:
+        def get_status_summary(self, chat_id):
+            return {"current_status": "OBSERVATION", "duration_seconds": 12.0}
+
+        def get_status_start_time(self, chat_id):
+            return now
+
+    class FakeDebounce:
+        async def patrol_snapshot(self, chat_id):
+            return {"waiting": "", "remaining": 0.0, "total": 0.0}
+
+        def get_chat_energy(self, chat_id):
+            return None
+
+    fake = FakeContext()
+    import web_api as web_api_module
+    web_api_module.register_all_routes(
+        fake, store, manager, ledger,
+        chat_sources=sources,
+        status_transition_manager=FakeStatusManager(),
+        debounce_manager=FakeDebounce(),
+    )
+
+    app = Quart(__name__)
+    for route, handler, methods, _ in fake.routes:
+        path = "/api/plug" + route
+        app.add_url_rule(path, endpoint=path, view_func=handler, methods=methods)
+
+    client = app.test_client()
+    resp = await client.get("/api/plug/astrbot_plugin_angel_heart/chat_status")
+    items = (await resp.get_json())["data"]
+    assert items[0]["status"]["current_status"] == "OBSERVATION"
+
+    # 把状态开始时间拨到超过默认 60 秒之前 → 展示为离场
+    class FakeStatusManagerExpired:
+        def get_status_summary(self, chat_id):
+            return {"current_status": "OBSERVATION", "duration_seconds": 12.0}
+
+        def get_status_start_time(self, chat_id):
+            return now - 120
+
+    fake2 = FakeContext()
+    web_api_module.register_all_routes(
+        fake2, store, manager, ledger,
+        chat_sources=sources,
+        status_transition_manager=FakeStatusManagerExpired(),
+        debounce_manager=FakeDebounce(),
+    )
+    app2 = Quart(__name__)
+    for route, handler, methods, _ in fake2.routes:
+        path = "/api/plug" + route
+        app2.add_url_rule(path, endpoint=path, view_func=handler, methods=methods)
+
+    client2 = app2.test_client()
+    resp2 = await client2.get("/api/plug/astrbot_plugin_angel_heart/chat_status")
+    items2 = (await resp2.get_json())["data"]
+    assert items2[0]["status"]["current_status"] == "NOT_PRESENT"
 
 
 @pytest.mark.asyncio
