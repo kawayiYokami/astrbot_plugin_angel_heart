@@ -193,6 +193,21 @@ class ProfileAPI:
             known.extend(self.config_manager.chat_ids or [])
         except Exception:
             logger.debug("AngelHeart: 读取白名单群聊失败", exc_info=True)
+
+        # 白名单启用时只保留白名单内会话（按纯群号/QQ 号后缀匹配），
+        # 与“只有白名单中的群聊才会触发插件”的配置语义对齐
+        whitelist_enabled = False
+        whitelist_suffixes = set()
+        try:
+            whitelist_enabled = bool(self.config_manager.whitelist_enabled)
+            whitelist_suffixes = {
+                str(cid or "").split(":")[-1].strip()
+                for cid in (self.config_manager.chat_ids or [])
+                if str(cid or "").strip()
+            }
+        except Exception:
+            logger.debug("AngelHeart: 读取白名单配置失败", exc_info=True)
+
         seen = set()
         chats = []
         for raw in known:
@@ -201,6 +216,8 @@ class ProfileAPI:
                 continue
             suffix = chat_id.split(":")[-1] if ":" in chat_id else chat_id
             if suffix in seen:
+                continue
+            if whitelist_enabled and suffix not in whitelist_suffixes:
                 continue
             seen.add(suffix)
             display_name = ""

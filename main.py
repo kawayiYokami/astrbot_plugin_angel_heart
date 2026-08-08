@@ -186,8 +186,10 @@ class AngelHeartPlugin(Star):
         """将 Prompt 重写任务委托给 FrontDesk 处理"""
         chat_id = event.unified_msg_origin
 
-        # 白名单检查：如果启用了白名单，非白名单会话不接管上下文
-        if self.config_manager.whitelist_enabled:
+        # 白名单检查：如果启用了白名单，非白名单会话不接管上下文；
+        # 系统级唤醒前缀等价于点名唤醒，不受白名单约束
+        provider_wake_prefix_hit = self._is_provider_wake_prefix_event(event)
+        if self.config_manager.whitelist_enabled and not provider_wake_prefix_hit:
             plain_chat_id = self._get_plain_chat_id(chat_id)
             if plain_chat_id not in self._whitelist_cache:
                 return
@@ -324,6 +326,7 @@ class AngelHeartPlugin(Star):
 
             message_outline = ""
             try:
+                # 与 AstrBot 唤醒检查一致：先去除前导/尾随空白再匹配前缀
                 message_outline = (event.get_message_outline() or "").strip()
             except Exception:
                 message_outline = ""
@@ -331,6 +334,35 @@ class AngelHeartPlugin(Star):
         except Exception as e:
             logger.warning(
                 f"AngelHeart[{event.unified_msg_origin}]: 判断额外聊天唤醒前缀拦截失败: {e}"
+            )
+            return False
+
+    def _is_provider_wake_prefix_event(self, event: AstrMessageEvent) -> bool:
+        """判断当前事件是否命中系统级 LLM 唤醒前缀。
+
+        命中后等价于点名唤醒，正常走插件链路；不受白名单约束。
+        """
+        try:
+            if not event.is_at_or_wake_command:
+                return False
+
+            chat_id = event.unified_msg_origin
+            astrbot_conf = self.context.get_config(chat_id)
+            provider_settings = astrbot_conf.get("provider_settings", {}) if astrbot_conf else {}
+            provider_wake_prefix = (provider_settings.get("wake_prefix", "") or "").strip()
+            if not provider_wake_prefix:
+                return False
+
+            message_outline = ""
+            try:
+                # 与 AstrBot 唤醒检查一致：先去除前导/尾随空白再匹配前缀
+                message_outline = (event.get_message_outline() or "").strip()
+            except Exception:
+                message_outline = ""
+            return message_outline.startswith(provider_wake_prefix)
+        except Exception as e:
+            logger.warning(
+                f"AngelHeart[{event.unified_msg_origin}]: 判断系统级唤醒前缀事件失败: {e}"
             )
             return False
 
@@ -344,6 +376,26 @@ class AngelHeartPlugin(Star):
                     f"AngelHeart[{chat_id}]: 检测到上游 command/skill 事件，已跳过。"
                 )
                 return False
+
+            # 系统级唤醒前缀（如 "/"）等价于点名唤醒，正常走插件链路；
+            # 挂上唤醒标记供状态判定使用，且不受白名单约束
+            provider_wake_prefix_hit = self._is_provider_wake_prefix_event(event)
+            if provider_wake_prefix_hit:
+                try:
+                    event.set_extra("angelheart_provider_wake_prefix", True)
+                except Exception:
+                    pass
+                logger.debug(
+                    f"AngelHeart[{chat_id}]: 命中系统级唤醒前缀，按点名唤醒处理。"
+                )
+
+            # 白名单检查：普通消息统一生效（含 @/昵称唤醒），
+            # 系统级唤醒前缀不受白名单约束；对齐“只有白名单中的群聊才会触发插件”
+            if self.config_manager.whitelist_enabled and not provider_wake_prefix_hit:
+                plain_chat_id = self._get_plain_chat_id(chat_id)
+                if plain_chat_id not in self._whitelist_cache:
+                    logger.debug(f"AngelHeart[{chat_id}]: 会话未在白名单中, 已忽略")
+                    return False
 
             blocked_by_provider_wake_prefix = self._is_blocked_by_provider_wake_prefix(event)
             event.set_extra(
@@ -412,13 +464,6 @@ class AngelHeartPlugin(Star):
             if not event.get_message_outline().strip():
                 logger.debug(f"AngelHeart[{chat_id}]: 消息内容为空, 已忽略")
                 return False
-
-            # 3. (可选) 检查白名单
-            if self.config_manager.whitelist_enabled:
-                plain_chat_id = self._get_plain_chat_id(chat_id)
-                if plain_chat_id not in self._whitelist_cache:
-                    logger.debug(f"AngelHeart[{chat_id}]: 会话未在白名单中, 已忽略")
-                    return False
 
             logger.debug(f"AngelHeart[{chat_id}]: 消息通过所有前置检查, 准备处理...")
             return True

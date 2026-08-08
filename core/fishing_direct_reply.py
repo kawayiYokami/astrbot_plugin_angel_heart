@@ -109,6 +109,35 @@ class FishingDirectReply:
             )
 
             logger.debug(f"AngelHeart[{chat_id}]: 生成策略: {strategy}")
+
+            # 固化决策上下文：与秘书路径对齐，
+            # 否则群聊执行决策时必抛“秘书决策上下文缺失”
+            try:
+                if decision.should_reply and hasattr(event, "set_extra"):
+                    boundary_message_id = (
+                        self.angel_context.debounce_manager.get_end_message_id(event)
+                    )
+                    if not boundary_message_id:
+                        boundary_message_id = str(
+                            getattr(getattr(event, "message_obj", None), "message_id", "") or ""
+                        )
+                    historical_context, recent_dialogue, boundary_ts = (
+                        self.angel_context.conversation_ledger.get_context_snapshot(
+                            chat_id, boundary_message_id
+                        )
+                    )
+                    event.set_extra(
+                        "angelheart_decision_context",
+                        {
+                            "historical_context": historical_context,
+                            "recent_dialogue": recent_dialogue,
+                            "boundary_ts": boundary_ts,
+                            "boundary_message_id": boundary_message_id,
+                        },
+                    )
+            except Exception as e:
+                logger.warning(f"AngelHeart[{chat_id}]: 离场应答固化决策上下文失败: {e}")
+
             return decision
 
         except Exception as e:
