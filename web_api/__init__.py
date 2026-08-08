@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -260,6 +261,24 @@ class ProfileAPI:
             if self.status_transition_manager is not None:
                 try:
                     status = self.status_transition_manager.get_status_summary(chat_id)
+                    # 展示层在场超时推断：真实状态只在收到新消息时才做超时检查，
+                    # 群聊安静后内存状态会停在「在场」，UI 轮询读到过期状态。
+                    # 这里按 observation_timeout 推断为离场展示，不改真实状态机。
+                    if status.get("current_status") == "OBSERVATION":
+                        get_start = getattr(
+                            self.status_transition_manager,
+                            "get_status_start_time",
+                            None,
+                        )
+                        if get_start is not None:
+                            start = get_start(chat_id)
+                            if start:
+                                timeout = self.config_manager.for_chat(
+                                    chat_id
+                                ).observation_timeout
+                                if time.time() - start >= timeout:
+                                    status = dict(status)
+                                    status["current_status"] = "NOT_PRESENT"
                 except Exception:
                     pass
             energy = None
