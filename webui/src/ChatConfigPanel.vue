@@ -1,93 +1,132 @@
 <template>
-  <div class="layout">
+  <n-layout class="layout" has-sider>
     <!-- 左侧：模板列表 -->
-    <aside class="sidebar">
-      <div class="sidebar-header">
-        <div class="brand">群聊独立配置</div>
-        <n-button size="small" type="primary" @click="openCreateModal">
-          <template #icon><Icon icon="lucide:plus" /></template>
-          新建模板
-        </n-button>
-      </div>
-      <div class="monitor-card" :class="{ active: viewMode === 'monitor' }" @click="switchMonitor">
-        <div class="nav-item">
-          <Icon icon="lucide:activity" class="nav-icon" />
-          <div>
-            <div class="global-name">联系人监控</div>
-            <div class="global-desc">群聊与私聊的在场状态、巡检与最近决策</div>
-          </div>
-        </div>
-      </div>
-      <div class="global-card" :class="{ active: viewMode === 'config' && !selectedId }" @click="selectTemplate(null)">
-        <div class="nav-item">
-          <Icon icon="lucide:settings" class="nav-icon" />
-          <div>
-            <div class="global-name">全局配置（默认）</div>
-            <div class="global-desc">未绑定群聊使用此配置</div>
-          </div>
-        </div>
-      </div>
-      <n-scrollbar class="sidebar-scroll">
-        <div class="template-list">
-          <div
-            v-for="tpl in templates"
-            :key="tpl.id"
-            class="template-item"
-            :class="{ active: viewMode === 'config' && selectedId === tpl.id }"
-            @click="selectTemplate(tpl.id)"
-          >
-            <div class="template-title">
-              <Icon icon="lucide:file-text" class="template-icon" />
-              <span class="template-name">{{ tpl.name }}</span>
-            </div>
-            <div class="template-desc">
-              {{ tpl.description || '无描述' }}
-              <span v-if="bindingCount(tpl.id)" class="binding-badge">
-                {{ bindingCount(tpl.id) }} 群
-              </span>
-            </div>
-            <div class="template-actions" @click.stop>
-              <n-button size="tiny" quaternary @click="openRenameModal(tpl)">
-                <template #icon><Icon icon="lucide:pencil" /></template>
-                重命名
-              </n-button>
-              <n-popconfirm @positive-click="deleteTemplate(tpl.id)">
-                <template #trigger>
-                  <n-button size="tiny" quaternary type="error">
-                    <template #icon><Icon icon="lucide:trash-2" /></template>
-                    删除
-                  </n-button>
-                </template>
-                删除后绑定它的群聊将回退到全局配置
-              </n-popconfirm>
-            </div>
-          </div>
-          <n-empty
-            v-if="!templates.length"
+    <n-layout-sider
+      bordered
+      width="260"
+      collapse-mode="width"
+      :collapsed-width="56"
+      show-trigger="bar"
+      :collapsed="sidebarCollapsed"
+      @collapse="sidebarCollapsed = true"
+      @expand="sidebarCollapsed = false"
+    >
+      <div class="sidebar-inner" :class="{ collapsed: sidebarCollapsed }">
+        <div class="sidebar-header">
+          <div v-if="!sidebarCollapsed" class="brand">群聊独立配置</div>
+          <n-button
+            v-if="!sidebarCollapsed"
             size="small"
-            description="还没有模板，点击右上角新建"
-            class="list-empty"
-          />
+            type="primary"
+            @click="openCreateModal"
+          >
+            <template #icon><Icon icon="lucide:plus" /></template>
+            新建模板
+          </n-button>
+          <n-button
+            v-else
+            size="small"
+            type="primary"
+            circle
+            title="新建模板"
+            @click="openCreateModal"
+          >
+            <template #icon><Icon icon="lucide:plus" /></template>
+          </n-button>
         </div>
-      </n-scrollbar>
-      <div class="sidebar-footer">
+        <div
+          class="monitor-card"
+          :class="{ active: viewMode === 'monitor' }"
+          @click="switchMonitor"
+          :title="sidebarCollapsed ? '联系人监控' : undefined"
+        >
+          <div class="nav-item">
+            <Icon icon="lucide:activity" class="nav-icon" />
+            <div v-if="!sidebarCollapsed">
+              <div class="global-name">联系人监控</div>
+              <div class="global-desc">群聊与私聊的在场状态、巡检与最近决策</div>
+            </div>
+          </div>
+        </div>
+        <div
+          class="global-card"
+          :class="{ active: viewMode === 'config' && !selectedId }"
+          @click="selectTemplate(null)"
+          :title="sidebarCollapsed ? '全局配置（默认）' : undefined"
+        >
+          <div class="nav-item">
+            <Icon icon="lucide:settings" class="nav-icon" />
+            <div v-if="!sidebarCollapsed">
+              <div class="global-name">全局配置（默认）</div>
+              <div class="global-desc">未绑定群聊使用此配置</div>
+            </div>
+          </div>
+        </div>
+        <n-scrollbar class="sidebar-scroll">
+          <div class="template-list">
+            <div
+              v-for="tpl in templates"
+              :key="tpl.id"
+              class="template-item"
+              :class="{ active: viewMode === 'config' && selectedId === tpl.id }"
+              @click="selectTemplate(tpl.id)"
+              :title="sidebarCollapsed ? tpl.name : undefined"
+            >
+              <div class="template-title">
+                <Icon icon="lucide:file-text" class="template-icon" />
+                <span v-if="!sidebarCollapsed" class="template-name">{{ tpl.name }}</span>
+              </div>
+              <div v-if="!sidebarCollapsed" class="template-desc">
+                {{ tpl.description || '无描述' }}
+                <span v-if="bindingCount(tpl.id)" class="binding-badge">
+                  {{ bindingCount(tpl.id) }} 群
+                </span>
+              </div>
+              <div v-if="!sidebarCollapsed" class="template-actions" @click.stop>
+                <n-button size="tiny" quaternary @click="openRenameModal(tpl)">
+                  <template #icon><Icon icon="lucide:pencil" /></template>
+                  重命名
+                </n-button>
+                <n-popconfirm @positive-click="deleteTemplate(tpl.id)">
+                  <template #trigger>
+                    <n-button size="tiny" quaternary type="error">
+                      <template #icon><Icon icon="lucide:trash-2" /></template>
+                      删除
+                    </n-button>
+                  </template>
+                  删除后绑定它的群聊将回退到全局配置
+                </n-popconfirm>
+              </div>
+            </div>
+            <n-empty
+              v-if="!templates.length"
+              size="small"
+              description="还没有模板，点击右上角新建"
+              class="list-empty"
+            />
+          </div>
+        </n-scrollbar>
+        <div class="sidebar-footer">
         <a
+          v-if="!sidebarCollapsed"
           href="https://github.com/kawayiYokami/astrbot_plugin_angel_heart"
           target="_blank"
           rel="noopener"
           class="footer-link"
         >⭐ Star</a>
         <a
+          v-if="!sidebarCollapsed"
           href="https://github.com/kawayiYokami/astrbot_plugin_angel_heart/issues/new"
           target="_blank"
           rel="noopener"
           class="footer-link"
         >🐛 Issues</a>
       </div>
-    </aside>
+      </div>
+    </n-layout-sider>
 
     <!-- 右侧：配置详情 -->
-    <main class="content">
+    <n-layout-content class="content">
       <n-scrollbar class="content-scroll">
       <div class="content-inner">
       <!-- 联系人监控 -->
@@ -234,7 +273,7 @@
       </template>
       </div>
       </n-scrollbar>
-    </main>
+    </n-layout-content>
 
     <!-- 新建模板弹窗 -->
     <n-modal
@@ -269,7 +308,7 @@
     >
       <n-input v-model:value="renameForm.name" placeholder="模板名称" />
     </n-modal>
-  </div>
+  </n-layout>
 </template>
 
 <script setup lang="ts">
@@ -281,6 +320,9 @@ import {
   NFormItem,
   NInput,
   NInputNumber,
+  NLayout,
+  NLayoutContent,
+  NLayoutSider,
   NModal,
   NPopconfirm,
   NRadio,
@@ -312,6 +354,7 @@ const statusItems = ref<ChatStatusItem[]>([])
 const kindFilter = ref<'all' | 'group' | 'private'>('all')
 const viewMode = ref<'config' | 'monitor'>('config')
 const selectedId = ref<string | null>(null)
+const sidebarCollapsed = ref(false)
 const saving = ref(false)
 let statusTimer: ReturnType<typeof setInterval> | null = null
 
@@ -581,13 +624,47 @@ body,
   background: #1a1a1f;
 }
 
-.sidebar {
-  width: 260px;
-  min-width: 260px;
+.sidebar-inner {
+  height: 100%;
   background: #222228;
-  border-right: 1px solid #33333a;
   display: flex;
   flex-direction: column;
+}
+
+.sidebar-inner.collapsed .sidebar-header {
+  justify-content: center;
+  padding: 14px 8px;
+}
+
+.sidebar-inner.collapsed .monitor-card,
+.sidebar-inner.collapsed .global-card {
+  padding: 10px 0;
+  display: flex;
+  justify-content: center;
+}
+
+.sidebar-inner.collapsed .nav-item {
+  gap: 0;
+}
+
+.sidebar-inner.collapsed .template-list {
+  padding: 0 8px 8px;
+}
+
+.sidebar-inner.collapsed .template-item {
+  padding: 10px 0;
+  display: flex;
+  justify-content: center;
+}
+
+.sidebar-inner.collapsed .template-title {
+  justify-content: center;
+  width: 100%;
+}
+
+.sidebar-inner.collapsed .sidebar-footer {
+  justify-content: center;
+  padding: 10px 0;
 }
 
 .sidebar-header {
