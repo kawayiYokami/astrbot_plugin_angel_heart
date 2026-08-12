@@ -186,13 +186,9 @@ class AngelHeartPlugin(Star):
         """将 Prompt 重写任务委托给 FrontDesk 处理"""
         chat_id = event.unified_msg_origin
 
-        # 白名单检查：如果启用了白名单，非白名单会话不接管上下文；
-        # 系统级唤醒前缀等价于点名唤醒，不受白名单约束
-        provider_wake_prefix_hit = self._is_provider_wake_prefix_event(event)
-        if self.config_manager.whitelist_enabled and not provider_wake_prefix_hit:
-            plain_chat_id = self._get_plain_chat_id(chat_id)
-            if plain_chat_id not in self._whitelist_cache:
-                return
+        # 白名单只控制群聊；私聊不受白名单约束，始终接管上下文。
+        if self._is_whitelist_blocked(chat_id):
+            return
 
         if self._is_private_chat(chat_id):
             if not self.config_manager.takeover_private_chat_context:
@@ -217,6 +213,8 @@ class AngelHeartPlugin(Star):
         """只在 Agent 完成后一次性记录本事件新增的完整 assistant/tool 链。"""
         chat_id = event.unified_msg_origin
         try:
+            if self._is_whitelist_blocked(chat_id):
+                return
             completed_messages = extract_completed_agent_messages(
                 getattr(run_context, "messages", None),
                 event.get_extra("provider_request") if hasattr(event, "get_extra") else None,
@@ -294,7 +292,20 @@ class AngelHeartPlugin(Star):
     def _is_private_chat(self, unified_id: str) -> bool:
         """根据 unified_msg_origin 判断是否为私聊。"""
         parts = unified_id.split(":")
-        return len(parts) >= 3 and parts[1] == "FriendMessage"
+        return len(parts) >= 3 and parts[1] in ("FriendMessage", "PrivateMessage")
+
+    def _is_whitelist_blocked(self, chat_id: str) -> bool:
+        """白名单只控制群聊：启用时仅放行白名单群聊，私聊不受限。"""
+        try:
+            if not self.config_manager.whitelist_enabled:
+                return False
+            if self._is_private_chat(chat_id):
+                return False
+            plain_chat_id = self._get_plain_chat_id(chat_id)
+            return plain_chat_id not in self._whitelist_cache
+        except Exception as e:
+            logger.warning(f"AngelHeart[{chat_id}]: 判断白名单拦截失败: {e}")
+            return True
 
     def _is_upstream_command_event(self, event: AstrMessageEvent) -> bool:
         """判断当前事件是否已命中上游 command/skill 处理器。"""
@@ -337,35 +348,6 @@ class AngelHeartPlugin(Star):
             )
             return False
 
-    def _is_provider_wake_prefix_event(self, event: AstrMessageEvent) -> bool:
-        """判断当前事件是否命中系统级 LLM 唤醒前缀。
-
-        命中后等价于点名唤醒，正常走插件链路；不受白名单约束。
-        """
-        try:
-            if not event.is_at_or_wake_command:
-                return False
-
-            chat_id = event.unified_msg_origin
-            astrbot_conf = self.context.get_config(chat_id)
-            provider_settings = astrbot_conf.get("provider_settings", {}) if astrbot_conf else {}
-            provider_wake_prefix = (provider_settings.get("wake_prefix", "") or "").strip()
-            if not provider_wake_prefix:
-                return False
-
-            message_outline = ""
-            try:
-                # 与 AstrBot 唤醒检查一致：先去除前导/尾随空白再匹配前缀
-                message_outline = (event.get_message_outline() or "").strip()
-            except Exception:
-                message_outline = ""
-            return message_outline.startswith(provider_wake_prefix)
-        except Exception as e:
-            logger.warning(
-                f"AngelHeart[{event.unified_msg_origin}]: 判断系统级唤醒前缀事件失败: {e}"
-            )
-            return False
-
     def _should_process(self, event: AstrMessageEvent) -> bool:
         """检查是否需要处理此消息"""
         chat_id = event.unified_msg_origin
@@ -377,25 +359,11 @@ class AngelHeartPlugin(Star):
                 )
                 return False
 
-            # 系统级唤醒前缀（如 "/"）等价于点名唤醒，正常走插件链路；
-            # 挂上唤醒标记供状态判定使用，且不受白名单约束
-            provider_wake_prefix_hit = self._is_provider_wake_prefix_event(event)
-            if provider_wake_prefix_hit:
-                try:
-                    event.set_extra("angelheart_provider_wake_prefix", True)
-                except Exception:
-                    pass
-                logger.debug(
-                    f"AngelHeart[{chat_id}]: 命中系统级唤醒前缀，按点名唤醒处理。"
-                )
-
-            # 白名单检查：普通消息统一生效（含 @/昵称唤醒），
-            # 系统级唤醒前缀不受白名单约束；对齐“只有白名单中的群聊才会触发插件”
-            if self.config_manager.whitelist_enabled and not provider_wake_prefix_hit:
-                plain_chat_id = self._get_plain_chat_id(chat_id)
-                if plain_chat_id not in self._whitelist_cache:
-                    logger.debug(f"AngelHeart[{chat_id}]: 会话未在白名单中, 已忽略")
-                    return False
+            # 白名单只控制群聊：普通群聊消息统一生效（含 @/昵称唤醒），
+            # 私聊不受白名单约束；对齐“只有白名单中的群聊才会触发插件”
+            if self._is_whitelist_blocked(chat_id):
+                logger.debug(f"AngelHeart[{chat_id}]: 会话未在白名单中, 已忽略")
+                return False
 
             blocked_by_provider_wake_prefix = self._is_blocked_by_provider_wake_prefix(event)
             event.set_extra(
@@ -490,6 +458,11 @@ class AngelHeartPlugin(Star):
                     f"AngelHeart[{chat_id}]: 检测到是上游指令事件，跳过 Markdown 清洗。"
                 )
                 return
+            if self._is_whitelist_blocked(chat_id):
+                logger.debug(
+                    f"AngelHeart[{chat_id}]: 会话未在白名单中，跳过 Markdown 清洗。"
+                )
+                return
 
             logger.debug(f"AngelHeart[{chat_id}]: 开始清洗消息链中的Markdown格式...")
 
@@ -565,6 +538,11 @@ class AngelHeartPlugin(Star):
         """
         chat_id = event.unified_msg_origin
         try:
+            if self._is_whitelist_blocked(chat_id):
+                logger.debug(
+                    f"AngelHeart[{chat_id}]: 会话未在白名单中，跳过发送后处理。"
+                )
+                return
             logger.debug(f"AngelHeart[{chat_id}]: 消息发送完成，开始后处理...")
 
             # 状态转换：AI发送消息后转换到观测期

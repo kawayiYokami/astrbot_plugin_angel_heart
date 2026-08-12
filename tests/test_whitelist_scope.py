@@ -1,4 +1,4 @@
-"""系统级 LLM 唤醒前缀（如 "/"）等价点名唤醒的边界测试。"""
+"""群聊白名单作用域测试：白名单只管辖群聊，私聊不受白名单约束。"""
 
 from __future__ import annotations
 
@@ -81,6 +81,9 @@ star_context_mod.Context = type("Context", (), {})
 
 components_mod = sys.modules["astrbot.core.message.components"]
 components_mod.AtAll = type("AtAll", (), {})
+components_mod.Plain = type("Plain", (), {})
+components_mod.At = type("At", (), {})
+components_mod.Reply = type("Reply", (), {})
 
 star_register_mod = sys.modules["astrbot.core.star.register"]
 star_register_mod.register_on_agent_done = _passthrough
@@ -99,7 +102,6 @@ command_group_mod = sys.modules["astrbot.core.star.filter.command_group"]
 command_group_mod.CommandGroupFilter = type("CommandGroupFilter", (), {})
 
 from astrbot_plugin_angel_heart.core.runtime_task_tracker import RuntimeTaskTracker
-from astrbot_plugin_angel_heart.core.angel_heart_status import StatusChecker
 from astrbot_plugin_angel_heart.main import AngelHeartPlugin
 
 
@@ -138,21 +140,19 @@ class DummyEvent:
     def get_messages(self):
         return []
 
+    def get_result(self):
+        return self._result
+
     def get_timestamp(self):
         return time.time()
 
 
 def _make_plugin(
-    provider_wake_prefix: str = "/",
     whitelist_enabled: bool = True,
     chat_ids: tuple = ("1",),
 ) -> AngelHeartPlugin:
     plugin = AngelHeartPlugin.__new__(AngelHeartPlugin)
-    plugin.context = SimpleNamespace(
-        get_config=lambda chat_id: {
-            "provider_settings": {"wake_prefix": provider_wake_prefix}
-        }
-    )
+    plugin.context = SimpleNamespace(get_config=lambda chat_id: {})
     plugin.config_manager = SimpleNamespace(
         whitelist_enabled=whitelist_enabled,
         chat_ids=list(chat_ids),
@@ -165,73 +165,93 @@ def _make_plugin(
     return plugin
 
 
-def test_provider_prefix_wakes_in_whitelisted_group():
-    plugin = _make_plugin()
-    event = DummyEvent("/hello", chat_id="aiocqhttp:GroupMessage:1")
-
-    assert plugin._is_provider_wake_prefix_event(event) is True
-    assert plugin._should_process(event) is True
-    assert event.get_extra("angelheart_provider_wake_prefix") is True
-
-
-def test_provider_prefix_wakes_outside_whitelist():
-    plugin = _make_plugin(chat_ids=("2",))
-    event = DummyEvent("/hello", chat_id="aiocqhttp:GroupMessage:1")
-
-    assert plugin._should_process(event) is True
-
-
-def test_provider_prefix_normalizes_leading_whitespace_like_astrbot():
-    """AstrBot 唤醒检查先 strip 再匹配前缀，前导空白后的 / 同样视为系统级唤醒。"""
-    plugin = _make_plugin(chat_ids=("2",))
-    event = DummyEvent(" /hello", chat_id="aiocqhttp:GroupMessage:1")
-
-    assert plugin._is_provider_wake_prefix_event(event) is True
-    assert plugin._should_process(event) is True
-
-
-def test_provider_prefix_requires_wake_and_configured_prefix():
-    plugin = _make_plugin()
-
-    not_woken = DummyEvent(
-        "/hello",
-        chat_id="aiocqhttp:GroupMessage:1",
-        is_at_or_wake_command=False,
-    )
-    assert plugin._is_provider_wake_prefix_event(not_woken) is False
-
-    no_prefix_config = _make_plugin(provider_wake_prefix="")
-    woken = DummyEvent("/hello", chat_id="aiocqhttp:GroupMessage:1")
-    assert no_prefix_config._is_provider_wake_prefix_event(woken) is False
-
-
-def test_non_prefix_wake_still_processed_in_whitelist():
+def test_whitelisted_group_still_processed():
     plugin = _make_plugin()
     event = DummyEvent("hello", chat_id="aiocqhttp:GroupMessage:1")
 
-    assert plugin._is_provider_wake_prefix_event(event) is False
     assert plugin._should_process(event) is True
 
 
-def test_non_prefix_wake_blocked_by_whitelist():
+def test_outside_whitelist_group_blocked():
     plugin = _make_plugin(chat_ids=("2",))
     event = DummyEvent("hello", chat_id="aiocqhttp:GroupMessage:1")
 
     assert plugin._should_process(event) is False
 
 
+def test_whitelist_disabled_processes_all_groups():
+    plugin = _make_plugin(whitelist_enabled=False)
+    event = DummyEvent("hello", chat_id="aiocqhttp:GroupMessage:9")
+
+    assert plugin._should_process(event) is True
+
+
+def test_private_chat_not_blocked_by_whitelist():
+    """白名单只控制群聊：私聊无论是否在白名单中都可进入插件链路。"""
+    plugin = _make_plugin(chat_ids=("2",))
+    event = DummyEvent("hello", chat_id="aiocqhttp:FriendMessage:1")
+
+    assert plugin._should_process(event) is True
+
+
+def test_private_message_origin_not_blocked_by_whitelist():
+    """PrivateMessage 形态的私聊同样不受白名单约束。"""
+    plugin = _make_plugin(chat_ids=("2",))
+    event = DummyEvent("hello", chat_id="aiocqhttp:PrivateMessage:1")
+
+    assert plugin._is_private_chat("aiocqhttp:PrivateMessage:1") is True
+    assert plugin._should_process(event) is True
+
+
+def test_whitelist_block_helper_matrix():
+    """白名单拦截判断：只拦非白名单群聊，私聊与关白名单均放行。"""
+    plugin = _make_plugin(chat_ids=("2",))
+
+    assert plugin._is_whitelist_blocked("aiocqhttp:GroupMessage:1") is True
+    assert plugin._is_whitelist_blocked("aiocqhttp:GroupMessage:2") is False
+    assert plugin._is_whitelist_blocked("aiocqhttp:FriendMessage:1") is False
+    assert plugin._is_whitelist_blocked("aiocqhttp:PrivateMessage:1") is False
+
+    disabled = _make_plugin(whitelist_enabled=False, chat_ids=("2",))
+    assert disabled._is_whitelist_blocked("aiocqhttp:GroupMessage:1") is False
+
+
+def test_whitelist_helper_fails_closed_on_config_error():
+    """白名单判定异常时按拦截处理，避免配置错误导致越权进入插件链路。"""
+    plugin = _make_plugin(chat_ids=("2",))
+
+    def boom():
+        raise RuntimeError("config read failed")
+
+    plugin.config_manager.whitelist_enabled = boom
+
+    assert plugin._is_whitelist_blocked("aiocqhttp:GroupMessage:1") is True
+
+
 @pytest.mark.asyncio
-async def test_rewrite_runs_for_provider_prefix():
-    plugin = _make_plugin()
-    event = DummyEvent("/hello", chat_id="aiocqhttp:GroupMessage:1")
+async def test_side_hooks_skip_outside_whitelist():
+    """三个旁路钩子对非白名单群聊直接跳过，不再产生插件副作用。"""
+    plugin = _make_plugin(chat_ids=("2",))
+    plugin.angel_context = SimpleNamespace(
+        conversation_ledger=SimpleNamespace(add_messages=AsyncMock()),
+        debounce_manager=SimpleNamespace(charge_reply_energy=AsyncMock()),
+        work_ledger=SimpleNamespace(complete_work=MagicMock()),
+        handle_message_sent=AsyncMock(),
+    )
+    event = DummyEvent("hello", chat_id="aiocqhttp:GroupMessage:1")
 
-    await plugin.delegate_prompt_rewriting(event, MagicMock())
+    await plugin.capture_completed_agent_messages(event, MagicMock(), MagicMock())
+    await plugin.strip_markdown_on_decorating_result(event)
+    await plugin.handle_message_sent(event)
 
-    plugin.front_desk.rewrite_prompt_for_llm.assert_awaited_once()
+    plugin.angel_context.conversation_ledger.add_messages.assert_not_called()
+    plugin.angel_context.debounce_manager.charge_reply_energy.assert_not_called()
+    plugin.angel_context.work_ledger.complete_work.assert_not_called()
+    plugin.angel_context.handle_message_sent.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_rewrite_still_runs_for_normal_wake():
+async def test_rewrite_runs_for_whitelisted_group():
     plugin = _make_plugin()
     event = DummyEvent("hello", chat_id="aiocqhttp:GroupMessage:1")
 
@@ -240,11 +260,11 @@ async def test_rewrite_still_runs_for_normal_wake():
     plugin.front_desk.rewrite_prompt_for_llm.assert_awaited_once()
 
 
-def test_status_checker_recognizes_provider_wake_flag():
-    plugin = _make_plugin()
-    angel_context = SimpleNamespace(silenced_until={})
-    checker = StatusChecker(plugin.config_manager, angel_context)
-    event = DummyEvent("/hello", chat_id="aiocqhttp:GroupMessage:1")
-    event.set_extra("angelheart_provider_wake_prefix", True)
+@pytest.mark.asyncio
+async def test_rewrite_skips_outside_whitelist():
+    plugin = _make_plugin(chat_ids=("2",))
+    event = DummyEvent("hello", chat_id="aiocqhttp:GroupMessage:1")
 
-    assert checker.is_event_wake(event) is True
+    await plugin.delegate_prompt_rewriting(event, MagicMock())
+
+    plugin.front_desk.rewrite_prompt_for_llm.assert_not_awaited()

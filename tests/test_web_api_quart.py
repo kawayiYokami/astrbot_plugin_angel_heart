@@ -138,6 +138,46 @@ async def test_list_chats_filters_outside_whitelist_when_enabled(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_list_chats_keeps_private_chats_when_whitelist_enabled(tmp_path):
+    """白名单只控制群聊：私聊始终展示，不受白名单开关与列表约束。"""
+    from quart import Quart
+
+    from core.chat_sources import ChatSourcesStore
+
+    store = ChatProfileStore(str(tmp_path))
+    manager = ConfigManager(
+        {
+            "access_control": {
+                "whitelist_enabled": True,
+                "chat_ids": ["1051472372"],
+            }
+        }
+    )
+    ledger = type("Ledger", (), {"get_all_chat_ids": staticmethod(lambda: [])})()
+    sources = ChatSourcesStore(str(tmp_path))
+    sources.record("default:GroupMessage:1051472372", "白名单群", "group")
+    sources.record("default:FriendMessage:20002", "私聊好友", "private")
+    fake = FakeContext()
+
+    import web_api as web_api_module
+
+    web_api_module.register_all_routes(fake, store, manager, ledger, chat_sources=sources)
+
+    app = Quart(__name__)
+    for route, handler, methods, _ in fake.routes:
+        path = "/api/plug" + route
+        app.add_url_rule(path, endpoint=path, view_func=handler, methods=methods)
+
+    client = app.test_client()
+    resp = await client.get("/api/plug/astrbot_plugin_angel_heart/chats")
+    chats = (await resp.get_json())["data"]
+    ids = [c["chat_id"] for c in chats]
+
+    assert "default:GroupMessage:1051472372" in ids
+    assert "default:FriendMessage:20002" in ids
+
+
+@pytest.mark.asyncio
 async def test_full_crud_and_binding_flow(api_app):
     client = api_app.test_client()
 

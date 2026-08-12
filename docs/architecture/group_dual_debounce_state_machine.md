@@ -18,16 +18,9 @@
 
 命中上游 command/skill 的事件（`_is_upstream_command_event`）由 AstrBot 直接处理，AngelHeart 不缓存、不防抖、不重写请求体、不清洗 Markdown。
 
-### 系统级唤醒前缀（点名唤醒等价）
+### 群聊白名单作用域
 
-AstrBot 配置 `wake_prefix`（如 `/`）后，以该前缀开头的消息由 AstrBot 判定为系统级唤醒；AngelHeart 将其等价于点名唤醒：
-
-1. `_is_provider_wake_prefix_event` 判定命中（消息以 `wake_prefix` 开头且事件已唤醒）
-2. `_should_process` 挂载 `angelheart_provider_wake_prefix` 标记，且不受白名单约束
-3. `StatusChecker.is_event_wake` 直接视为点名
-4. 其余流程（缓存、双防抖、秘书决策、上下文重写）与普通点名一致
-
-系统级唤醒前缀按「消息以前缀开头」匹配，与 AngelHeart 的点名昵称（包含即命中）语义不同；非前缀消息仍按白名单与插件既有规则处理。
+白名单只控制群聊：启用后仅白名单内群聊进入 AngelHeart 链路，白名单外群聊完全不受插件影响（含 @/昵称唤醒）。关闭白名单后所有群聊受插件管辖。私聊不受白名单约束，始终走原版上下文接管链路。
 
 ### 私聊
 
