@@ -348,6 +348,42 @@ class AngelHeartPlugin(Star):
             )
             return False
 
+    def _is_provider_wake_prefix_event(self, event: AstrMessageEvent) -> bool:
+        """判断当前事件是否命中 AstrBot 配置的系统级唤醒前缀。
+
+        仅当配置开启 enable_system_wake_prefix 时生效；前缀内容来自
+        provider_settings.wake_prefix，可为任意词或符号。
+        """
+        try:
+            if not self.config_manager.enable_system_wake_prefix:
+                return False
+            if not event.is_at_or_wake_command:
+                return False
+
+            chat_id = event.unified_msg_origin
+            astrbot_conf = self.context.get_config(chat_id)
+            provider_settings = (
+                astrbot_conf.get("provider_settings", {}) if astrbot_conf else {}
+            )
+            provider_wake_prefix = (
+                provider_settings.get("wake_prefix", "") or ""
+            ).strip()
+            if not provider_wake_prefix:
+                return False
+
+            message_outline = ""
+            try:
+                # 与 AstrBot 唤醒检查一致：先去除前导/尾随空白再匹配前缀
+                message_outline = (event.get_message_outline() or "").strip()
+            except Exception:
+                message_outline = ""
+            return message_outline.startswith(provider_wake_prefix)
+        except Exception as e:
+            logger.warning(
+                f"AngelHeart[{event.unified_msg_origin}]: 判断系统级唤醒前缀事件失败: {e}"
+            )
+            return False
+
     def _should_process(self, event: AstrMessageEvent) -> bool:
         """检查是否需要处理此消息"""
         chat_id = event.unified_msg_origin
@@ -364,6 +400,17 @@ class AngelHeartPlugin(Star):
             if self._is_whitelist_blocked(chat_id):
                 logger.debug(f"AngelHeart[{chat_id}]: 会话未在白名单中, 已忽略")
                 return False
+
+            # 开启系统级唤醒词后：以 AstrBot wake_prefix 开头的消息等价点名唤醒
+            provider_wake_prefix_hit = self._is_provider_wake_prefix_event(event)
+            if provider_wake_prefix_hit:
+                try:
+                    event.set_extra("angelheart_provider_wake_prefix", True)
+                except Exception:
+                    pass
+                logger.debug(
+                    f"AngelHeart[{chat_id}]: 命中系统级唤醒前缀，按点名唤醒处理。"
+                )
 
             blocked_by_provider_wake_prefix = self._is_blocked_by_provider_wake_prefix(event)
             event.set_extra(

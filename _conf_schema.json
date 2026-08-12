@@ -213,6 +213,12 @@
         "hint": "启用后，命中上游点名但未通过天使之心批准的非命令消息将被直接拦截。",
         "default": false
       },
+      "enable_system_wake_prefix": {
+        "type": "bool",
+        "description": "开启系统级唤醒词",
+        "hint": "启用后，消息以 AstrBot 配置的系统级唤醒前缀开头时，等价于点名唤醒进入插件链路；关闭后沿用现有行为。前缀内容由 AstrBot 的 wake_prefix 决定，可为任意词或符号。仍受群聊白名单约束。",
+        "default": false
+      },
       "alias": {
         "type": "string",
         "description": "助理昵称",
