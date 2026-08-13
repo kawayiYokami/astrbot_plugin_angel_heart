@@ -179,11 +179,15 @@ class ProfileAPI:
     def _known_chats(self) -> List[Dict]:
         """合并来源/ledger/白名单并去重，返回 chat 条目列表（无 Response 包装）。"""
         known: List[str] = []
+        source_kinds: Dict[str, str] = {}
         try:
             if self.chat_sources is not None:
-                known.extend(
-                    item["chat_id"] for item in self.chat_sources.list_sources()
-                )
+                for item in self.chat_sources.list_sources():
+                    chat_id = str(item.get("chat_id") or "").strip()
+                    if not chat_id:
+                        continue
+                    known.append(chat_id)
+                    source_kinds[chat_id] = str(item.get("kind") or "")
         except Exception:
             logger.debug("AngelHeart: 读取来源登记失败", exc_info=True)
         try:
@@ -194,6 +198,21 @@ class ProfileAPI:
             known.extend(self.config_manager.chat_ids or [])
         except Exception:
             logger.debug("AngelHeart: 读取白名单群聊失败", exc_info=True)
+
+        # 白名单只控制群聊：启用时按纯群号/QQ 号后缀过滤群聊，
+        # 私聊不受白名单约束，始终展示。
+        whitelist_enabled = False
+        whitelist_suffixes = set()
+        try:
+            whitelist_enabled = bool(self.config_manager.whitelist_enabled)
+            whitelist_suffixes = {
+                str(cid or "").split(":")[-1].strip()
+                for cid in (self.config_manager.chat_ids or [])
+                if str(cid or "").strip()
+            }
+        except Exception:
+            logger.debug("AngelHeart: 读取白名单配置失败", exc_info=True)
+
         seen = set()
         chats = []
         for raw in known:
@@ -202,6 +221,13 @@ class ProfileAPI:
                 continue
             suffix = chat_id.split(":")[-1] if ":" in chat_id else chat_id
             if suffix in seen:
+                continue
+            is_private = (
+                source_kinds.get(chat_id) == "private"
+                or ":FriendMessage:" in chat_id
+                or ":PrivateMessage:" in chat_id
+            )
+            if whitelist_enabled and not is_private and suffix not in whitelist_suffixes:
                 continue
             seen.add(suffix)
             display_name = ""
