@@ -414,7 +414,9 @@ class AngelHeartPlugin(Star):
                     f"AngelHeart[{chat_id}]: 命中系统级唤醒前缀，按点名唤醒处理。"
                 )
 
-            blocked_by_provider_wake_prefix = self._is_blocked_by_provider_wake_prefix(event)
+            blocked_by_provider_wake_prefix = False
+            if not provider_wake_prefix_hit:
+                blocked_by_provider_wake_prefix = self._is_blocked_by_provider_wake_prefix(event)
             event.set_extra(
                 "angelheart_blocked_by_provider_wake_prefix",
                 blocked_by_provider_wake_prefix,

@@ -157,6 +157,7 @@ def _make_plugin(
     *,
     enable_system_wake_prefix: bool = False,
     provider_wake_prefix: str | list[str] = "/",
+    extra_chat_wake_prefix: str = "",
     whitelist_enabled: bool = False,
     chat_ids: tuple = ("1",),
 ) -> AngelHeartPlugin:
@@ -167,7 +168,8 @@ def _make_plugin(
                 provider_wake_prefix
                 if isinstance(provider_wake_prefix, list)
                 else [provider_wake_prefix]
-            )
+            ),
+            "provider_settings": {"wake_prefix": extra_chat_wake_prefix},
         }
     )
     plugin.config_manager = SimpleNamespace(
@@ -272,6 +274,21 @@ def test_switch_on_strips_leading_whitespace_like_astrbot():
     event = DummyEvent(" /hello", chat_id="aiocqhttp:GroupMessage:1")
 
     assert plugin._is_provider_wake_prefix_event(event) is True
+
+
+def test_system_prefix_is_not_blocked_by_extra_chat_prefix():
+    """命中系统级前缀后，不再被 provider_settings.wake_prefix 拦截。"""
+    plugin = _make_plugin(
+        enable_system_wake_prefix=True,
+        provider_wake_prefix="/",
+        extra_chat_wake_prefix="bot",
+    )
+    event = DummyEvent("/hello", chat_id="aiocqhttp:GroupMessage:1")
+
+    assert plugin._is_provider_wake_prefix_event(event) is True
+    assert plugin._should_process(event) is True
+    assert event.get_extra("angelheart_provider_wake_prefix") is True
+    assert event.get_extra("angelheart_blocked_by_provider_wake_prefix") is False
 
 
 def test_status_checker_recognizes_provider_wake_flag():
