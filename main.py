@@ -554,6 +554,17 @@ class AngelHeartPlugin(Star):
                 logger.debug(
                     f"AngelHeart[{chat_id}]: 会话未在白名单中，跳过发送后处理。"
                 )
+                try:
+                    await self._finish_secretary_dispatch(
+                        event,
+                        chat_id,
+                        cooldown_seconds=0.0,
+                        reason="whitelist_blocked",
+                    )
+                except Exception as e:
+                    logger.warning(
+                        f"AngelHeart[{chat_id}]: 白名单拦截后收口秘书调度失败: {e}"
+                    )
                 return
             logger.debug(f"AngelHeart[{chat_id}]: 消息发送完成，开始后处理...")
 

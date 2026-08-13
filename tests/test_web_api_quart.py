@@ -180,6 +180,88 @@ async def test_list_chats_keeps_private_chats_when_whitelist_enabled(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_list_chats_keeps_same_suffix_private_and_group(tmp_path):
+    """群聊与私聊数字后缀相同时，分别去重，私聊不会被群聊挤掉。"""
+    from quart import Quart
+
+    from core.chat_sources import ChatSourcesStore
+
+    store = ChatProfileStore(str(tmp_path))
+    manager = ConfigManager(
+        {
+            "access_control": {
+                "whitelist_enabled": True,
+                "chat_ids": ["20002"],
+            }
+        }
+    )
+    ledger = type("Ledger", (), {"get_all_chat_ids": staticmethod(lambda: [])})()
+    sources = ChatSourcesStore(str(tmp_path))
+    sources.record("default:GroupMessage:20002", "同号群", "group")
+    sources.record("default:FriendMessage:20002", "同号私聊", "private")
+    fake = FakeContext()
+
+    import web_api as web_api_module
+
+    web_api_module.register_all_routes(fake, store, manager, ledger, chat_sources=sources)
+
+    app = Quart(__name__)
+    for route, handler, methods, _ in fake.routes:
+        path = "/api/plug" + route
+        app.add_url_rule(path, endpoint=path, view_func=handler, methods=methods)
+
+    client = app.test_client()
+    resp = await client.get("/api/plug/astrbot_plugin_angel_heart/chats")
+    chats = (await resp.get_json())["data"]
+    ids = [c["chat_id"] for c in chats]
+
+    assert "default:GroupMessage:20002" in ids
+    assert "default:FriendMessage:20002" in ids
+
+
+@pytest.mark.asyncio
+async def test_list_chats_fails_closed_when_whitelist_config_errors(tmp_path):
+    """读取白名单配置失败时，WebUI 只保留已识别私聊。"""
+    from quart import Quart
+
+    from core.chat_sources import ChatSourcesStore
+
+    class BoomConfig:
+        @property
+        def whitelist_enabled(self):
+            raise RuntimeError("config read failed")
+
+        @property
+        def chat_ids(self):
+            return ["1051472372"]
+
+    store = ChatProfileStore(str(tmp_path))
+    manager = BoomConfig()
+    ledger = type("Ledger", (), {"get_all_chat_ids": staticmethod(lambda: [])})()
+    sources = ChatSourcesStore(str(tmp_path))
+    sources.record("default:GroupMessage:1051472372", "白名单群", "group")
+    sources.record("default:FriendMessage:20002", "私聊好友", "private")
+    fake = FakeContext()
+
+    import web_api as web_api_module
+
+    web_api_module.register_all_routes(fake, store, manager, ledger, chat_sources=sources)
+
+    app = Quart(__name__)
+    for route, handler, methods, _ in fake.routes:
+        path = "/api/plug" + route
+        app.add_url_rule(path, endpoint=path, view_func=handler, methods=methods)
+
+    client = app.test_client()
+    resp = await client.get("/api/plug/astrbot_plugin_angel_heart/chats")
+    chats = (await resp.get_json())["data"]
+    ids = [c["chat_id"] for c in chats]
+
+    assert "default:GroupMessage:1051472372" not in ids
+    assert "default:FriendMessage:20002" in ids
+
+
+@pytest.mark.asyncio
 async def test_full_crud_and_binding_flow(api_app):
     client = api_app.test_client()
 

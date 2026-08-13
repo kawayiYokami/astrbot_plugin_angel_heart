@@ -216,16 +216,56 @@ def test_whitelist_block_helper_matrix():
     assert disabled._is_whitelist_blocked("aiocqhttp:GroupMessage:1") is False
 
 
+class _BoomWhitelistConfig:
+    @property
+    def whitelist_enabled(self):
+        raise RuntimeError("config read failed")
+
+
 def test_whitelist_helper_fails_closed_on_config_error():
     """白名单判定异常时按拦截处理，避免配置错误导致越权进入插件链路。"""
     plugin = _make_plugin(chat_ids=("2",))
-
-    def boom():
-        raise RuntimeError("config read failed")
-
-    plugin.config_manager.whitelist_enabled = boom
+    plugin.config_manager = _BoomWhitelistConfig()
 
     assert plugin._is_whitelist_blocked("aiocqhttp:GroupMessage:1") is True
+
+
+@pytest.mark.asyncio
+async def test_blocked_send_hook_finishes_existing_secretary_dispatch():
+    """白名单拦截发送后处理时，仍收口本事件已持有的秘书调度。"""
+    plugin = _make_plugin(chat_ids=("2",))
+    plugin.angel_context = SimpleNamespace(
+        debounce_manager=SimpleNamespace(finish_secretary_dispatch=AsyncMock(return_value=True)),
+        handle_message_sent=AsyncMock(),
+    )
+    event = DummyEvent("hello", chat_id="aiocqhttp:GroupMessage:1")
+    event.set_extra("angelheart_secretary_dispatch_id", "dispatch-1")
+
+    await plugin.handle_message_sent(event)
+
+    plugin.angel_context.debounce_manager.finish_secretary_dispatch.assert_awaited_once_with(
+        "aiocqhttp:GroupMessage:1",
+        "dispatch-1",
+        cooldown_seconds=0.0,
+        reason="whitelist_blocked",
+    )
+    plugin.angel_context.handle_message_sent.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_blocked_send_hook_skips_cleanup_without_dispatch_id():
+    """没有调度归属时，白名单拦截发送后处理不会凭空收口。"""
+    plugin = _make_plugin(chat_ids=("2",))
+    plugin.angel_context = SimpleNamespace(
+        debounce_manager=SimpleNamespace(finish_secretary_dispatch=AsyncMock(return_value=True)),
+        handle_message_sent=AsyncMock(),
+    )
+    event = DummyEvent("hello", chat_id="aiocqhttp:GroupMessage:1")
+
+    await plugin.handle_message_sent(event)
+
+    plugin.angel_context.debounce_manager.finish_secretary_dispatch.assert_not_called()
+    plugin.angel_context.handle_message_sent.assert_not_called()
 
 
 @pytest.mark.asyncio

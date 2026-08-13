@@ -201,7 +201,8 @@ class ProfileAPI:
 
         # 白名单只控制群聊：启用时按纯群号/QQ 号后缀过滤群聊，
         # 私聊不受白名单约束，始终展示。
-        whitelist_enabled = False
+        # 配置读取失败时按开启白名单、名单为空处理，只保留已识别私聊。
+        whitelist_enabled = True
         whitelist_suffixes = set()
         try:
             whitelist_enabled = bool(self.config_manager.whitelist_enabled)
@@ -212,6 +213,8 @@ class ProfileAPI:
             }
         except Exception:
             logger.debug("AngelHeart: 读取白名单配置失败", exc_info=True)
+            whitelist_enabled = True
+            whitelist_suffixes = set()
 
         seen = set()
         chats = []
@@ -220,16 +223,17 @@ class ProfileAPI:
             if not chat_id:
                 continue
             suffix = chat_id.split(":")[-1] if ":" in chat_id else chat_id
-            if suffix in seen:
-                continue
             is_private = (
                 source_kinds.get(chat_id) == "private"
                 or ":FriendMessage:" in chat_id
                 or ":PrivateMessage:" in chat_id
             )
+            seen_key = (is_private, suffix)
+            if seen_key in seen:
+                continue
             if whitelist_enabled and not is_private and suffix not in whitelist_suffixes:
                 continue
-            seen.add(suffix)
+            seen.add(seen_key)
             display_name = ""
             kind = ""
             if self.chat_sources is not None:
