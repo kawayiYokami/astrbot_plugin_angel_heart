@@ -234,6 +234,13 @@ class StatusChecker:
             if chat_id and self._is_silenced(chat_id):
                 return False
 
+            # 开启系统级唤醒词时，main.py 会挂载此标记，等价于点名唤醒
+            try:
+                if event.get_extra("angelheart_provider_wake_prefix", False):
+                    return True
+            except Exception:
+                pass
+
             metadata = None
             try:
                 if hasattr(event, "get_extra"):

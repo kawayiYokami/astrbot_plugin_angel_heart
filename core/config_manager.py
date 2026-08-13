@@ -218,6 +218,11 @@ class ConfigManager:
         return self._get_grouped("wake_interaction", "block_unapproved_wake_non_command", False)
 
     @property
+    def enable_system_wake_prefix(self) -> bool:
+        """开启系统级唤醒词：消息以 AstrBot wake_prefix 开头时等价点名唤醒。"""
+        return self._get_grouped("wake_interaction", "enable_system_wake_prefix", False)
+
+    @property
     def alias(self) -> str:
         return self._get_grouped("wake_interaction", "alias", "AngelHeart")
 

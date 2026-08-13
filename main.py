@@ -334,6 +334,64 @@ class AngelHeartPlugin(Star):
             )
             return False
 
+    def _get_astrbot_system_wake_prefixes(self, chat_id: str) -> list[str]:
+        """读取 AstrBot 系统级唤醒前缀列表。
+
+        AstrBot waking_check 使用顶层配置 wake_prefix（list[str]，默认 ["/"]）。
+        """
+        prefixes: list[str] = []
+        try:
+            astrbot_conf = self.context.get_config(chat_id)
+            if not astrbot_conf:
+                return prefixes
+
+            raw = astrbot_conf.get("wake_prefix", None)
+            if isinstance(raw, list):
+                for item in raw:
+                    text = str(item or "").strip()
+                    if text:
+                        prefixes.append(text)
+        except Exception as e:
+            logger.warning(
+                f"AngelHeart[{chat_id}]: 读取 AstrBot 系统级唤醒前缀失败: {e}"
+            )
+        return prefixes
+
+    def _is_provider_wake_prefix_event(self, event: AstrMessageEvent) -> bool:
+        """判断当前事件是否命中 AstrBot 系统级唤醒前缀。
+
+        仅当配置开启 enable_system_wake_prefix 时生效。
+        前缀来自 AstrBot 顶层 wake_prefix（列表，任意词/符号），
+        与 waking_check 一致：对正文 strip 后 startswith 匹配。
+        注意：AstrBot 命中后会从 message_str 去掉前缀，但
+        get_message_outline() 仍保留原始前缀，因此这里用 outline 判定。
+        """
+        try:
+            if not self.config_manager.enable_system_wake_prefix:
+                return False
+            if not event.is_at_or_wake_command:
+                return False
+
+            chat_id = event.unified_msg_origin
+            prefixes = self._get_astrbot_system_wake_prefixes(chat_id)
+            if not prefixes:
+                return False
+
+            message_outline = ""
+            try:
+                # 与 AstrBot 唤醒检查一致：先去除前导/尾随空白再匹配前缀
+                message_outline = (event.get_message_outline() or "").strip()
+            except Exception:
+                message_outline = ""
+            if not message_outline:
+                return False
+            return any(message_outline.startswith(prefix) for prefix in prefixes)
+        except Exception as e:
+            logger.warning(
+                f"AngelHeart[{event.unified_msg_origin}]: 判断系统级唤醒前缀事件失败: {e}"
+            )
+            return False
+
     def _should_process(self, event: AstrMessageEvent) -> bool:
         """检查是否需要处理此消息"""
         chat_id = event.unified_msg_origin
@@ -344,6 +402,17 @@ class AngelHeartPlugin(Star):
                     f"AngelHeart[{chat_id}]: 检测到上游 command/skill 事件，已跳过。"
                 )
                 return False
+
+            # 开启系统级唤醒词后：以 AstrBot wake_prefix 开头的消息等价点名唤醒
+            provider_wake_prefix_hit = self._is_provider_wake_prefix_event(event)
+            if provider_wake_prefix_hit:
+                try:
+                    event.set_extra("angelheart_provider_wake_prefix", True)
+                except Exception:
+                    pass
+                logger.debug(
+                    f"AngelHeart[{chat_id}]: 命中系统级唤醒前缀，按点名唤醒处理。"
+                )
 
             blocked_by_provider_wake_prefix = self._is_blocked_by_provider_wake_prefix(event)
             event.set_extra(
