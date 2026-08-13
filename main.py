@@ -403,6 +403,16 @@ class AngelHeartPlugin(Star):
                 )
                 return False
 
+            # 白名单先于系统级前缀与 @/昵称唤醒：白名单外群聊完全不进入插件。
+            if (
+                not self._is_private_chat(chat_id)
+                and self.config_manager.whitelist_enabled
+            ):
+                plain_chat_id = self._get_plain_chat_id(chat_id)
+                if plain_chat_id not in self._whitelist_cache:
+                    logger.debug(f"AngelHeart[{chat_id}]: 会话未在白名单中, 已忽略")
+                    return False
+
             # 开启系统级唤醒词后：以 AstrBot wake_prefix 开头的消息等价点名唤醒
             provider_wake_prefix_hit = self._is_provider_wake_prefix_event(event)
             if provider_wake_prefix_hit:
@@ -483,13 +493,6 @@ class AngelHeartPlugin(Star):
             if not event.get_message_outline().strip():
                 logger.debug(f"AngelHeart[{chat_id}]: 消息内容为空, 已忽略")
                 return False
-
-            # 3. (可选) 检查白名单
-            if self.config_manager.whitelist_enabled:
-                plain_chat_id = self._get_plain_chat_id(chat_id)
-                if plain_chat_id not in self._whitelist_cache:
-                    logger.debug(f"AngelHeart[{chat_id}]: 会话未在白名单中, 已忽略")
-                    return False
 
             logger.debug(f"AngelHeart[{chat_id}]: 消息通过所有前置检查, 准备处理...")
             return True

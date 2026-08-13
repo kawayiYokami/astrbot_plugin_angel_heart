@@ -291,6 +291,33 @@ def test_system_prefix_is_not_blocked_by_extra_chat_prefix():
     assert event.get_extra("angelheart_blocked_by_provider_wake_prefix") is False
 
 
+def test_outside_whitelist_group_system_prefix_not_processed():
+    """白名单外群聊即使命中系统级前缀，也不进入插件。"""
+    plugin = _make_plugin(
+        enable_system_wake_prefix=True,
+        provider_wake_prefix="/",
+        whitelist_enabled=True,
+        chat_ids=("2",),
+    )
+    event = DummyEvent("/hello", chat_id="aiocqhttp:GroupMessage:1")
+
+    assert plugin._should_process(event) is False
+    assert event.get_extra("angelheart_provider_wake_prefix") is None
+
+
+def test_whitelisted_group_system_prefix_still_processed():
+    plugin = _make_plugin(
+        enable_system_wake_prefix=True,
+        provider_wake_prefix="/",
+        whitelist_enabled=True,
+        chat_ids=("1",),
+    )
+    event = DummyEvent("/hello", chat_id="aiocqhttp:GroupMessage:1")
+
+    assert plugin._should_process(event) is True
+    assert event.get_extra("angelheart_provider_wake_prefix") is True
+
+
 def test_status_checker_recognizes_provider_wake_flag():
     plugin = _make_plugin(enable_system_wake_prefix=True)
     angel_context = SimpleNamespace(silenced_until={})
