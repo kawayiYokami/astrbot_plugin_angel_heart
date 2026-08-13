@@ -279,6 +279,29 @@ class FrontDesk:
                 "file_name": name,
             }
 
+    def _iter_media_components(self, components):
+        """遍历当前消息及引用消息中的媒体，忽略引用正文。"""
+        pending = list(components or [])
+        seen_replies = set()
+
+        while pending:
+            component = pending.pop(0)
+            if isinstance(component, (Image, File)):
+                yield component
+                continue
+
+            if not isinstance(component, Reply):
+                continue
+
+            component_id = id(component)
+            if component_id in seen_replies:
+                continue
+            seen_replies.add(component_id)
+
+            quoted_chain = getattr(component, "chain", None)
+            if quoted_chain:
+                pending[0:0] = list(quoted_chain)
+
     async def cache_message(self, chat_id: str, event: AstrMessageEvent):
         """
         前台职责：缓存消息，并在入库时对正文做一次命中判定。
@@ -318,8 +341,9 @@ class FrontDesk:
         if text_content:
             content_list.append({"type": "text", "text": text_content})
 
-        # 3. 处理图片与文件组件
-        for component in message_chain:
+        # 3. 处理当前消息及引用消息中的图片与文件组件。
+        # 引用正文不会进入 text_content/body_text，避免引用内容误触发回复。
+        for component in self._iter_media_components(message_chain):
             if isinstance(component, Image):
                 try:
                     item = await self._build_cached_image_item(chat_id, component)

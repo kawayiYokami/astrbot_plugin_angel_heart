@@ -13,6 +13,7 @@ if _PARENT not in sys.path:
     sys.path.insert(0, _PARENT)
 
 from core.chat_sources import ChatSourcesStore
+from astrbot.core.message.components import File, Image, Reply
 from astrbot_plugin_angel_heart.roles.front_desk import FrontDesk
 
 
@@ -79,6 +80,29 @@ def make_front_desk(store, config_manager=None):
     fd._build_cached_file_text_item = MagicMock(return_value=None)
     fd._get_event_message_id = MagicMock(return_value="mid-1")
     return fd
+
+
+def test_media_iterator_includes_quoted_media_without_quote_text():
+    fd = make_front_desk(None)
+    direct_image = Image()
+    quoted_image = Image()
+    quoted_file = File()
+    quoted_file.name = "note.txt"
+    reply = Reply(chain=[object(), quoted_image, quoted_file])
+
+    media = list(fd._iter_media_components([direct_image, reply]))
+
+    assert media == [direct_image, quoted_image, quoted_file]
+
+
+def test_media_iterator_handles_nested_or_cyclic_replies():
+    fd = make_front_desk(None)
+    quoted_image = Image()
+    outer = Reply()
+    inner = Reply(chain=[quoted_image, outer])
+    outer.chain = [inner]
+
+    assert list(fd._iter_media_components([outer])) == [quoted_image]
 
 
 @pytest.mark.asyncio
