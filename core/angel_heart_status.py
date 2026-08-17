@@ -252,10 +252,18 @@ class StatusChecker:
             try:
                 self_id = str(event.get_self_id())
                 for component in event.get_messages() or []:
+                    cls_name = component.__class__.__name__
+                    # 引用自己发的消息视为点名（与 main._should_process 口径一致）
+                    sender_id = getattr(component, "sender_id", None)
+                    if (
+                        sender_id is not None
+                        and str(sender_id) == self_id
+                        and "Reply" in cls_name
+                    ):
+                        return True
                     qq = getattr(component, "qq", None)
                     if qq is None:
                         continue
-                    cls_name = component.__class__.__name__
                     if str(qq) == self_id and ("At" in cls_name or "at" in cls_name.lower()):
                         return True
             except Exception:

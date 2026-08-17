@@ -345,12 +345,16 @@ class FrontDesk:
         # 5. 构建完整的消息字典
         source_message_id = self._get_event_message_id(event)
 
-        # 检测是否为@自己的消息
+        # 检测是否为@自己的消息（引用自己消息也算点名，与 main._should_process 口径一致）
         is_at_self = False
         try:
             self_id = str(event.get_self_id())
             for component in message_chain:
                 if isinstance(component, At) and str(component.qq) == self_id:
+                    is_at_self = True
+                    break
+                # 引用自己发的消息视为点名（QQ 上比 @ 更常用的召唤方式）
+                if isinstance(component, Reply) and str(component.sender_id or "") == self_id:
                     is_at_self = True
                     break
                 # 兼容非 strict At 类型
