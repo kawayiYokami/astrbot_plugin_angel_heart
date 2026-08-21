@@ -535,10 +535,15 @@ class AngelHeartPlugin(Star):
         try:
             logger.debug(f"AngelHeart[{chat_id}]: 消息发送完成，开始后处理...")
 
-            # 状态转换：AI发送消息后转换到观测期
-            # 仅在消息链非空时才执行状态转换
+            # 状态转换：AI发送消息后转换到观测期。流式适配器可能已经
+            # 完成实际投递，但 result.chain 仍为空；此时使用 AstrBot 的
+            # 统一发送事实标记，避免状态滞留并在回复后误发耐心消息。
             result = event.get_result()
-            if result and result.chain:
+            has_sent_message = bool(
+                (result and result.chain)
+                or getattr(event, "_has_send_oper", False)
+            )
+            if has_sent_message:
                 leave_reply_trigger = self.angel_context.debounce_manager.get_leave_reply_trigger(event)
                 try:
                     await self.angel_context.handle_message_sent(
@@ -587,7 +592,7 @@ class AngelHeartPlugin(Star):
                         f"AngelHeart[{chat_id}]: 更新工作账本完成状态失败: {e}"
                     )
             else:
-                logger.debug(f"AngelHeart[{chat_id}]: 消息链为空，跳过状态转换")
+                logger.debug(f"AngelHeart[{chat_id}]: 未检测到实际消息发送，跳过状态转换")
                 try:
                     work_id = ""
                     if hasattr(event, "get_extra"):
