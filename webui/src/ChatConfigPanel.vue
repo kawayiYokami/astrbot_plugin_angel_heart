@@ -2,7 +2,6 @@
   <n-layout class="layout" has-sider>
     <!-- 左侧：模板列表 -->
     <n-layout-sider
-      bordered
       width="260"
       collapse-mode="width"
       :collapsed-width="56"
@@ -13,6 +12,14 @@
     >
       <div class="sidebar-inner" :class="{ collapsed: sidebarCollapsed }">
         <div class="sidebar-header">
+          <button
+            class="theme-toggle"
+            type="button"
+            :title="isDark ? '切换到光模式' : '切换到暗模式'"
+            @click="toggleTheme()"
+          >
+            <Icon :icon="isDark ? 'lucide:sun' : 'lucide:moon'" />
+          </button>
           <div v-if="!sidebarCollapsed" class="brand">群聊独立配置</div>
           <n-button
             v-if="!sidebarCollapsed"
@@ -312,7 +319,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
+import { computed, inject, onMounted, onUnmounted, reactive, ref } from 'vue'
 import {
   NButton,
   NEmpty,
@@ -343,9 +350,11 @@ import {
   type TemplateConfig,
 } from './fields'
 import { useBridge } from './composables/useBridge'
+import { themeKey } from './theme'
 
 const { apiGet, apiPost } = useBridge()
 const message = useMessage()
+const { isDark, toggle: toggleTheme } = inject(themeKey)!
 
 const templates = ref<TemplateDetail[]>([])
 const globalConfig = ref<TemplateConfig | null>(null)
@@ -604,36 +613,26 @@ onUnmounted(() => {
 </script>
 
 <style>
-* {
-  margin: 0;
-  padding: 0;
-  box-sizing: border-box;
-}
-
-html,
-body,
-#app {
-  height: 100%;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
-    'Microsoft YaHei', sans-serif;
-}
-
 .layout {
   display: flex;
   height: 100vh;
-  background: #1a1a1f;
 }
 
 .sidebar-inner {
   height: 100%;
-  background: #222228;
+  /* Liquid Glass · thick */
+  background: var(--glass-thick-bg);
+  backdrop-filter: blur(40px) saturate(180%);
+  -webkit-backdrop-filter: blur(40px) saturate(180%);
+  border-right: 1px solid var(--glass-border);
   display: flex;
   flex-direction: column;
 }
 
 .sidebar-inner.collapsed .sidebar-header {
+  flex-direction: column;
   justify-content: center;
-  padding: 14px 8px;
+  padding: 10px 8px;
 }
 
 .sidebar-inner.collapsed .monitor-card,
@@ -670,45 +669,78 @@ body,
 .sidebar-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 10px;
   padding: 14px 16px;
-  border-bottom: 1px solid #33333a;
+  border-bottom: 1px solid var(--glass-divider);
 }
 
 .brand {
+  flex: 1;
   font-size: 15px;
   font-weight: 600;
-  color: #eee;
+  color: var(--text-1);
+}
+
+/* 左上角主题切换：胶囊玻璃圆钮 */
+.theme-toggle {
+  flex-shrink: 0;
+  width: 34px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 17px;
+  color: inherit;
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-full);
+  background: var(--glass-regular-bg);
+  backdrop-filter: blur(24px) saturate(180%);
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
+  box-shadow:
+    inset 0 1px 0 var(--glass-highlight),
+    var(--glass-shadow);
+  cursor: pointer;
+  transition: transform 0.15s ease, background 0.2s ease;
+}
+
+.theme-toggle:hover {
+  transform: scale(1.06);
+}
+
+.theme-toggle:active {
+  transform: scale(0.94);
 }
 
 .global-card {
   margin: 12px;
   padding: 10px 12px;
-  border-radius: 8px;
-  background: #2a2a31;
+  border-radius: var(--radius-md);
+  background: var(--glass-regular-bg);
   cursor: pointer;
-  border: 1px solid transparent;
+  border: 1px solid var(--glass-border);
+  box-shadow: inset 0 1px 0 var(--glass-highlight);
   transition: all 0.2s;
 }
 
 .global-card:hover,
 .monitor-card:hover {
-  border-color: #44444c;
+  background: var(--glass-thick-bg);
 }
 
 .global-card.active,
 .monitor-card.active {
-  border-color: #63e2b7;
-  background: #2a3a35;
+  border-color: var(--accent);
+  background: var(--accent-soft);
 }
 
 .monitor-card {
   margin: 12px 12px 0;
   padding: 10px 12px;
-  border-radius: 8px;
-  background: #2a2a31;
+  border-radius: var(--radius-md);
+  background: var(--glass-regular-bg);
   cursor: pointer;
-  border: 1px solid transparent;
+  border: 1px solid var(--glass-border);
+  box-shadow: inset 0 1px 0 var(--glass-highlight);
   transition: all 0.2s;
 }
 
@@ -721,13 +753,13 @@ body,
 .nav-icon {
   width: 18px;
   height: 18px;
-  color: #888;
+  color: var(--text-3);
   flex-shrink: 0;
 }
 
 .global-card.active .nav-icon,
 .monitor-card.active .nav-icon {
-  color: #63e2b7;
+  color: var(--accent);
 }
 
 .template-title {
@@ -739,7 +771,7 @@ body,
 .template-icon {
   width: 14px;
   height: 14px;
-  color: #888;
+  color: var(--text-3);
   flex-shrink: 0;
 }
 
@@ -748,18 +780,18 @@ body,
   height: 13px;
   vertical-align: -2px;
   margin-right: 2px;
-  color: #888;
+  color: var(--text-3);
 }
 
 .global-name {
   font-size: 13px;
   font-weight: 600;
-  color: #eee;
+  color: var(--text-1);
 }
 
 .global-desc {
   font-size: 12px;
-  color: #888;
+  color: var(--text-3);
   margin-top: 2px;
 }
 
@@ -772,12 +804,12 @@ body,
   align-items: center;
   gap: 8px;
   padding: 10px 16px;
-  border-top: 1px solid #33333a;
+  border-top: 1px solid var(--glass-divider);
 }
 
 .footer-link {
   font-size: 12px;
-  color: #888;
+  color: var(--text-3);
   text-decoration: none;
   padding: 4px 8px;
   border-radius: 6px;
@@ -785,8 +817,8 @@ body,
 }
 
 .footer-link:hover {
-  color: #eee;
-  background: #2a2a31;
+  color: var(--text-1);
+  background: var(--glass-regular-bg);
 }
 
 .template-list {
@@ -798,31 +830,32 @@ body,
 
 .template-item {
   padding: 10px 12px;
-  border-radius: 8px;
-  background: #2a2a31;
+  border-radius: var(--radius-md);
+  background: var(--glass-regular-bg);
   cursor: pointer;
-  border: 1px solid transparent;
+  border: 1px solid var(--glass-border);
+  box-shadow: inset 0 1px 0 var(--glass-highlight);
   transition: all 0.2s;
 }
 
 .template-item:hover {
-  border-color: #44444c;
+  background: var(--glass-thick-bg);
 }
 
 .template-item.active {
-  border-color: #63e2b7;
-  background: #2a3a35;
+  border-color: var(--accent);
+  background: var(--accent-soft);
 }
 
 .template-name {
   font-size: 13px;
   font-weight: 600;
-  color: #eee;
+  color: var(--text-1);
 }
 
 .template-desc {
   font-size: 12px;
-  color: #888;
+  color: var(--text-3);
   margin-top: 2px;
   display: flex;
   align-items: center;
@@ -830,8 +863,8 @@ body,
 }
 
 .binding-badge {
-  background: #3a5a4f;
-  color: #63e2b7;
+  background: var(--accent-soft);
+  color: var(--accent);
   border-radius: 10px;
   padding: 0 6px;
   font-size: 11px;
@@ -871,12 +904,12 @@ body,
 
 .content-header h2 {
   font-size: 18px;
-  color: #eee;
+  color: var(--text-1);
 }
 
 .content-sub {
   font-size: 12px;
-  color: #888;
+  color: var(--text-3);
 }
 
 .content-actions {
@@ -907,13 +940,13 @@ body,
   width: 140px;
   min-width: 140px;
   font-size: 13px;
-  color: #bbb;
+  color: var(--text-2);
   line-height: 28px;
 }
 
 .field-value {
   font-size: 13px;
-  color: #eee;
+  color: var(--text-1);
   line-height: 28px;
   white-space: pre-wrap;
   word-break: break-all;
@@ -927,7 +960,7 @@ body,
 .field-hint {
   width: 100%;
   font-size: 12px;
-  color: #888;
+  color: var(--text-3);
   line-height: 1.6;
   padding-left: 156px;
   margin-top: -6px;
@@ -949,9 +982,10 @@ body,
 }
 
 .status-card {
-  background: #2a2a31;
-  border: 1px solid transparent;
-  border-radius: 8px;
+  background: var(--glass-regular-bg);
+  border: 1px solid var(--glass-border);
+  box-shadow: inset 0 1px 0 var(--glass-highlight);
+  border-radius: var(--radius-md);
   padding: 10px 12px;
   display: flex;
   flex-direction: column;
@@ -960,13 +994,13 @@ body,
 }
 
 .status-card:hover {
-  border-color: #44444c;
+  border-color: var(--accent);
 }
 
 .status-chat {
   font-size: 13px;
   font-weight: 600;
-  color: #eee;
+  color: var(--text-1);
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -975,14 +1009,14 @@ body,
 .status-chat-id {
   font-size: 11px;
   font-weight: 400;
-  color: #888;
+  color: var(--text-3);
   font-family: 'Consolas', 'Courier New', monospace;
 }
 
 .status-chat-placeholder {
   font-size: 13px;
   font-weight: 600;
-  color: #666;
+  color: var(--text-3);
 }
 
 .status-meta {
@@ -999,18 +1033,18 @@ body,
 }
 
 .status-badge.on {
-  background: #2a3a35;
-  color: #63e2b7;
+  background: var(--accent-soft);
+  color: var(--accent);
 }
 
 .status-badge.off {
-  background: #33333a;
-  color: #888;
+  background: var(--glass-divider);
+  color: var(--text-3);
 }
 
 .status-energy {
   font-size: 12px;
-  color: #aaa;
+  color: var(--text-2);
 }
 
 .status-line {
@@ -1021,13 +1055,13 @@ body,
 }
 
 .status-label {
-  color: #888;
+  color: var(--text-3);
   min-width: 52px;
   flex-shrink: 0;
 }
 
 .status-value {
-  color: #ccc;
+  color: var(--text-2);
   line-height: 1.5;
   word-break: break-all;
 }
