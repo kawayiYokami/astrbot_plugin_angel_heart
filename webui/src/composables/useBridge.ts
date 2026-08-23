@@ -40,6 +40,11 @@ function getBridge(): Bridge | null {
   return null
 }
 
+// postMessage 结构化克隆不接受 Vue 的 Proxy（ref/reactive 包装值），过桥前先落为纯 JSON
+function plain<T>(value: T): T {
+  return value === undefined ? value : (JSON.parse(JSON.stringify(value)) as T)
+}
+
 export function useBridge() {
   const bridge = getBridge()
 
@@ -61,7 +66,7 @@ export function useBridge() {
 
   async function apiGet<T = unknown>(endpoint: string, params?: Record<string, unknown>): Promise<T> {
     if (bridge) {
-      return (await bridge.apiGet(endpoint, params)) as T
+      return (await bridge.apiGet(endpoint, plain(params))) as T
     }
     // 开发模式回退：直接请求本地代理
     const url = new URL(`/api/plug/${PLUGIN_NAME}/${endpoint}`, window.location.origin)
@@ -81,7 +86,7 @@ export function useBridge() {
 
   async function apiPost<T = unknown>(endpoint: string, body?: unknown): Promise<T> {
     if (bridge) {
-      return (await bridge.apiPost(endpoint, body)) as T
+      return (await bridge.apiPost(endpoint, plain(body))) as T
     }
     const url = `/api/plug/${PLUGIN_NAME}/${endpoint}`
     const resp = await fetch(url, {
