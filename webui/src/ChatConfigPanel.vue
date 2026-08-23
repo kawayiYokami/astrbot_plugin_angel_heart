@@ -272,7 +272,7 @@ const templates = ref<TemplateDetail[]>([])
 const chats = ref<ChatItem[]>([])
 const statusItems = ref<ChatStatusItem[]>([])
 const kindFilter = ref<'all' | 'group' | 'private'>('all')
-const viewMode = ref<'config' | 'monitor'>('config')
+const viewMode = ref<'config' | 'monitor'>('monitor')
 const selectedId = ref<string | null>(null)
 const sidebarCollapsed = ref(false)
 // naive-ui 的 n-layout-sider 没有 breakpoint 属性，用 matchMedia 实现窄屏自动收起
@@ -652,7 +652,6 @@ async function loadAll() {
 onMounted(async () => {
   loadPluginConfig()
   await loadAll()
-  if (templates.value.length) selectTemplate(templates.value[0].id)
   await refreshStatus()
   statusTimer = setInterval(refreshStatus, 3000)
 })
