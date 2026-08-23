@@ -15,7 +15,7 @@ class AngelDescribeImageTool(FunctionTool):
     config_manager: Any = field(repr=False, default=None)
     astr_context: Any = field(repr=False, default=None)
     name: str = "angel_describe_image"
-    description: str = "当你当前看不到图片、但需要某张历史图片的细节时才调用。"
+    description: str = "当需要读取或理解图片内容时，必须优先使用本工具；请不要使用 astrbot_file_read_tool 读取图片。"
     parameters: dict = field(
         default_factory=lambda: {
             "type": "object",
@@ -26,7 +26,7 @@ class AngelDescribeImageTool(FunctionTool):
                 },
                 "path": {
                     "type": "string",
-                    "description": "当前会话 AngelHeart 上下文中显示的图片路径；只能使用其中已有的单张图片路径。",
+                    "description": "本地图片路径（file:// 或绝对路径）或 http(s) 图片 URL。",
                 },
             },
         }

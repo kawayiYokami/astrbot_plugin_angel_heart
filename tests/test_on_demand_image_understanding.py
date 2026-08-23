@@ -81,9 +81,20 @@ def test_describe_image_uses_requested_ledger_image_and_focus():
     assert message["content"][1]["cache_path"] == path
 
 
-def test_describe_image_rejects_path_outside_current_ledger():
+def test_describe_image_accepts_path_outside_current_ledger():
     chat_id = "aiocqhttp:GroupMessage:10000"
     ledger = _ledger_with_image(chat_id, "file:///tmp/ledger-image.png")
+
+    async def load_image_bytes(value: str) -> bytes:
+        assert value == "file:///tmp/not-in-ledger.png"
+        return b"image-bytes"
+
+    class Provider:
+        async def text_chat(self, **kwargs):
+            return SimpleNamespace(completion_text="外部路径图片理解成功")
+
+    ledger._load_image_bytes = load_image_bytes
+    ledger._build_caption_image_data_url = lambda _data: "data:image/webp;base64,TEST"
 
     result = asyncio.run(
         ledger.describe_image(
@@ -91,11 +102,11 @@ def test_describe_image_rejects_path_outside_current_ledger():
             path="file:///tmp/not-in-ledger.png",
             focus="读取文字",
             caption_provider_id="vision",
-            astr_context=SimpleNamespace(get_provider_by_id=lambda _id: None),
+            astr_context=SimpleNamespace(get_provider_by_id=lambda _id: Provider()),
         )
     )
 
-    assert result == "图片理解被拒绝：path 不属于当前会话账本中的图片。"
+    assert result == "外部路径图片理解成功"
 
 
 def test_describe_image_requires_configured_provider():

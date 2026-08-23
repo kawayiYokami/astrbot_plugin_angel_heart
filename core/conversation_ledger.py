@@ -993,28 +993,6 @@ class ConversationLedger:
 
         return ""
 
-    def _get_allowed_image_refs(self, chat_id: str) -> set[str]:
-        """返回当前会话账本中已登记的图片引用。"""
-        ledger = self._get_or_create_ledger(chat_id)
-        refs: set[str] = set()
-        with self._lock:
-            for message in ledger["messages"]:
-                content = message.get("content", [])
-                if isinstance(content, list):
-                    for item in content:
-                        if not isinstance(item, dict) or item.get("type") != "image_url":
-                            continue
-                        ref = self._get_image_item_read_ref(item)
-                        if ref:
-                            refs.add(ref)
-
-                stored_refs = message.get("image_refs", [])
-                if isinstance(stored_refs, list):
-                    refs.update(
-                        ref for ref in stored_refs if isinstance(ref, str) and ref
-                    )
-        return refs
-
     async def describe_image(
         self,
         chat_id: str,
@@ -1023,7 +1001,14 @@ class ConversationLedger:
         caption_provider_id: str,
         astr_context=None,
     ) -> str:
-        """针对当前会话账本中的单张图片，按关注点返回文字理解结果。"""
+        """针对单张图片，按关注点返回文字理解结果。
+
+        路径不做账本白名单限制：工具注册在 AstrBot 全局工具列表，
+        外部 Agent 会话可见的是 AstrBot 自己的 media/temp 路径体系，
+        账本校验会把合法调用全部拦死。路径合法性由
+        ``_load_image_bytes`` 内部的协议白名单、敏感路径拦截、
+        大小限制与存在性检查兜底。
+        """
         if not isinstance(path, str) or not path.strip():
             return "图片理解失败：path 不能为空。"
         if not isinstance(focus, str) or not focus.strip():
@@ -1034,8 +1019,6 @@ class ConversationLedger:
             return "图片理解失败：无法获取 AstrBot 上下文。"
 
         path = path.strip()
-        if path not in self._get_allowed_image_refs(chat_id):
-            return "图片理解被拒绝：path 不属于当前会话账本中的图片。"
 
         caption_provider = astr_context.get_provider_by_id(caption_provider_id)
         if not caption_provider:
