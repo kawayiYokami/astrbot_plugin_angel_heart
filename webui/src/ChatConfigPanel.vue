@@ -20,7 +20,7 @@
           >
             <Icon :icon="isDark ? 'lucide:sun' : 'lucide:moon'" />
           </button>
-          <div v-if="!sidebarCollapsed" class="brand">群聊独立配置</div>
+          <div v-if="!sidebarCollapsed" class="brand">天使之心</div>
           <n-button
             v-if="!sidebarCollapsed"
             size="small"
@@ -28,107 +28,47 @@
             @click="openCreateModal"
           >
             <template #icon><Icon icon="lucide:plus" /></template>
-            新建模板
+            新增
           </n-button>
           <n-button
             v-else
             size="small"
             type="primary"
             circle
-            title="新建模板"
+            title="新增"
             @click="openCreateModal"
           >
             <template #icon><Icon icon="lucide:plus" /></template>
           </n-button>
         </div>
-        <div
-          class="monitor-card"
-          :class="{ active: viewMode === 'monitor' }"
-          @click="switchMonitor"
-          :title="sidebarCollapsed ? '联系人监控' : undefined"
-        >
-          <div class="nav-item">
-            <Icon icon="lucide:activity" class="nav-icon" />
-            <div v-if="!sidebarCollapsed">
-              <div class="global-name">联系人监控</div>
-              <div class="global-desc">群聊与私聊的在场状态、巡检与最近决策</div>
-            </div>
-          </div>
-        </div>
-        <div
-          class="global-card"
-          :class="{ active: viewMode === 'config' && !selectedId }"
-          @click="selectTemplate(null)"
-          :title="sidebarCollapsed ? '全局配置（默认）' : undefined"
-        >
-          <div class="nav-item">
-            <Icon icon="lucide:settings" class="nav-icon" />
-            <div v-if="!sidebarCollapsed">
-              <div class="global-name">全局配置（默认）</div>
-              <div class="global-desc">未绑定群聊使用此配置</div>
-            </div>
-          </div>
-        </div>
         <n-scrollbar class="sidebar-scroll">
-          <div class="template-list">
-            <div
-              v-for="tpl in templates"
-              :key="tpl.id"
-              class="template-item"
-              :class="{ active: viewMode === 'config' && selectedId === tpl.id }"
-              @click="selectTemplate(tpl.id)"
-              :title="sidebarCollapsed ? tpl.name : undefined"
-            >
-              <div class="template-title">
-                <Icon icon="lucide:file-text" class="template-icon" />
-                <span v-if="!sidebarCollapsed" class="template-name">{{ tpl.name }}</span>
-              </div>
-              <div v-if="!sidebarCollapsed" class="template-desc">
-                {{ tpl.description || '无描述' }}
-                <span v-if="bindingCount(tpl.id)" class="binding-badge">
-                  {{ bindingCount(tpl.id) }} 群
-                </span>
-              </div>
-              <div v-if="!sidebarCollapsed" class="template-actions" @click.stop>
-                <n-button size="tiny" quaternary @click="openRenameModal(tpl)">
-                  <template #icon><Icon icon="lucide:pencil" /></template>
-                  重命名
-                </n-button>
-                <n-popconfirm @positive-click="deleteTemplate(tpl.id)">
-                  <template #trigger>
-                    <n-button size="tiny" quaternary type="error">
-                      <template #icon><Icon icon="lucide:trash-2" /></template>
-                      删除
-                    </n-button>
-                  </template>
-                  删除后绑定它的群聊将回退到全局配置
-                </n-popconfirm>
-              </div>
-            </div>
-            <n-empty
-              v-if="!templates.length"
-              size="small"
-              description="还没有模板，点击右上角新建"
-              class="list-empty"
-            />
-          </div>
+          <n-menu
+            class="sidebar-menu"
+            :value="sidebarMenuValue"
+            :options="sidebarMenuOptions"
+            :collapsed="sidebarCollapsed"
+            :collapsed-width="56"
+            :collapsed-icon-size="20"
+            @update:value="onSidebarMenu"
+          />
+          <n-empty
+            v-if="!templates.length && !sidebarCollapsed"
+            size="small"
+            description="还没有模板，点击右上角新建"
+            class="list-empty"
+          />
         </n-scrollbar>
         <div class="sidebar-footer">
-        <a
-          v-if="!sidebarCollapsed"
-          href="https://github.com/kawayiYokami/astrbot_plugin_angel_heart"
-          target="_blank"
-          rel="noopener"
-          class="footer-link"
-        >⭐ Star</a>
-        <a
-          v-if="!sidebarCollapsed"
-          href="https://github.com/kawayiYokami/astrbot_plugin_angel_heart/issues/new"
-          target="_blank"
-          rel="noopener"
-          class="footer-link"
-        >🐛 Issues</a>
-      </div>
+          <n-menu
+            class="sidebar-menu"
+            :value="viewMode === 'config' && !selectedId ? 'settings' : null"
+            :options="settingsMenuOptions"
+            :collapsed="sidebarCollapsed"
+            :collapsed-width="56"
+            :collapsed-icon-size="20"
+            @update:value="selectTemplate(null)"
+          />
+        </div>
       </div>
     </n-layout-sider>
 
@@ -202,81 +142,33 @@
         </div>
       </template>
 
-      <!-- 全局配置概览 -->
+      <!-- 全局配置（可编辑）：schema 驱动分段卡片；有草稿变更时右下角浮出保存按钮 -->
       <template v-else-if="!selectedId">
         <div class="content-header">
           <h2>全局配置</h2>
-          <span class="content-sub">未绑定群聊使用的默认配置，在 AstrBot 插件设置中修改</span>
+          <span class="content-sub">未绑定群聊使用的默认配置，与原生插件配置页同源</span>
         </div>
-        <n-tabs type="line" animated>
-          <n-tab-pane v-for="group in GROUPS" :key="group.key" :name="group.key" :tab="group.label">
-            <div class="field-list">
-              <div v-for="field in group.fields" :key="field.key" class="field-row">
-                <div class="field-label">{{ field.label }}</div>
-                <div class="field-value">
-                  <span v-if="field.type === 'bool'">
-                    {{ globalConfig?.[group.key]?.[field.key] ? '开启' : '关闭' }}
-                  </span>
-                  <span v-else>
-                    {{ displayValue(globalConfig?.[group.key]?.[field.key]) }}
-                  </span>
-                </div>
-                <div v-if="field.hint" class="field-hint">{{ field.hint }}</div>
-              </div>
-            </div>
-          </n-tab-pane>
-        </n-tabs>
+        <SchemaForm
+          v-if="settingsLoaded"
+          :schema="settingsSchema"
+          v-model:model-value="settingsValues"
+          :providers="settingsProviders"
+        />
+        <n-spin v-else size="small" style="margin-top: 40px" />
       </template>
 
-      <!-- 模板配置编辑 -->
+      <!-- 模板配置编辑：与全局配置共用 SchemaForm 分段卡 -->
       <template v-else>
         <div class="content-header">
           <h2>{{ currentTemplate?.name }}</h2>
-          <div class="content-actions">
-            <n-button size="small" type="primary" :loading="saving" @click="saveTemplate">
-              <template #icon><Icon icon="lucide:save" /></template>
-              保存
-            </n-button>
-          </div>
         </div>
-        <n-input
-          v-model:value="currentTemplate.description"
-          size="small"
-          placeholder="模板描述（可选）"
-          class="desc-input"
+        <SchemaForm
+          v-if="settingsLoaded"
+          v-model:model-value="configModel"
+          :schema="templateSchema"
+          :providers="settingsProviders"
         />
-        <n-tabs type="line" animated>
-          <n-tab-pane v-for="group in GROUPS" :key="group.key" :name="group.key" :tab="group.label">
-            <div class="field-list">
-              <div v-for="field in group.fields" :key="field.key" class="field-row">
-                <div class="field-label">{{ field.label }}</div>
-                <div class="field-control">
-                  <n-switch
-                    v-if="field.type === 'bool'"
-                    v-model:value="configModel[group.key][field.key]"
-                    size="small"
-                  />
-                  <n-input-number
-                    v-else-if="field.type === 'number'"
-                    v-model:value="configModel[group.key][field.key]"
-                    size="small"
-                    :step="field.step || 1"
-                    class="number-input"
-                  />
-                  <n-input
-                    v-else
-                    v-model:value="configModel[group.key][field.key]"
-                    size="small"
-                    :type="field.type === 'textarea' ? 'textarea' : 'text'"
-                    :autosize="field.type === 'textarea' ? { minRows: 2, maxRows: 6 } : undefined"
-                    :placeholder="field.placeholder"
-                  />
-                </div>
-                <div v-if="field.hint" class="field-hint">{{ field.hint }}</div>
-              </div>
-            </div>
-          </n-tab-pane>
-        </n-tabs>
+        <n-spin v-else size="small" style="margin-top: 40px" />
       </template>
       </div>
       </n-scrollbar>
@@ -315,21 +207,37 @@
     >
       <n-input v-model:value="renameForm.name" placeholder="模板名称" />
     </n-modal>
+
+    <!-- 悬浮保存按钮：全局配置或模板草稿变更时浮出 -->
+    <Transition name="fab">
+      <n-button
+        v-if="configDirty"
+        class="save-fab"
+        type="primary"
+        round
+        size="large"
+        :loading="saving || savingSettings"
+        @click="saveCurrent"
+      >
+        <template #icon><Icon icon="lucide:save" /></template>
+        保存更改
+      </n-button>
+    </Transition>
   </n-layout>
 </template>
 
 <script setup lang="ts">
-import { computed, inject, onMounted, onUnmounted, reactive, ref } from 'vue'
+import { computed, h, inject, onMounted, onUnmounted, reactive, ref } from 'vue'
 import {
   NButton,
   NEmpty,
   NForm,
   NFormItem,
   NInput,
-  NInputNumber,
   NLayout,
   NLayoutContent,
   NLayoutSider,
+  NMenu,
   NModal,
   NPopconfirm,
   NRadio,
@@ -342,6 +250,8 @@ import {
   NTabs,
   useMessage,
 } from 'naive-ui'
+import type { MenuOption } from 'naive-ui'
+import { Icon } from '@iconify/vue'
 import {
   GROUPS,
   type ChatItem,
@@ -351,23 +261,36 @@ import {
 } from './fields'
 import { useBridge } from './composables/useBridge'
 import { themeKey } from './theme'
+import SchemaForm from './SchemaForm.vue'
+import type { SchemaMeta } from './schema'
 
 const { apiGet, apiPost } = useBridge()
 const message = useMessage()
 const { isDark, toggle: toggleTheme } = inject(themeKey)!
 
 const templates = ref<TemplateDetail[]>([])
-const globalConfig = ref<TemplateConfig | null>(null)
 const chats = ref<ChatItem[]>([])
 const statusItems = ref<ChatStatusItem[]>([])
 const kindFilter = ref<'all' | 'group' | 'private'>('all')
 const viewMode = ref<'config' | 'monitor'>('config')
 const selectedId = ref<string | null>(null)
 const sidebarCollapsed = ref(false)
+// naive-ui 的 n-layout-sider 没有 breakpoint 属性，用 matchMedia 实现窄屏自动收起
+const narrowMql = window.matchMedia('(max-width: 768px)')
+const syncSidebarToWidth = () => {
+  sidebarCollapsed.value = narrowMql.matches
+}
+onMounted(() => {
+  syncSidebarToWidth()
+  narrowMql.addEventListener('change', syncSidebarToWidth)
+})
+onUnmounted(() => {
+  narrowMql.removeEventListener('change', syncSidebarToWidth)
+})
 const saving = ref(false)
 let statusTimer: ReturnType<typeof setInterval> | null = null
 
-const configModel = reactive<Record<string, Record<string, unknown>>>({})
+const configModel = ref<Record<string, Record<string, unknown>>>({})
 const createModalVisible = ref(false)
 const renameModalVisible = ref(false)
 const createForm = reactive({ name: '', mode: 'empty' })
@@ -390,17 +313,117 @@ function effectiveKind(item: ChatStatusItem): string {
   return 'group'
 }
 
-function bindingCount(templateId: string): number {
-  return chats.value.filter((c) => c.template_id === templateId).length
+// ---------- 侧栏导航（n-menu 渲染，颜色/选中态全部来自全局主题） ----------
+const settingsMenuOptions: MenuOption[] = [
+  { label: '插件设置', key: 'settings', icon: () => h(Icon, { icon: 'lucide:settings' }) },
+]
+
+function renderTemplateLabel(tpl: TemplateDetail) {
+  return () =>
+    h('div', { class: 'tpl-label' }, [
+      h('span', { class: 'tpl-name' }, tpl.name),
+      h(
+        'div',
+        {
+          class: 'tpl-actions',
+          onClick: (e: MouseEvent) => e.stopPropagation(),
+        },
+        [
+          h(
+            NButton,
+            {
+              size: 'tiny',
+              quaternary: true,
+              circle: true,
+              title: '重命名',
+              onClick: () => openRenameModal(tpl),
+            },
+            { icon: () => h(Icon, { icon: 'lucide:pencil' }) },
+          ),
+          h(
+            NPopconfirm,
+            { onPositiveClick: () => deleteTemplate(tpl.id) },
+            {
+              trigger: () =>
+                h(
+                  NButton,
+                  { size: 'tiny', quaternary: true, circle: true, type: 'error', title: '删除' },
+                  { icon: () => h(Icon, { icon: 'lucide:trash-2' }) },
+                ),
+              default: () => '删除后绑定它的群聊将回退到全局配置',
+            },
+          ),
+        ],
+      ),
+    ])
 }
 
-function switchMonitor() {
-  viewMode.value = viewMode.value === 'monitor' ? 'config' : 'monitor'
+const sidebarMenuOptions = computed<MenuOption[]>(() => [
+  { label: '联系人监控', key: 'monitor', icon: () => h(Icon, { icon: 'lucide:activity' }) },
+  ...templates.value.map((tpl) => ({
+    key: tpl.id,
+    icon: () => h(Icon, { icon: 'lucide:file-text' }),
+    label: renderTemplateLabel(tpl),
+  })),
+])
+
+function onSidebarMenu(key: string) {
+  if (key === 'monitor') viewMode.value = 'monitor'
+  else selectTemplate(key)
 }
 
-function displayValue(v: unknown): string {
-  if (v === undefined || v === null || v === '') return '—'
-  return String(v)
+const sidebarMenuValue = computed(() => {
+  if (viewMode.value === 'monitor') return 'monitor'
+  return selectedId.value
+})
+
+// ---------- 插件设置（全局 _conf_schema.json） ----------
+
+const settingsSchema = ref<Record<string, SchemaMeta>>({})
+const settingsValues = ref<Record<string, unknown>>({})
+const settingsProviders = ref<Record<string, string[]>>({})
+const settingsLoaded = ref(false)
+const savingSettings = ref(false)
+// 草稿基线：与当前值的快照不一致即视为有变更，浮出保存按钮
+const settingsBaseline = ref('')
+const settingsDirty = computed(
+  () =>
+    settingsLoaded.value &&
+    JSON.stringify(settingsValues.value) !== settingsBaseline.value,
+)
+
+// 全局配置可编辑：首次切到全局配置视图时加载 schema + 当前值
+function loadPluginConfig() {
+  if (settingsLoaded.value) return
+  void (async () => {
+    try {
+      const data = await apiGet<{
+        schema: Record<string, SchemaMeta>
+        values: Record<string, unknown>
+        providers: Record<string, string[]>
+      }>('plugin_config')
+      settingsSchema.value = data?.schema || {}
+      settingsValues.value = data?.values || {}
+      settingsProviders.value = data?.providers || {}
+      settingsBaseline.value = JSON.stringify(settingsValues.value)
+      settingsLoaded.value = true
+    } catch (e) {
+      message.error(`加载插件设置失败: ${(e as Error).message}`)
+    }
+  })()
+}
+
+async function savePluginConfig() {
+  savingSettings.value = true
+  try {
+    await apiPost('plugin_config/save', { values: settingsValues.value })
+    settingsBaseline.value = JSON.stringify(settingsValues.value)
+    message.success('已保存并即时生效')
+  } catch (e) {
+    message.error(`保存失败: ${(e as Error).message}`)
+  } finally {
+    savingSettings.value = false
+  }
 }
 
 function fmtEnergy(v: number | null): string {
@@ -427,18 +450,56 @@ function decisionTime(ts: number): string {
 function selectTemplate(id: string | null) {
   viewMode.value = 'config'
   selectedId.value = id
-  if (!id) return
+  if (!id) {
+    // 全局配置视图：懒加载可编辑数据源
+    loadPluginConfig()
+    return
+  }
   const tpl = templates.value.find((t) => t.id === id)
   if (!tpl) return
   // 初始化编辑模型：按组补全缺失字段
+  const model: Record<string, Record<string, unknown>> = {}
   for (const group of GROUPS) {
-    if (!configModel[group.key]) configModel[group.key] = {}
+    model[group.key] = {}
     for (const field of group.fields) {
-      configModel[group.key][field.key] =
+      model[group.key][field.key] =
         tpl.config?.[group.key]?.[field.key] ?? defaultFor(field.type)
     }
   }
+  configModel.value = model
+  templateBaseline.value = JSON.stringify(model)
 }
+
+// 模板草稿基线：与全局配置共用悬浮保存按钮
+const templateBaseline = ref('')
+const templateDirty = computed(() => JSON.stringify(configModel.value) !== templateBaseline.value)
+
+// 悬浮保存统一入口与可见性：当前视图有草稿变更即浮出
+const configDirty = computed(() => {
+  if (viewMode.value !== 'config') return false
+  return selectedId.value ? templateDirty.value : settingsDirty.value
+})
+
+function saveCurrent() {
+  if (selectedId.value) void saveTemplate()
+  else void savePluginConfig()
+}
+
+// 模板编辑用 schema：从全局 schema 按 fields.ts 的精选分组裁剪出子集
+const templateSchema = computed<Record<string, SchemaMeta>>(() => {
+  const out: Record<string, SchemaMeta> = {}
+  for (const group of GROUPS) {
+    const meta = settingsSchema.value[group.key]
+    if (meta?.type !== 'object') continue
+    const items: Record<string, SchemaMeta> = {}
+    for (const field of group.fields) {
+      const fieldMeta = meta.items?.[field.key]
+      if (fieldMeta) items[field.key] = fieldMeta
+    }
+    out[group.key] = { ...meta, hint: group.desc, items }
+  }
+  return out
+})
 
 function defaultFor(type: string): unknown {
   if (type === 'bool') return false
@@ -508,14 +569,6 @@ async function deleteTemplate(id: string) {
   }
 }
 
-function buildConfig(): TemplateConfig {
-  const config: TemplateConfig = {}
-  for (const group of GROUPS) {
-    config[group.key] = { ...configModel[group.key] }
-  }
-  return config
-}
-
 async function saveTemplate() {
   if (!currentTemplate.value) return
   saving.value = true
@@ -523,10 +576,10 @@ async function saveTemplate() {
     await apiPost('profiles/update', {
       id: currentTemplate.value.id,
       description: currentTemplate.value.description,
-      config: buildConfig(),
+      config: JSON.parse(JSON.stringify(configModel.value)),
     })
+    templateBaseline.value = JSON.stringify(configModel.value)
     message.success('配置已保存')
-    await loadAll()
   } catch (e) {
     message.error('保存失败：' + String((e as Error)?.message || e))
   } finally {
@@ -576,7 +629,6 @@ async function loadAll() {
       global_config: TemplateConfig
     }>('profiles')
     templates.value = data.templates || []
-    globalConfig.value = data.global_config || null
     const bindingMap = data.bindings || {}
     const chatList = await apiGet<ChatItem[]>('chats')
     // chats 已含绑定，补上仅存在于 bindingMap 的群聊
@@ -598,6 +650,7 @@ async function loadAll() {
 }
 
 onMounted(async () => {
+  loadPluginConfig()
   await loadAll()
   if (templates.value.length) selectTemplate(templates.value[0].id)
   await refreshStatus()
@@ -633,37 +686,6 @@ onUnmounted(() => {
   flex-direction: column;
   justify-content: center;
   padding: 10px 8px;
-}
-
-.sidebar-inner.collapsed .monitor-card,
-.sidebar-inner.collapsed .global-card {
-  padding: 10px 0;
-  display: flex;
-  justify-content: center;
-}
-
-.sidebar-inner.collapsed .nav-item {
-  gap: 0;
-}
-
-.sidebar-inner.collapsed .template-list {
-  padding: 0 8px 8px;
-}
-
-.sidebar-inner.collapsed .template-item {
-  padding: 10px 0;
-  display: flex;
-  justify-content: center;
-}
-
-.sidebar-inner.collapsed .template-title {
-  justify-content: center;
-  width: 100%;
-}
-
-.sidebar-inner.collapsed .sidebar-footer {
-  justify-content: center;
-  padding: 10px 0;
 }
 
 .sidebar-header {
@@ -711,70 +733,6 @@ onUnmounted(() => {
   transform: scale(0.94);
 }
 
-.global-card {
-  margin: 12px;
-  padding: 10px 12px;
-  border-radius: var(--radius-md);
-  background: var(--glass-regular-bg);
-  cursor: pointer;
-  border: 1px solid var(--glass-border);
-  box-shadow: inset 0 1px 0 var(--glass-highlight);
-  transition: all 0.2s;
-}
-
-.global-card:hover,
-.monitor-card:hover {
-  background: var(--glass-thick-bg);
-}
-
-.global-card.active,
-.monitor-card.active {
-  border-color: var(--accent);
-  background: var(--accent-soft);
-}
-
-.monitor-card {
-  margin: 12px 12px 0;
-  padding: 10px 12px;
-  border-radius: var(--radius-md);
-  background: var(--glass-regular-bg);
-  cursor: pointer;
-  border: 1px solid var(--glass-border);
-  box-shadow: inset 0 1px 0 var(--glass-highlight);
-  transition: all 0.2s;
-}
-
-.nav-item {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.nav-icon {
-  width: 18px;
-  height: 18px;
-  color: var(--text-3);
-  flex-shrink: 0;
-}
-
-.global-card.active .nav-icon,
-.monitor-card.active .nav-icon {
-  color: var(--accent);
-}
-
-.template-title {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.template-icon {
-  width: 14px;
-  height: 14px;
-  color: var(--text-3);
-  flex-shrink: 0;
-}
-
 .inline-icon {
   width: 13px;
   height: 13px;
@@ -783,98 +741,12 @@ onUnmounted(() => {
   color: var(--text-3);
 }
 
-.global-name {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text-1);
-}
-
-.global-desc {
-  font-size: 12px;
-  color: var(--text-3);
-  margin-top: 2px;
-}
-
 .sidebar-scroll {
   flex: 1;
 }
 
 .sidebar-footer {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 16px;
   border-top: 1px solid var(--glass-divider);
-}
-
-.footer-link {
-  font-size: 12px;
-  color: var(--text-3);
-  text-decoration: none;
-  padding: 4px 8px;
-  border-radius: 6px;
-  transition: all 0.2s;
-}
-
-.footer-link:hover {
-  color: var(--text-1);
-  background: var(--glass-regular-bg);
-}
-
-.template-list {
-  padding: 0 12px 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.template-item {
-  padding: 10px 12px;
-  border-radius: var(--radius-md);
-  background: var(--glass-regular-bg);
-  cursor: pointer;
-  border: 1px solid var(--glass-border);
-  box-shadow: inset 0 1px 0 var(--glass-highlight);
-  transition: all 0.2s;
-}
-
-.template-item:hover {
-  background: var(--glass-thick-bg);
-}
-
-.template-item.active {
-  border-color: var(--accent);
-  background: var(--accent-soft);
-}
-
-.template-name {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text-1);
-}
-
-.template-desc {
-  font-size: 12px;
-  color: var(--text-3);
-  margin-top: 2px;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.binding-badge {
-  background: var(--accent-soft);
-  color: var(--accent);
-  border-radius: 10px;
-  padding: 0 6px;
-  font-size: 11px;
-  line-height: 16px;
-}
-
-.template-actions {
-  margin-top: 6px;
-  display: flex;
-  gap: 4px;
 }
 
 .list-empty {
@@ -892,6 +764,8 @@ onUnmounted(() => {
 }
 
 .content-inner {
+  max-width: 800px;
+  margin: 0 auto;
   padding: 20px 28px;
 }
 
@@ -910,65 +784,6 @@ onUnmounted(() => {
 .content-sub {
   font-size: 12px;
   color: var(--text-3);
-}
-
-.content-actions {
-  display: flex;
-  gap: 8px;
-}
-
-.desc-input {
-  margin-bottom: 12px;
-  max-width: 420px;
-}
-
-.field-list {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-  padding: 6px 2px;
-}
-
-.field-row {
-  display: flex;
-  align-items: flex-start;
-  gap: 16px;
-  flex-wrap: wrap;
-}
-
-.field-label {
-  width: 140px;
-  min-width: 140px;
-  font-size: 13px;
-  color: var(--text-2);
-  line-height: 28px;
-}
-
-.field-value {
-  font-size: 13px;
-  color: var(--text-1);
-  line-height: 28px;
-  white-space: pre-wrap;
-  word-break: break-all;
-}
-
-.field-control {
-  flex: 1;
-  max-width: 480px;
-}
-
-.field-hint {
-  width: 100%;
-  font-size: 12px;
-  color: var(--text-3);
-  line-height: 1.6;
-  padding-left: 156px;
-  margin-top: -6px;
-  margin-bottom: 4px;
-}
-
-.number-input {
-  width: 180px;
 }
 
 .status-grid {
@@ -1070,7 +885,56 @@ onUnmounted(() => {
   margin-top: 2px;
 }
 
+/* 悬浮保存按钮：右下角浮出，带玻璃阴影 */
+.save-fab {
+  position: fixed;
+  right: 28px;
+  bottom: 28px;
+  z-index: 100;
+  box-shadow: var(--glass-shadow);
+}
+
+.fab-enter-active,
+.fab-leave-active {
+  transition: opacity 0.25s ease, transform 0.25s ease;
+}
+
+.fab-enter-from,
+.fab-leave-to {
+  opacity: 0;
+  transform: translateY(14px) scale(0.92);
+}
+
 .create-form {
   padding-top: 12px;
+}
+
+/* n-menu 模板项的行内操作钮：hover 行时才出现（render 函数节点无 scoped 标记，需全局样式） */
+.tpl-label {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-width: 0;
+}
+
+.tpl-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+}
+
+.tpl-actions {
+  display: none;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.n-menu-item-content:hover .tpl-actions {
+  display: flex;
 }
 </style>

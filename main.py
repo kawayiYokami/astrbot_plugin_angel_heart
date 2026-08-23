@@ -66,7 +66,10 @@ class AngelHeartPlugin(Star):
 
     def __init__(self, context: Context, config: dict | None = None):
         super().__init__(context)
-        self.config_manager = ConfigManager(config or {})
+        # 全局配置对象（AstrBotConfig，dict 子类）。ConfigManager 与 WebUI 配置
+        # 端点共享同一引用：原地更新键值即全插件热生效。
+        self.config = config if isinstance(config, dict) else {}
+        self.config_manager = ConfigManager(self.config)
         self.context = context
         self._whitelist_cache = self._prepare_whitelist()
         self._runtime_tasks = RuntimeTaskTracker()
@@ -120,6 +123,8 @@ class AngelHeartPlugin(Star):
                 self.angel_context.status_transition_manager,
                 self.angel_context.debounce_manager,
                 self.last_decisions,
+                config=self.config,
+                plugin=self,
             )
             logger.info("AngelHeart: 已注册群聊配置 WebUI API 路由")
         except Exception as e:  # pragma: no cover - 兼容旧版 AstrBot
@@ -264,6 +269,18 @@ class AngelHeartPlugin(Star):
             )
 
     # --- 内部方法 ---
+    def on_config_saved(self):
+        """WebUI 保存全局配置后的热生效钩子。
+
+        ConfigManager 持有 config dict 引用，其余组件动态读取自动生效；
+        此处只刷新显式缓存：prompt 模板（依赖 is_reasoning_model）与白名单。
+        """
+        self.secretary.llm_analyzer.reload_config(self.config_manager)
+        self._whitelist_cache = self._prepare_whitelist()
+        logger.info(
+            f"AngelHeart: 配置已保存并即时生效。助理休息: {self.config_manager.waiting_time}秒"
+        )
+
     def reload_config(self, new_config: dict):
         """重新加载配置"""
         self.config_manager = ConfigManager(new_config or {})
