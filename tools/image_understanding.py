@@ -15,7 +15,7 @@ class AngelDescribeImageTool(FunctionTool):
     config_manager: Any = field(repr=False, default=None)
     astr_context: Any = field(repr=False, default=None)
     name: str = "angel_describe_image"
-    description: str = "当需要读取或理解图片内容时，必须优先使用本工具；请不要使用 astrbot_file_read_tool 读取图片。"
+    description: str = "解析图片内容；仅在当前看不到图片时使用。不要使用 astrbot_file_read_tool 读取图片。"
     parameters: dict = field(
         default_factory=lambda: {
             "type": "object",
