@@ -207,3 +207,51 @@ class TestHookStripsPeriodBeforeNewline:
         # 上游指令事件直接返回，不清理
         assert result.chain[0].text == "你好。\n明天见。"
         plugin.angel_context.debounce_manager.charge_reply_energy.assert_not_awaited()
+
+
+class TestStreamingSendState:
+    @pytest.mark.asyncio
+    async def test_empty_result_chain_with_real_delivery_enters_observation(self):
+        from types import SimpleNamespace
+
+        from astrbot_plugin_angel_heart.main import AngelHeartPlugin
+
+        plugin = object.__new__(AngelHeartPlugin)
+
+        class _FakeRuntimeTasks:
+            async def run(self, event, fn):
+                return await fn()
+
+        plugin._runtime_tasks = _FakeRuntimeTasks()
+        plugin._finish_secretary_dispatch = AsyncMock(return_value=True)
+        plugin._extract_sent_message_content = MagicMock(return_value="streamed reply")
+        plugin.front_desk = SimpleNamespace(
+            _get_event_message_id=MagicMock(return_value="message-1")
+        )
+        plugin.angel_context = SimpleNamespace(
+            debounce_manager=SimpleNamespace(
+                get_leave_reply_trigger=MagicMock(return_value=None)
+            ),
+            handle_message_sent=AsyncMock(),
+            work_ledger=SimpleNamespace(complete_work=MagicMock()),
+        )
+
+        event = MagicMock()
+        event.unified_msg_origin = "whatsapp:GroupMessage:1203631"
+        event._has_send_oper = True
+        event.get_result.return_value = SimpleNamespace(chain=[])
+        event.get_extra.return_value = "work-1"
+
+        await plugin.handle_message_sent(event)
+
+        plugin.angel_context.handle_message_sent.assert_awaited_once_with(
+            event.unified_msg_origin,
+            keep_not_present=False,
+        )
+        plugin._finish_secretary_dispatch.assert_awaited_once()
+        plugin.angel_context.work_ledger.complete_work.assert_called_once_with(
+            event.unified_msg_origin,
+            "work-1",
+            status="done",
+            result_summary="streamed reply",
+        )
