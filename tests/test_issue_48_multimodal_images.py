@@ -53,6 +53,15 @@ def _request(image_urls: list[str]):
     )
 
 
+def _window_front_desk() -> FrontDesk:
+    front_desk = _front_desk(supports_image=True)
+    front_desk.context.debounce_manager = SimpleNamespace(
+        get_start_message_id=lambda event: event.get("start_id", ""),
+        get_end_message_id=lambda event: event.get("end_id", ""),
+    )
+    return front_desk
+
+
 def _image(url: str) -> dict:
     return {"type": "image_url", "image_url": {"url": url}}
 
@@ -190,7 +199,7 @@ def test_final_prompt_numbers_multiple_images_across_aggregated_messages():
 
 
 def test_appends_non_current_aggregated_images_as_extra_content_parts():
-    front_desk = _front_desk(supports_image=True)
+    front_desk = _window_front_desk()
     req = _request(["file:///tmp/current.png"])
     recent_dialogue = [
         {
@@ -201,6 +210,13 @@ def test_appends_non_current_aggregated_images_as_extra_content_parts():
             ],
         },
         {
+            "source_message_id": "start-event",
+            "content": [
+                {"type": "text", "text": "防抖起点"},
+                _image("data:image/png;base64,AGGREGATED_IMAGE"),
+            ],
+        },
+        {
             "source_message_id": "current-event",
             "content": [
                 {"type": "text", "text": "当前条"},
@@ -208,19 +224,48 @@ def test_appends_non_current_aggregated_images_as_extra_content_parts():
             ],
         },
     ]
+    event = {"start_id": "start-event", "end_id": "current-event"}
 
-    extra_urls = front_desk._collect_non_current_image_urls(
-        recent_dialogue, "current-event"
+    # 防抖窗口 = start-event ~ current-event，窗口外 old-event 的图不应被收集
+    extra_urls = front_desk._collect_debounce_window_extra_image_urls(
+        recent_dialogue, event, "current-event"
     )
     front_desk._update_request(
         req,
         contexts=[],
-        final_prompt="前一条 [图片1]\n当前条 [图片2]",
+        final_prompt="防抖起点 [图片1]\n当前条 [图片2]",
         alias="AngelHeart",
         preserve_current_image_urls=True,
         extra_image_urls=extra_urls,
     )
 
     assert req.image_urls == ["file:///tmp/current.png"]
-    assert len(req.extra_user_content_parts) == 1
-    assert req.extra_user_content_parts[0].image_url.url == "data:image/png;base64,OLD_IMAGE"
+    # 只补防抖窗口内非当前的 AGGREGATED_IMAGE，窗口外 OLD_IMAGE 不应被搬到附件
+    assert [p.image_url.url for p in req.extra_user_content_parts] == [
+        "data:image/png;base64,AGGREGATED_IMAGE"
+    ]
+
+
+def test_window_history_images_are_not_moved_to_current_attachment():
+    """离场应答的根因回归：防抖窗口收窄后，窗口外历史图片不得再挂到最新附件。"""
+    front_desk = _window_front_desk()
+    recent_dialogue = [
+        {"source_message_id": "old-1", "content": [{"type": "text", "text": "一小时前的聊天"}]},
+        {
+            "source_message_id": "old-2",
+            "content": [
+                {"type": "text", "text": "老图"},
+                _image("data:image/png;base64,OLD_HISTORY_IMAGE"),
+            ],
+        },
+        {"source_message_id": "start-event", "content": [{"type": "text", "text": "防抖窗口开始"}]},
+        {"source_message_id": "current-event", "content": [{"type": "text", "text": "这一个"}]},
+    ]
+    event = {"start_id": "start-event", "end_id": "current-event"}
+
+    extra_urls = front_desk._collect_debounce_window_extra_image_urls(
+        recent_dialogue, event, "current-event"
+    )
+
+    # 窗口内不含图片，历史里的 OLD_HISTORY_IMAGE 属于窗口外，必须被排除
+    assert extra_urls == []
