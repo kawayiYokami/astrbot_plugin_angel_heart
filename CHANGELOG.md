@@ -1,5 +1,35 @@
 # Changelog
 
+## 2.2.6 - 2026-09-04
+
+### Fixed
+- **群聊工具可见性回归**：秘书保持轻量只看文字，群聊助理改回用同边界完整记录重算（`partition_dialogue_raw`），同边界不扩窗，下一轮可追溯 `angel_image_generate/edit` 的 `absolute_path`。整理改为按 `forgetting_timeout(86400)` 条件保留：平时 `token` 触发只保留尾部 `tool_retain_tokens` 内工具，超时才全清；`organize_on_group_enter` 始终全清不带离场前链路。`roles/front_desk.py`、`core/conversation_ledger.py`。
+- **图片聚合错位（#48）**：防抖窗口内聚合非当前图片（`get_start_message_id` + `extra_image_urls` 收窄至防抖窗口），避免一小时前老图被搬到当前附件。`core/debounce_manager.py`、`roles/front_desk.py`。
+
+### Changed
+- 补测试：群聊两轮追溯与整理边界（`test_group_tool_visibility.py`、`test_context_organize.py`）。
+
+## 2.2.5 - 2026-09-04
+
+### Changed
+- WebUI 统一 naive-ui 实色主题与圆角体系：`theme.ts` 以 `A色` 为唯一真相源收敛 `tokens.divider` → `common.divider/border` + `Layout.siderColor/color` + `Card.colorEmbedded`，亮色侧栏白底/内容灰底分层，暗色侧栏 `#18181c` 拉开层次；`App.vue` 加入 `n-global-style` 使 `bodyColor` 生效，清理毛玻璃/`backdrop-filter`/光斑 `!important`，仅保留圆角体系；`ChatConfigPanel/SchemaForm` 字号对齐 12/14/15/16 梯度，移除 `size=small`。
+- 重建 `pages/chat-config` 产物。
+
+## 2.2.4 - 2026-09-02
+
+### Changed
+- 天使五件套统一新 `logo.png` 与 `README` 互荐。
+
+## 2.2.3 - 2026-08-25
+
+### Changed
+- 精简 `angel_describe_image` 描述为 PAI 同款句式。
+
+## 2.2.2 - 2026-08-23
+
+### Fixed
+- 移除 `angel_describe_image` 账本路径白名单，打通外部 Agent 调用（路径合法性改由 `_load_image_bytes` 协议白名单兜底）。
+
 ## 2.1.2 - 2026-08-11
 
 ### Changed
