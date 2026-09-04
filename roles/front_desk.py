@@ -1558,6 +1558,7 @@ class FrontDesk:
     ):
         """
         主脑重写用的上下文：群聊必须等于秘书判断点，不得二次全量扩窗。
+        秘书只看文字（压缩版），助理看完整（raw），同边界不扩窗。
 
         Returns:
             (recent_dialogue, historical_context, boundary_ts) 或 None（群聊无固化切片时）
@@ -1574,12 +1575,47 @@ class FrontDesk:
                     f"AngelHeart[{chat_id}]: 群聊无固化决策上下文，跳过重写以免扩窗"
                 )
                 return None
-            recent = frozen.get("recent_dialogue") or []
-            historical = frozen.get("historical_context") or []
-            boundary_ts = frozen.get("boundary_ts", 0.0)
-            if not recent and not historical:
-                return None
-            return recent, historical, boundary_ts
+            boundary_message_id = str(frozen.get("boundary_message_id", "") or "")
+            # 兼容旧固化：若无 boundary_message_id，尝试从 recent 尾部推断
+            if not boundary_message_id:
+                try:
+                    recent_fallback = frozen.get("recent_dialogue") or []
+                    if recent_fallback:
+                        boundary_message_id = str(
+                            recent_fallback[-1].get("source_message_id", "") or ""
+                        )
+                except Exception:
+                    boundary_message_id = ""
+            # 群聊助理需要完整上下文：同边界用 raw 重算，保留工具链
+            try:
+                recent_ledger, historical_ledger, boundary_ts_ledger = (
+                    self._get_conversation_data_from_ledger(
+                        chat_id, boundary_message_id
+                    )
+                )
+                # Ledger 为 Mock/空时回退到冻结切片，避免单测与异常路径断链
+                ledger_has_data = bool(recent_ledger or historical_ledger)
+                boundary_present = True
+                if boundary_message_id:
+                    boundary_present = any(
+                        str(m.get("source_message_id", "") or "") == boundary_message_id
+                        for m in (recent_ledger or [])
+                    )
+                if ledger_has_data and (not boundary_message_id or boundary_present):
+                    return recent_ledger, historical_ledger, boundary_ts_ledger
+                raise ValueError(
+                    f"ledger empty or boundary missing ({boundary_message_id})"
+                )
+            except Exception as e:
+                logger.debug(
+                    f"AngelHeart[{chat_id}]: 重算完整上下文回退秘书切片: {e}"
+                )
+                recent = frozen.get("recent_dialogue") or []
+                historical = frozen.get("historical_context") or []
+                boundary_ts = frozen.get("boundary_ts", 0.0)
+                if not recent and not historical:
+                    return None
+                return recent, historical, boundary_ts
 
         # 私聊：无秘书切片，按当前入站消息 ID 从账本截断。
         return self._get_conversation_data_from_ledger(

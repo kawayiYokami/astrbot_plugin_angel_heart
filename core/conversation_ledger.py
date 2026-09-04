@@ -491,12 +491,15 @@ class ConversationLedger:
                     keep_from_timestamp=keep_from_timestamp,
                     reason="private_fallback",
                 )
-            # group_rule / 默认
+            # group_rule: 超时才全清工具，否则保留尾部工具（对齐“超过一定时间才丢”）
+            is_timeout = self._is_forgetting_timeout(chat_id)
+            keep_tools = not is_timeout
+            reason = "group_rule_timeout" if is_timeout else "group_rule"
             return self._rule_organize(
                 chat_id,
-                keep_tools=False,
+                keep_tools=keep_tools,
                 keep_from_timestamp=keep_from_timestamp,
-                reason="group_rule",
+                reason=reason,
             )
         finally:
             lock.release()
@@ -504,12 +507,20 @@ class ConversationLedger:
     def organize_on_group_enter(
         self, chat_id: str, keep_from_timestamp: float | None = None
     ) -> bool:
-        """群聊离场→在场：瞬时规则收口，不主动 LLM 摘要。"""
-        return self.organize_context(
-            chat_id,
-            mode="group_rule",
-            keep_from_timestamp=keep_from_timestamp,
-        )
+        """群聊离场→在场：瞬时规则收口，不主动 LLM 摘要。入场始终清工具，不保留离场前链路。"""
+        lock = self._get_compression_lock(chat_id)
+        if not lock.acquire(blocking=False):
+            logger.info(f"AngelHeart[{chat_id}]: 会话整理进行中，跳过重复整理")
+            return False
+        try:
+            return self._rule_organize(
+                chat_id,
+                keep_tools=False,
+                keep_from_timestamp=keep_from_timestamp,
+                reason="group_enter",
+            )
+        finally:
+            lock.release()
 
     async def maybe_llm_compress_private(
         self, chat_id: str, provider_text_chat
