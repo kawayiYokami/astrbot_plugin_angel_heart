@@ -23,7 +23,6 @@
           <div v-if="!sidebarCollapsed" class="brand">天使之心</div>
           <n-button
             v-if="!sidebarCollapsed"
-            size="small"
             type="primary"
             @click="openCreateModal"
           >
@@ -32,7 +31,6 @@
           </n-button>
           <n-button
             v-else
-            size="small"
             type="primary"
             circle
             title="新增"
@@ -53,7 +51,6 @@
           />
           <n-empty
             v-if="!templates.length && !sidebarCollapsed"
-            size="small"
             description="还没有模板，点击右上角新建"
             class="list-empty"
           />
@@ -82,7 +79,7 @@
           <h2>联系人监控</h2>
           <span class="content-sub">群聊与私聊的在场状态、巡检与最近决策，每 3 秒自动刷新</span>
         </div>
-        <n-radio-group v-model:value="kindFilter" size="small" class="kind-filter">
+        <n-radio-group v-model:value="kindFilter" class="kind-filter">
           <n-radio-button value="all">全部</n-radio-button>
           <n-radio-button value="group">群聊</n-radio-button>
           <n-radio-button value="private">私聊</n-radio-button>
@@ -128,7 +125,6 @@
             <div class="status-binding">
               <n-select
                 :value="item.template_id"
-                size="small"
                 :options="bindingOptions(item.chat_id)"
                 @update:value="(v: string) => setChatBinding(item.chat_id, v)"
               />
@@ -136,7 +132,6 @@
           </div>
           <n-empty
             v-if="!filteredStatusItems.length"
-            size="small"
             :description="kindFilter === 'all' ? '暂无联系人（产生消息后才会出现在这里）' : (kindFilter === 'group' ? '暂无群聊' : '暂无私聊')"
           />
         </div>
@@ -154,7 +149,7 @@
           v-model:model-value="settingsValues"
           :providers="settingsProviders"
         />
-        <n-spin v-else size="small" style="margin-top: 40px" />
+        <n-spin v-else style="margin-top: 40px" />
       </template>
 
       <!-- 模板配置编辑：与全局配置共用 SchemaForm 分段卡 -->
@@ -168,7 +163,7 @@
           :schema="templateSchema"
           :providers="settingsProviders"
         />
-        <n-spin v-else size="small" style="margin-top: 40px" />
+        <n-spin v-else style="margin-top: 40px" />
       </template>
       </div>
       </n-scrollbar>
@@ -672,11 +667,8 @@ onUnmounted(() => {
 
 .sidebar-inner {
   height: 100%;
-  /* Liquid Glass · thick */
   background: var(--glass-thick-bg);
-  backdrop-filter: blur(40px) saturate(180%);
-  -webkit-backdrop-filter: blur(40px) saturate(180%);
-  border-right: 1px solid var(--glass-border);
+  border-right: 1px solid var(--glass-divider);
   display: flex;
   flex-direction: column;
 }
@@ -702,7 +694,7 @@ onUnmounted(() => {
   color: var(--text-1);
 }
 
-/* 左上角主题切换：胶囊玻璃圆钮 */
+/* 左上角主题切换：胶囊圆钮 */
 .theme-toggle {
   flex-shrink: 0;
   width: 34px;
@@ -710,13 +702,11 @@ onUnmounted(() => {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 17px;
+  font-size: 16px;
   color: inherit;
   border: 1px solid var(--glass-border);
   border-radius: var(--radius-full);
   background: var(--glass-regular-bg);
-  backdrop-filter: blur(24px) saturate(180%);
-  -webkit-backdrop-filter: blur(24px) saturate(180%);
   box-shadow:
     inset 0 1px 0 var(--glass-highlight),
     var(--glass-shadow);
@@ -776,7 +766,7 @@ onUnmounted(() => {
 }
 
 .content-header h2 {
-  font-size: 18px;
+  font-size: 16px;
   color: var(--text-1);
 }
 
@@ -796,7 +786,7 @@ onUnmounted(() => {
 }
 
 .status-card {
-  background: var(--glass-regular-bg);
+  background: var(--glass-thick-bg);
   border: 1px solid var(--glass-border);
   box-shadow: inset 0 1px 0 var(--glass-highlight);
   border-radius: var(--radius-md);
@@ -812,7 +802,7 @@ onUnmounted(() => {
 }
 
 .status-chat {
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 600;
   color: var(--text-1);
   display: flex;
@@ -821,14 +811,14 @@ onUnmounted(() => {
 }
 
 .status-chat-id {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 400;
   color: var(--text-3);
   font-family: 'Consolas', 'Courier New', monospace;
 }
 
 .status-chat-placeholder {
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 600;
   color: var(--text-3);
 }
@@ -840,7 +830,7 @@ onUnmounted(() => {
 }
 
 .status-badge {
-  font-size: 11px;
+  font-size: 12px;
   line-height: 18px;
   padding: 0 8px;
   border-radius: 10px;
