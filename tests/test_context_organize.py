@@ -82,6 +82,7 @@ def _msg(i, text, *, role="user", tool=False, chat_id="GroupMessage:1"):
 
 class TestGroupRuleOrganize:
     def test_group_drops_tools_and_builds_summary(self, ledger):
+        """未超时：群聊整理应保留尾部工具（对齐“超过一定时间才丢”）"""
         chat_id = "GroupMessage:1"
         for i in range(1, 12):
             ledger.add_message(chat_id, _msg(i, f"正文{i}" * 20, chat_id=chat_id))
@@ -89,7 +90,7 @@ class TestGroupRuleOrganize:
                 chat_id, _msg(100 + i, f"tool{i}", tool=True, chat_id=chat_id)
             )
 
-        # 强制整理
+        # 未超时（forgetting_timeout=0 永不超时）→ 保留尾部工具
         ok = ledger.organize_context(chat_id, mode="group_rule")
         assert ok is True
         summary = ledger.get_current_summary(chat_id)
@@ -97,8 +98,38 @@ class TestGroupRuleOrganize:
         formal = ledger.get_formal_context(chat_id)
         assert formal
         assert formal[0].get("kind") == "context_summary"
-        # 群聊工具应被丢掉
-        assert all(m.get("role") != "tool" for m in formal[1:])
+        # 未超时：应保留至少一个 tool（按 tool_retain_tokens 预算）
+        assert any(m.get("role") == "tool" for m in formal[1:])
+
+    def test_group_drops_tools_when_timeout(self, tmp_path):
+        """超时：群聊整理才全清工具"""
+        from pathlib import Path
+        import time
+
+        cfg = DummyConfig()
+        # 开启超时判定
+        cfg._config["context_compression"]["forgetting_timeout"] = 86400
+        # 提高 token 上限避免加消息时因旧时间戳自动触发整理
+        cfg._config["context_compression"]["max_conversation_tokens"] = 100000
+        lg = ConversationLedger(cfg, Path(tmp_path), astr_context=None)
+        chat_id = "GroupMessage:timeout1"
+        now = time.time()
+        for i in range(1, 6):
+            lg.add_message(
+                chat_id, _msg(i, f"old{i}", chat_id=chat_id, tool=False)
+            )
+            lg._ledgers[chat_id]["messages"][-1]["timestamp"] = now + i
+        for i in range(100, 103):
+            lg.add_message(chat_id, _msg(i, f"tool{i}", tool=True, chat_id=chat_id))
+            lg._ledgers[chat_id]["messages"][-1]["timestamp"] = now + 100 + i
+        # 人为把上次整理时间设为很久以前，触发超时
+        lg._last_compression_time[chat_id] = now - 90000
+        assert lg._is_forgetting_timeout(chat_id) is True
+        ok = lg.organize_context(chat_id, mode="group_rule")
+        assert ok is True
+        msgs = [m for m in lg.get_all_messages(chat_id) if m.get("kind") != "context_summary"]
+        assert all(m.get("role") != "tool" for m in msgs)
+        lg.close()
 
     def test_group_enter_keeps_from_timestamp(self, ledger):
         chat_id = "GroupMessage:2"
@@ -114,8 +145,8 @@ class TestGroupRuleOrganize:
         body = [m for m in msgs if m.get("kind") != "context_summary"]
         assert all(m.get("timestamp", 0) >= 8.0 for m in body)
 
-    def test_group_min_retain_fallback_drops_tools(self, ledger):
-        """正文不足 MIN_RETAIN 时 fallback 也不得把 tool 塞回连续块。"""
+    def test_group_min_retain_fallback_retains_tools_when_not_timeout(self, ledger):
+        """正文不足 MIN_RETAIN 时，未超时 fallback 应按预算保留工具"""
         chat_id = "GroupMessage:toolfb"
         # 只有 3 条正文 + 若干 tool，触发 fallback
         for i in range(1, 4):
@@ -124,13 +155,13 @@ class TestGroupRuleOrganize:
                 chat_id, _msg(100 + i, f"tool{i}", tool=True, chat_id=chat_id)
             )
         ok = ledger.organize_context(chat_id, mode="group_rule")
-        # 可能因预算/摘要条件返回 True/False，但 messages 不得含 tool
         msgs = [
             m
             for m in ledger.get_all_messages(chat_id)
             if m.get("kind") != "context_summary"
         ]
-        assert all(m.get("role") != "tool" for m in msgs)
+        # 未超时：fallback 按 keep_tools=True 保留尾部工具
+        assert any(m.get("role") == "tool" for m in msgs)
 
 
 class TestPrivateLlmCompress:
