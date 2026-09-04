@@ -882,6 +882,16 @@ class DebounceManager:
             pass
         return ""
 
+    def get_start_message_id(self, event: Any) -> str:
+        try:
+            if hasattr(event, "get_extra"):
+                return str(
+                    event.get_extra("angelheart_debounce_start_message_id", "") or ""
+                )
+        except Exception:
+            pass
+        return ""
+
     def get_end_message_id(self, event: Any) -> str:
         try:
             if hasattr(event, "get_extra"):

@@ -1826,6 +1826,41 @@ class FrontDesk:
             include_current=False,
         )
 
+    def _collect_debounce_window_extra_image_urls(
+        self,
+        recent_dialogue: List[Dict],
+        event: Any,
+        current_message_id: str,
+    ) -> List[str]:
+        """只收集防抖窗口内非当前消息的图片，避免把整段历史搬到最新附件上。"""
+        try:
+            start_id = str(
+                self.context.debounce_manager.get_start_message_id(event) or ""
+            )
+            end_id = str(
+                self.context.debounce_manager.get_end_message_id(event) or ""
+            )
+        except Exception:
+            return []
+
+        if not start_id or not end_id:
+            return []
+
+        # 找到窗口在 recent_dialogue 中的切片；找不到视为无窗口
+        start_idx = -1
+        end_idx = -1
+        for idx, msg in enumerate(recent_dialogue):
+            sid = str(msg.get("source_message_id", "") or "")
+            if sid == start_id and start_idx == -1:
+                start_idx = idx
+            if sid == end_id:
+                end_idx = idx
+        if start_idx == -1 or end_idx == -1 or end_idx < start_idx:
+            return []
+
+        window = recent_dialogue[start_idx : end_idx + 1]
+        return self._collect_non_current_image_urls(window, current_message_id)
+
     def _collect_current_image_urls(
         self, recent_dialogue: List[Dict], current_message_id: str
     ) -> List[str]:
@@ -2024,7 +2059,9 @@ class FrontDesk:
             scene_hint,
         )
         extra_image_urls = (
-            self._collect_non_current_image_urls(recent_dialogue, current_message_id)
+            self._collect_debounce_window_extra_image_urls(
+                recent_dialogue, event, current_message_id
+            )
             if preserve_current_image_urls
             else []
         )
