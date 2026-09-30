@@ -183,8 +183,8 @@ def test_final_prompt_numbers_multiple_images_across_aggregated_messages():
 
     prompt = format_final_prompt(recent_dialogue, decision=None, alias="AngelHeart")
 
-    assert "[群友: 小明 (ID: 123456)]: 帮我看看 [图片1]" in prompt
-    assert "[群友: 小红 (ID: 456789)]: 还有这两张 [图片2] [图片3]" in prompt
+    assert "[群友: 小明 (ID: 123456, 群友)]: 帮我看看 [图片1]" in prompt
+    assert "[群友: 小红 (ID: 456789, 群友)]: 还有这两张 [图片2] [图片3]" in prompt
     assert "base64" not in prompt
     assert "IMAGE_A" not in prompt
 

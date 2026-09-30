@@ -57,6 +57,13 @@ class FrontDesk:
     MAX_TEXT_FILE_BYTES = 100 * 1024
     MAX_IMAGE_SOURCE_BYTES = 20 * 1024 * 1024
     BLANK_SENDER_NAME = "空白"
+
+    # OneBot 群成员角色 → 展示标签
+    SENDER_ROLE_LABELS = {
+        "owner": "群主",
+        "admin": "管理",
+        "member": "群友",
+    }
     INVALID_SENDER_IDS = {
         "",
         "0",
@@ -139,6 +146,32 @@ class FrontDesk:
         if normalized_sender_id.lower() not in self.INVALID_SENDER_IDS:
             return self.BLANK_SENDER_NAME
         return ""
+
+    def _extract_sender_role(self, sender: Any) -> str:
+        """从上游 sender 提取群成员角色标签（群主/管理/群友）。
+
+        字段缺失或取值未知时返回空串，不做猜测。
+        """
+        if not sender:
+            return ""
+        if isinstance(sender, dict):
+            raw_role = sender.get("role")
+        else:
+            raw_role = getattr(sender, "role", None)
+        if not isinstance(raw_role, str):
+            return ""
+        return self.SENDER_ROLE_LABELS.get(raw_role.strip().lower(), "")
+
+    def _extract_event_sender_role(self, event: Any) -> str:
+        """从实时事件提取发送者角色，只认上游同步字段，不额外调 API。"""
+        try:
+            message_obj = getattr(event, "message_obj", None)
+            raw = getattr(message_obj, "raw_message", None)
+            if isinstance(raw, dict):
+                return self._extract_sender_role(raw.get("sender"))
+            return self._extract_sender_role(getattr(raw, "sender", None))
+        except Exception:
+            return ""
 
     def _file_name_from_url(self, url: str) -> str:
         try:
@@ -392,6 +425,7 @@ class FrontDesk:
                 event.get_sender_id(),
                 event.get_sender_name(),
             ),
+            "sender_role": self._extract_event_sender_role(event),
             # 当前消息 ID：用于精确定位 ledger 边界并排除请求中的重复当前消息
             "source_message_id": source_message_id,
             "is_at_self": is_at_self,
@@ -1391,6 +1425,7 @@ class FrontDesk:
                 "content": content,
                 "sender_id": sender_id,
                 "sender_name": sender_name,
+                "sender_role": self._extract_sender_role(sender),
                 "source_message_id": str(raw_msg.get("message_id", "") or ""),
                 "timestamp": timestamp,
                 "source": "qq_api",
@@ -1533,6 +1568,99 @@ class FrontDesk:
             )
             # 出错时返回原始上下文，避免破坏流程
             return contexts
+
+    def _is_readable_image_ref(self, ref: str) -> bool:
+        """轻量校验图片引用是否可读。
+
+        仅本地路径做存在性与非空检查；data / http(s) / base64 交上游处理。
+        """
+        if not isinstance(ref, str) or not ref:
+            return False
+        if ref.startswith(("data:", "http://", "https://", "base64://")):
+            return True
+
+        path = ref
+        if path.startswith("file://"):
+            parsed = urlparse(path)
+            path = unquote(parsed.path)
+            if re.match(r"^/[A-Za-z]:", path):
+                path = path[1:]
+
+        try:
+            stat = os.stat(path)
+        except OSError:
+            return False
+        return stat.st_size > 0
+
+    def _summarize_context_message(self, msg: Dict, limit: int = 120) -> str:
+        """截取消息文本片段，用于日志追溯失效图片的来源。"""
+        content = msg.get("content")
+        if isinstance(content, str):
+            return content[:limit]
+        if isinstance(content, list):
+            for item in content:
+                if isinstance(item, dict) and item.get("type") == "text":
+                    text = item.get("text") or ""
+                    if text:
+                        return text[:limit]
+        return "<无文本>"
+
+    def _strip_invalid_context_images(
+        self, chat_id: str, contexts: List[Dict]
+    ) -> List[Dict]:
+        """剔除本地文件已失效的图片块。
+
+        Provider 对无法解析成 base64 的图片块会原样透传，只接受 base64 /
+        http(s) 的上游会因此直接 400。这里在请求发出前把引用已失效的块摘掉，
+        并记录引用、原始来源与来源消息摘要，便于追溯文件是被谁清掉的。
+        """
+        if not contexts:
+            return contexts
+
+        removed_count = 0
+        result = []
+
+        for msg in contexts:
+            content = msg.get("content")
+            if not isinstance(content, list):
+                result.append(msg)
+                continue
+
+            kept = []
+            for item in content:
+                if isinstance(item, dict) and item.get("type") == "image_url":
+                    ref = self._image_item_request_url(item)
+                    if self._is_readable_image_ref(ref):
+                        kept.append(item)
+                        continue
+
+                    removed_count += 1
+                    logger.warning(
+                        f"AngelHeart[{chat_id}]: 图片引用已失效，已从上下文剔除。"
+                        f"引用={ref or '<空>'} "
+                        f"原始来源={str(item.get('source_url', ''))[:120]} "
+                        f"来源消息={self._summarize_context_message(msg)}"
+                    )
+                    continue
+                kept.append(item)
+
+            if len(kept) == len(content):
+                result.append(msg)
+                continue
+
+            if not kept:
+                kept = [{"type": "text", "text": "[图片已失效]"}]
+
+            new_msg = dict(msg)
+            new_msg["content"] = kept
+            result.append(new_msg)
+
+        if removed_count:
+            logger.warning(
+                f"AngelHeart[{chat_id}]: 本次请求共剔除 {removed_count} 个失效图片块。"
+            )
+
+        return result
 
     def _is_group_chat(self, chat_id: str) -> bool:
         """根据 unified_msg_origin 判断是否为群聊。"""
@@ -2121,6 +2249,9 @@ class FrontDesk:
 
         # 5. 根据 Provider 的 modalities 配置过滤图片内容
         new_contexts = self.filter_images_for_provider(chat_id, new_contexts)
+
+        # 5.1 剔除本地文件已失效的图片块，避免本地路径透传给只认 base64/http 的上游
+        new_contexts = self._strip_invalid_context_images(chat_id, new_contexts)
 
         # 6. 更新请求对象
         self._update_request(

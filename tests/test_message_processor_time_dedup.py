@@ -19,6 +19,6 @@ def test_user_message_does_not_append_duplicate_time_text_block():
     assert len(processed["content"]) == 1
     assert processed["content"][0]["type"] == "text"
     text = processed["content"][0]["text"]
-    assert "[群友: 红豆泥 (ID: 289104862)]" in text
+    assert "[群友: 红豆泥 (ID: 289104862, 群友)]" in text
     assert "fairy？有没有觉得提示词哪里不对？我继续修" in text
     assert text.count("2026-07-14 14:00") == 1
