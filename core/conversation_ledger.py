@@ -1532,6 +1532,10 @@ class ConversationLedger:
                     if key not in ["content", "timestamp", "is_processed"] and isinstance(value, str):
                         total_tokens += self._count_tokens_in_text(value)
 
+            logger.info(
+                f"AngelHeart[{chat_id}]: 上下文Token测算完成，"
+                f"当前Token数={total_tokens}，消息数={len(messages)}"
+            )
             return total_tokens
 
     def _count_tokens_in_text(self, text: str) -> int:
