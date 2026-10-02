@@ -90,6 +90,11 @@ class DebounceManager:
         cm = self.config_manager.for_chat(chat_id)
         return max(0.05, float(getattr(cm, "accelerate_debounce_time", 1.0)))
 
+    def _remaining_delay(self, record: DebounceRecord) -> float:
+        """边界更新接着走原倒计时，不把整段等待重新打开。"""
+        remaining = record.created_at + record.delay - time.time()
+        return max(0.0, remaining)
+
     def _initial_energy(self, chat_id: str) -> float:
         cm = self.config_manager.for_chat(chat_id)
         return float(getattr(cm, "initial_energy", INITIAL_ENERGY))
@@ -528,7 +533,7 @@ class DebounceManager:
         key = (chat_id, sender_id)
         existing_assistant = self._assistant.get(key)
         if existing_assistant:
-            # 同一群友助理防抖期间，后续消息更新边界，无需再次唤醒
+            # 同一群友助理防抖期间，后续消息只换边界，接着走剩余时间
             return await self._replace_record(
                 store="assistant",
                 key=key,
@@ -538,7 +543,7 @@ class DebounceManager:
                 sender_id=sender_id,
                 message_id=message_id,
                 kind="assistant",
-                delay=self._assistant_delay(chat_id),
+                delay=self._remaining_delay(existing_assistant),
                 must_reply=existing_assistant.must_reply,
                 keep_start=True,
                 reason="assistant_boundary_update",
@@ -569,7 +574,7 @@ class DebounceManager:
                     sender_id=sender_id,
                     message_id=message_id,
                     kind="secretary",
-                    delay=self._secretary_delay(chat_id),
+                    delay=self._remaining_delay(existing_secretary),
                     must_reply=True,
                     keep_start=True,
                     reason="leave_reply_boundary_update",
@@ -592,6 +597,8 @@ class DebounceManager:
 
         existing_secretary = self._secretary.get(chat_id)
         if existing_secretary:
+            # 巡检周期锚在上一轮，新消息只换边界，接着走剩余时间。
+            # 点名加速不走这里，见 _schedule_wake。
             return await self._replace_record(
                 store="secretary",
                 key=chat_id,
@@ -601,7 +608,7 @@ class DebounceManager:
                 sender_id=sender_id,
                 message_id=message_id,
                 kind="secretary",
-                delay=self._secretary_delay(chat_id),
+                delay=self._remaining_delay(existing_secretary),
                 must_reply=existing_secretary.must_reply,
                 keep_start=True,
                 reason="secretary_boundary_update",

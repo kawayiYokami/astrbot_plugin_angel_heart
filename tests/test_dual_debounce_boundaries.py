@@ -318,6 +318,46 @@ class TestDebounceManagerBoundaries:
         assert e.extras.get("angelheart_debounce_kind") == "secretary"
 
     @pytest.mark.asyncio
+    async def test_secretary_boundary_keeps_remaining_countdown(self):
+        """0 秒开巡检，14 秒来新消息，只再等 16 秒，不把 30 秒重开。"""
+        dm = DebounceManager(make_config(secretary_debounce_time=30.0))
+        first = DummyEvent("first")
+        first_ticket = await dm.schedule(
+            chat_id="g1",
+            event=first,
+            sender_id="a",
+            message_id="1",
+            is_wake=False,
+            is_present=True,
+        )
+        record = dm._secretary["g1"]
+        record.created_at -= 14.0
+
+        second = DummyEvent("second")
+        started = time.monotonic()
+        second_ticket = await dm.schedule(
+            chat_id="g1",
+            event=second,
+            sender_id="b",
+            message_id="2",
+            is_wake=False,
+            is_present=True,
+        )
+
+        assert await first_ticket == KILL
+        assert await asyncio.wait_for(second_ticket, timeout=17.0) == PROCESS
+        elapsed = time.monotonic() - started
+        assert 15.0 <= elapsed <= 17.0
+        assert second.extras["angelheart_debounce_start_message_id"] == "1"
+        assert second.extras["angelheart_debounce_end_message_id"] == "2"
+        assert second.extras["angelheart_must_reply"] is False
+        await dm.finish_secretary_dispatch(
+            "g1",
+            second.extras["angelheart_secretary_dispatch_id"],
+            reason="test_done",
+        )
+
+    @pytest.mark.asyncio
     async def test_secretary_wake_accelerate_must_reply(self, dm):
         e1 = DummyEvent("s1")
         f1 = await dm.schedule(
