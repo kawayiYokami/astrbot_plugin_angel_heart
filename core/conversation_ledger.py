@@ -323,7 +323,7 @@ class ConversationLedger:
 
     def _make_summary_message(self, summary: str, timestamp: float) -> Dict:
         return {
-            "role": "system",
+            "role": "user",
             "content": f"[当前摘要]\n{summary}",
             "sender_id": "system",
             "sender_name": "context_summary",
