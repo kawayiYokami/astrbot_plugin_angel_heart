@@ -129,7 +129,7 @@ def partition_dialogue(
             ts = recent_dialogue[0].get("timestamp", 0) if recent_dialogue else 0
             historical_context = [
                 {
-                    "role": "system",
+                    "role": "user",
                     "content": f"[当前摘要]\n{summary}",
                     "sender_id": "system",
                     "sender_name": "context_summary",
@@ -225,7 +225,7 @@ def partition_dialogue_raw(
             ts = recent_dialogue[0].get("timestamp", 0) if recent_dialogue else 0
             historical_context = [
                 {
-                    "role": "system",
+                    "role": "user",
                     "content": f"[当前摘要]\n{summary}",
                     "sender_id": "system",
                     "sender_name": "context_summary",

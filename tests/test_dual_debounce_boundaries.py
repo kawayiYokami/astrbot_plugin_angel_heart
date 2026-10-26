@@ -1431,7 +1431,7 @@ class TestMessageIdFlow:
             keywords=[],
         )
         recent = [{"source_message_id": "m2", "content": "当前消息"}]
-        historical = [{"role": "system", "content": "摘要"}]
+        historical = [{"role": "user", "content": "摘要"}]
         fd._get_decision_context_for_rewrite = MagicMock(
             return_value=(recent, historical, 2.0)
         )
@@ -1492,7 +1492,7 @@ class TestSecretaryDispatchCompletion:
 
         angel = MagicMock()
         angel.debounce_manager.get_end_message_id.return_value = "echo-1"
-        historical = [{"role": "system", "content": "摘要"}]
+        historical = [{"role": "user", "content": "摘要"}]
         recent = [{"source_message_id": "echo-1", "content": "复读"}]
         angel.conversation_ledger.get_context_snapshot.return_value = (
             historical,
@@ -1524,7 +1524,7 @@ class TestSecretaryDispatchCompletion:
         angel.astr_context = MagicMock()
         angel.debounce_manager.get_leave_reply_trigger.return_value = "echo_chamber"
         angel.debounce_manager.get_end_message_id.return_value = "echo-1"
-        historical = [{"role": "system", "content": "摘要"}]
+        historical = [{"role": "user", "content": "摘要"}]
         recent = [{"source_message_id": "echo-1", "content": "复读"}]
         angel.conversation_ledger.get_context_snapshot.return_value = (
             historical,

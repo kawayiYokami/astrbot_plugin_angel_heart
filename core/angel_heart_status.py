@@ -17,6 +17,14 @@ from .utils.message_hits import (
     parse_pipe_phrases,
 )
 
+# 上下文整理产出的摘要消息以 user 角色存在账本里，但它不是任何人说的话，
+# 任何「扫描用户消息」的判断都必须把它排除。
+SUMMARY_MESSAGE_KINDS = ("context_summary", "summary_context", "context_compaction")
+
+
+def _is_summary_message(msg: Dict) -> bool:
+    return msg.get("kind") in SUMMARY_MESSAGE_KINDS
+
 
 class AngelHeartStatus(Enum):
     """AngelHeart 群聊参与状态。
@@ -124,7 +132,11 @@ class StatusChecker:
             if not all_messages:
                 return None
 
-            user_messages = [m for m in all_messages if m.get("role") == "user"]
+            user_messages = [
+                m
+                for m in all_messages
+                if m.get("role") == "user" and not _is_summary_message(m)
+            ]
             if not user_messages:
                 return None
 
@@ -155,7 +167,7 @@ class StatusChecker:
 
             # 扫描下界之后的所有 user 消息
             for m in all_messages:
-                if m.get("role") != "user":
+                if m.get("role") != "user" or _is_summary_message(m):
                     continue
                 if (m.get("timestamp", 0) or 0) <= last_reply_ts:
                     continue
