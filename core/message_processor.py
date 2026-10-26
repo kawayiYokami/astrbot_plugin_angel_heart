@@ -37,12 +37,15 @@ class MessageProcessor:
     def __init__(self, alias: str):
         self.alias = alias
 
-    def process_message(self, msg: Dict[str, Any]) -> Dict[str, Any]:
+    def process_message(
+        self, msg: Dict[str, Any], quote_map: Dict[int, str] | None = None
+    ) -> Dict[str, Any]:
         """
         处理单条消息，将 ConversationLedger 内部格式转换为上游 context 消息
 
         Args:
             msg: ConversationLedger 中的原始消息字典，包含 role, content, timestamp, image_caption 等字段
+            quote_map: 可选的引用目标映射；仅普通消息的文本格式化会登记编号
 
         Returns:
             处理后的消息字典，标准化为上游 Provider 可接受的格式：
@@ -57,7 +60,7 @@ class MessageProcessor:
             return self._handle_tool_result(msg)
 
         # 处理普通消息
-        return self._handle_regular_message(msg)
+        return self._handle_regular_message(msg, quote_map=quote_map)
 
     def _is_tool_call(self, msg: Dict[str, Any]) -> bool:
         """判断是否为工具调用消息"""
@@ -80,7 +83,9 @@ class MessageProcessor:
         """处理工具结果消息（通常已经是字典，直接返回）"""
         return msg.copy()
 
-    def _handle_regular_message(self, msg: Dict[str, Any]) -> Dict[str, Any]:
+    def _handle_regular_message(
+        self, msg: Dict[str, Any], quote_map: Dict[int, str] | None = None
+    ) -> Dict[str, Any]:
         """处理普通消息（使用已有的图片转述、文本格式化等）"""
         role = msg.get("role", "user")
 
@@ -110,7 +115,7 @@ class MessageProcessor:
         processed_msg["content"] = content_list
 
         # 调用文本格式化工具生成结构化文本
-        xml_content = format_message_to_text(processed_msg, self.alias)
+        xml_content = format_message_to_text(processed_msg, self.alias, quote_map=quote_map)
 
         # 提取原始的图片组件
         image_components = self._extract_image_components(original_content)

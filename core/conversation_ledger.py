@@ -5,11 +5,14 @@ import aiohttp
 import io
 import base64
 import os
+from collections import Counter, deque
 from PIL import Image
 from pathlib import Path
 from typing import List, Dict, Tuple, Optional
 from urllib.parse import unquote, urlparse
 from . import utils
+from .quote_target import is_group_member_message
+from .utils.message_utils import message_dedup_key
 
 # 条件导入：当缺少astrbot依赖时使用Mock
 from astrbot.api import logger
@@ -38,6 +41,8 @@ class ConversationLedger:
 
         # 总消息数量上限（跨会话保险丝；单会话条数由上下文整理/token 限制收口）
         self.TOTAL_MESSAGE_LIMIT = 100000
+        # 引用元数据独立于正文整理；跨会话共享容量上限，不保留正文或媒体。
+        self._quote_messages = deque(maxlen=self.TOTAL_MESSAGE_LIMIT)
         # 最小保留消息数量（即使过期也保留）
         self.MIN_RETAIN_COUNT = 7
 
@@ -413,6 +418,7 @@ class ConversationLedger:
                     message,
                     key=lambda m: m.get("timestamp", 0),
                 )
+                self._record_quote_message(chat_id, message)
 
         # 2. 判断是否需要压缩/整理
         # 私聊：留给上层主动 LLM 摘要，不在入库同步路径里抢先规则收口
@@ -447,6 +453,28 @@ class ConversationLedger:
                 if ledger.get("messages") or ledger.get("current_summary")
             ]
 
+    def _record_quote_message(self, chat_id: str, message: Dict) -> None:
+        """在账本锁内记录群友消息的最小引用元数据。"""
+        if ":GroupMessage:" not in chat_id or not is_group_member_message(message):
+            return
+        self._quote_messages.append((
+            chat_id,
+            str(message.get("source_message_id", "") or ""),
+            message.get("timestamp", 0),
+            message_dedup_key(message),
+        ))
+
+    def get_quote_messages(self, chat_id: str) -> List[Dict]:
+        """读取独立于上下文整理的引用计数快照，顺序与正文账本一致。"""
+        with self._lock:
+            messages = [
+                {"role": "user", "source_message_id": source_id, "timestamp": timestamp}
+                for origin, source_id, timestamp, _ in self._quote_messages
+                if origin == chat_id
+            ]
+        messages.sort(key=lambda message: message.get("timestamp", 0))
+        return messages
+
     def set_messages(self, chat_id: str, messages: List[Dict]):
         """
         设置指定会话的消息列表。
@@ -458,6 +486,22 @@ class ConversationLedger:
         """
         ledger = self._get_or_create_ledger(chat_id)
         with self._lock:
+            if ":GroupMessage:" in chat_id:
+                current_objects = {id(message) for message in ledger["messages"]}
+                known_counts = Counter(
+                    key for origin, _, _, key in self._quote_messages if origin == chat_id
+                )
+                occurrences = Counter()
+                for message in messages:
+                    if not is_group_member_message(message):
+                        continue
+                    key = message_dedup_key(message)
+                    occurrences[key] += 1
+                    occurrence = 1 if message.get("source_message_id") else occurrences[key]
+                    if id(message) in current_objects or occurrence <= known_counts[key]:
+                        continue
+                    self._record_quote_message(chat_id, message)
+                    known_counts[key] += 1
             ledger["messages"] = messages.copy()  # 保存副本避免外部修改
 
     def get_context_snapshot(
@@ -1668,6 +1712,7 @@ class ConversationLedger:
         """释放全部内存账本与 SQLite 句柄；允许重复调用。"""
         with self._lock:
             self._ledgers.clear()
+            self._quote_messages.clear()
             self._last_compression_time.clear()
             self._compression_locks.clear()
 

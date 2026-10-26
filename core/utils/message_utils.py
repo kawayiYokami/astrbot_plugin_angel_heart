@@ -2,12 +2,33 @@
 AngelHeart 插件 - 消息处理相关工具函数
 """
 
+import hashlib
+import json
 from typing import Any
 
 from .xml_formatter import format_message_to_text
 
 # 条件导入：当缺少astrbot依赖时使用Mock
 from astrbot.api import logger
+
+
+def message_dedup_key(message: dict) -> str:
+    """优先用原始 ID；无 ID 时以稳定消息内容生成补种去重键。"""
+    source_id = str(message.get("source_message_id", "") or "")
+    if source_id:
+        return f"id:{source_id}"
+    identity = {
+        key: message.get(key)
+        for key in (
+            "role", "content", "sender_id", "sender_name", "source", "kind",
+            "tool_calls", "tool_call_id",
+        )
+    }
+    # 官方历史的时间戳每次补种都会重建，不能作为消息身份。
+    if message.get("source") != "astrbot_conversation":
+        identity["timestamp"] = message.get("timestamp", 0)
+    serialized = json.dumps(identity, ensure_ascii=False, sort_keys=True, default=str)
+    return "hash:" + hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 
 def prune_old_messages(
