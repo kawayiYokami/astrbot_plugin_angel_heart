@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.2.10 - 2026-10-26
+
+### Fixed
+- **群聊图片被整理折叠后丢失（#78）**：上下文整理折叠图片消息时，摘要正文补上该图片的本地缓存路径，并让摘要消息持有这些路径的引用，避免文件被当作无主缓存清理；摘要再次被整理时引用继续继承，`get_formal_context` 补出的摘要同样携带。`core/conversation_ledger.py`。
+- **运行中请求的图片被清理导致工具续轮 400**：会话仍在调度中（防抖记录、秘书单飞、运行中的工作任一存在）时只登记待清理、不删文件，等调度收口后再补做清理，保证续轮读到的图片仍在磁盘上。`core/conversation_ledger.py`、`core/angel_heart_context.py`、`main.py`、`roles/front_desk.py`。
+
+### Changed
+- 图片理解工具 `angel_describe_image` 的使用时机改为「`astrbot_file_read_tool` 读取不了图片时使用」。`tools/image_understanding.py`。
+- 补测试：摘要附图片路径与引用保持、调度中延迟清理（`tests/test_summary_image_refs.py`、`tests/test_media_cleanup_defer.py`）。
+
 ## 2.2.9 - 2026-10-26
 
 ### Fixed

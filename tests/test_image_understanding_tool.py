@@ -10,10 +10,7 @@ def test_image_tool_keeps_registered_schema():
     tool = AngelDescribeImageTool()
 
     assert tool.name == "angel_describe_image"
-    assert tool.description == (
-        "解析图片内容；仅在当前看不到图片时使用。"
-        "不要使用 astrbot_file_read_tool 读取图片。"
-    )
+    assert tool.description == "解析图片内容；当 astrbot_file_read_tool 读取不了图片时使用。"
     assert tool.parameters == {
         "type": "object",
         "properties": {

@@ -48,6 +48,11 @@ class ConversationLedger:
         # 缓存 bisect 模块
         self._bisect = bisect
 
+        # 媒体缓存清理门闩：会话仍在调度中时延迟清理，避免删掉运行中请求正在引用的图片。
+        # 由 AngelContext 注入判定函数；未注入时视为空闲，保持旧行为。
+        self._cleanup_busy_check = None
+        self._pending_cleanup: set[str] = set()
+
         # 每个会话的最后压缩时间戳 {chat_id: timestamp}
         self._last_compression_time: Dict[str, float] = {}
         # 压缩锁：整理期间互斥，防止半成品外泄
@@ -309,20 +314,25 @@ class ConversationLedger:
             role = msg.get("role", "user")
             name = msg.get("sender_name") or msg.get("sender_id") or role
             text = self._extract_message_text(msg)
-            if not text:
-                continue
-            # 控制规则摘要体积
-            if len(text) > 120:
-                text = text[:120] + "…"
-            lines.append(f"{name}: {text}")
+            if text:
+                # 控制规则摘要体积
+                if len(text) > 120:
+                    text = text[:120] + "…"
+                lines.append(f"{name}: {text}")
+            # 图片消息折叠后只留文字会丢掉图，附上本地缓存路径，
+            # 让模型知道这张图在哪；文件本身由摘要引用保证不被清理。
+            for ref in self._collect_message_image_refs([msg]):
+                lines.append(f"[图片] {ref}")
         summary = "\n".join(lines).strip()
         # 限制摘要总长，避免无限膨胀
         if len(summary) > 4000:
             summary = summary[-4000:]
         return summary
 
-    def _make_summary_message(self, summary: str, timestamp: float) -> Dict:
-        return {
+    def _make_summary_message(
+        self, summary: str, timestamp: float, image_refs: List[str] | None = None
+    ) -> Dict:
+        message = {
             "role": "user",
             "content": f"[当前摘要]\n{summary}",
             "sender_id": "system",
@@ -330,6 +340,40 @@ class ConversationLedger:
             "kind": "context_summary",
             "timestamp": max(0.0, float(timestamp) - 0.001),
         }
+        if image_refs:
+            message["image_refs"] = list(dict.fromkeys(image_refs))
+        return message
+
+    def _collect_message_image_refs(self, messages: List[Dict] | None) -> List[str]:
+        """按顺序收集消息引用的插件媒体缓存路径，供摘要消息继续持有引用。"""
+        refs: List[str] = []
+        for msg in messages or []:
+            if not isinstance(msg, dict):
+                continue
+            content = msg.get("content")
+            if isinstance(content, list):
+                for item in content:
+                    if not isinstance(item, dict) or item.get("type") != "image_url":
+                        continue
+                    ref = (
+                        item.get("cache_path")
+                        or item.get("local_file_path")
+                        or item.get("original_file_url")
+                        or item.get("original_url")
+                    )
+                    if not ref:
+                        image_url = item.get("image_url")
+                        if isinstance(image_url, dict):
+                            url = image_url.get("url")
+                            if isinstance(url, str) and not url.startswith("data:"):
+                                ref = url
+                    if isinstance(ref, str) and ref:
+                        refs.append(ref)
+            for ref in msg.get("image_refs") or []:
+                if isinstance(ref, str) and ref:
+                    refs.append(ref)
+        return list(dict.fromkeys(refs))
+
 
     def add_message(self, chat_id: str, message: Dict, should_prune: bool = False):
         """
@@ -442,7 +486,16 @@ class ConversationLedger:
         ):
             return messages
         ts = messages[0].get("timestamp", time.time()) if messages else time.time()
-        return [self._make_summary_message(summary, ts)] + messages
+        summary_refs: List[str] = []
+        for msg in messages:
+            if msg.get("kind") in (
+                "context_summary",
+                "summary_context",
+                "context_compaction",
+            ):
+                summary_refs = self._collect_message_image_refs([msg])
+                break
+        return [self._make_summary_message(summary, ts, summary_refs)] + messages
 
     def organize_context(
         self,
@@ -710,7 +763,10 @@ class ConversationLedger:
             ]
             if summary:
                 ts = retained[0].get("timestamp", time.time()) if retained else time.time()
-                retained = [self._make_summary_message(summary, ts)] + retained
+                summary_image_refs = self._collect_message_image_refs(discarded)
+                retained = [
+                    self._make_summary_message(summary, ts, summary_image_refs)
+                ] + retained
             original = len(messages)
             ledger["messages"] = retained
             self._last_compression_time[chat_id] = time.time()
@@ -770,8 +826,14 @@ class ConversationLedger:
                 retained.reverse()
 
             ts = retained[0].get("timestamp", time.time()) if retained else time.time()
+            retained_ids = {id(m) for m in retained}
+            summary_image_refs = self._collect_message_image_refs(
+                [m for m in messages if id(m) not in retained_ids]
+            )
             ledger["current_summary"] = summary_text
-            ledger["messages"] = [self._make_summary_message(summary_text, ts)] + retained
+            ledger["messages"] = [
+                self._make_summary_message(summary_text, ts, summary_image_refs)
+            ] + retained
             self._last_compression_time[chat_id] = time.time()
             logger.info(
                 f"AngelHeart[{chat_id}]: 摘要提交完成({reason}) "
@@ -843,13 +905,49 @@ class ConversationLedger:
             referenced_paths.update(self._extract_managed_cache_paths_from_message(msg))
         return referenced_paths
 
+    def set_cleanup_busy_check(self, check) -> None:
+        """注入「会话是否仍在调度中」的判定函数。"""
+        self._cleanup_busy_check = check
+
+    def _is_chat_busy(self, chat_id: str) -> bool:
+        """会话是否仍在调度中（防抖记录、秘书单飞、运行中的工作）。"""
+        if not chat_id or not self._cleanup_busy_check:
+            return False
+        try:
+            return bool(self._cleanup_busy_check(chat_id))
+        except Exception as e:
+            logger.debug(f"AngelHeart[{chat_id}]: 查询调度忙闲失败: {e}")
+            return False
+
     def _cleanup_unreferenced_media_cache(self, chat_id: str = ""):
-        """扫描插件媒体缓存，删除不在当前账本引用集合里的文件。"""
+        """扫描插件媒体缓存，删除不在当前账本引用集合里的文件。
+
+        会话仍在调度中时只登记待清理，不删文件：运行中的请求与工具续轮
+        持有的是请求发出那一刻的图片路径，账本此时折叠消息并不代表文件没人用。
+        """
+        if self._is_chat_busy(chat_id):
+            self._pending_cleanup.add(chat_id)
+            logger.debug(
+                f"AngelHeart[{chat_id}]: 会话调度中，媒体缓存清理延后"
+            )
+            return
         referenced_paths = self._collect_referenced_cache_paths(chat_id)
         for path in self.image_cache.iter_managed_files(chat_id):
             normalized = self._normalize_managed_cache_path(path)
             if normalized and normalized not in referenced_paths:
                 self.image_cache.remove_managed_path(path)
+        self._pending_cleanup.discard(chat_id)
+
+    def flush_pending_cleanup(self, chat_id: str = "") -> None:
+        """调度收口后补做被延后的媒体缓存清理；仍忙则继续留着。"""
+        if chat_id:
+            targets = [chat_id] if chat_id in self._pending_cleanup else []
+        else:
+            targets = list(self._pending_cleanup)
+        for target in targets:
+            if self._is_chat_busy(target):
+                continue
+            self._cleanup_unreferenced_media_cache(target)
 
     def _cleanup_removed_messages(
         self,
