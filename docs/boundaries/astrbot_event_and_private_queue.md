@@ -65,13 +65,11 @@ AstrBot 无法在已运行的子代理中注入消息
 ## 模块关系
 
 ```text
-PAI / easy_call_ai 语义参考
-→ AngelHeart 群聊双防抖状态机
+AngelHeart 群聊双防抖状态机
 → AstrBot 事件=子代理 的执行边界
 → 私聊只能队列
 ```
 
 相关文档：
 
-- `docs/architecture/group_dual_debounce_state_machine.md`
-- `.pai/plan/20260713_群聊双防抖与状态机重构.md`
+- [群聊双防抖与状态机](../architecture/group_dual_debounce_state_machine.md)

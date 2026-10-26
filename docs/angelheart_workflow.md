@@ -1,6 +1,22 @@
 # AngelHeart 当前业务流程
 
-本文只描述当前运行路径。群聊的状态机与调度细节以 [群聊双防抖与状态机](architecture/group_dual_debounce_state_machine.md) 为准。
+本文只描述当前运行路径，并作为 `docs/` 总览。群聊状态机与调度细节以 [群聊双防抖与状态机](architecture/group_dual_debounce_state_machine.md) 为准。
+
+## 文档索引
+
+### 架构
+
+- [群聊双防抖与状态机](architecture/group_dual_debounce_state_machine.md)
+- [消息管理与上下文压缩](architecture/message_context_compression.md)
+- [主脑请求重写](architecture/request_rewrite.md)
+- [群聊配置模板与 WebUI](architecture/group_profile_and_webui.md)
+- [秘书分析提示词](architecture/prompts.md)
+
+### 边界与对外契约
+
+- [AstrBot 事件流与私聊队列边界](boundaries/astrbot_event_and_private_queue.md)
+- [上下文注入](angelheart_context_injection_guide.md)
+- [主动应答 API](proactive_api_guide.md)
 
 ## 一、参与模型
 
@@ -40,7 +56,7 @@ flowchart TD
     L --> M[最后边界事件等待到期]
     M --> N{同会话已有秘书调度？}
     N -->|是| O[保留边界事件并完整重计]
-    N -->|否| P{助理忙碌或（非离场应答且）助理休息未结束？}
+    N -->|否| P{助理忙碌或非离场应答且助理休息未结束？}
     P -->|是| O
     P -->|否| Q{普通巡检且精力不足？}
     Q -->|是| O
@@ -84,8 +100,10 @@ flowchart TD
 
 ## 六、关键文件
 
-- [`roles/front_desk.py`](../roles/front_desk.py)：消息入账、群聊分流、激活与秘书收口。
-- [`core/debounce_manager.py`](../core/debounce_manager.py)：双防抖、边界事件替换、休息重计与同会话单飞。
-- [`roles/secretary.py`](../roles/secretary.py)：轻量模型决策。
-- [`core/angel_heart_status.py`](../core/angel_heart_status.py)：离场/在场状态语义与点名判定。
-- [`core/conversation_ledger.py`](../core/conversation_ledger.py)：正式会话历史。
+- `roles/front_desk.py`：消息入账、群聊分流、激活与秘书收口。
+- `core/debounce_manager.py`：双防抖、边界事件替换、休息重计与同会话单飞。
+- `roles/secretary.py`：轻量模型决策。
+- `core/angel_heart_status.py`：离场/在场状态语义与点名判定。
+- `core/conversation_ledger.py`：正式会话历史。
+- `core/work_ledger.py`：助理工作账本。
+- `core/chat_profile.py`：群聊配置模板与绑定。
