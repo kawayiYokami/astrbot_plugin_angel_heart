@@ -309,20 +309,25 @@ class ConversationLedger:
             role = msg.get("role", "user")
             name = msg.get("sender_name") or msg.get("sender_id") or role
             text = self._extract_message_text(msg)
-            if not text:
-                continue
-            # 控制规则摘要体积
-            if len(text) > 120:
-                text = text[:120] + "…"
-            lines.append(f"{name}: {text}")
+            if text:
+                # 控制规则摘要体积
+                if len(text) > 120:
+                    text = text[:120] + "…"
+                lines.append(f"{name}: {text}")
+            # 图片消息折叠后只留文字会丢掉图，附上本地缓存路径，
+            # 让模型知道这张图在哪；文件本身由摘要引用保证不被清理。
+            for ref in self._collect_message_image_refs([msg]):
+                lines.append(f"[图片] {ref}")
         summary = "\n".join(lines).strip()
         # 限制摘要总长，避免无限膨胀
         if len(summary) > 4000:
             summary = summary[-4000:]
         return summary
 
-    def _make_summary_message(self, summary: str, timestamp: float) -> Dict:
-        return {
+    def _make_summary_message(
+        self, summary: str, timestamp: float, image_refs: List[str] | None = None
+    ) -> Dict:
+        message = {
             "role": "user",
             "content": f"[当前摘要]\n{summary}",
             "sender_id": "system",
@@ -330,6 +335,40 @@ class ConversationLedger:
             "kind": "context_summary",
             "timestamp": max(0.0, float(timestamp) - 0.001),
         }
+        if image_refs:
+            message["image_refs"] = list(dict.fromkeys(image_refs))
+        return message
+
+    def _collect_message_image_refs(self, messages: List[Dict] | None) -> List[str]:
+        """按顺序收集消息引用的插件媒体缓存路径，供摘要消息继续持有引用。"""
+        refs: List[str] = []
+        for msg in messages or []:
+            if not isinstance(msg, dict):
+                continue
+            content = msg.get("content")
+            if isinstance(content, list):
+                for item in content:
+                    if not isinstance(item, dict) or item.get("type") != "image_url":
+                        continue
+                    ref = (
+                        item.get("cache_path")
+                        or item.get("local_file_path")
+                        or item.get("original_file_url")
+                        or item.get("original_url")
+                    )
+                    if not ref:
+                        image_url = item.get("image_url")
+                        if isinstance(image_url, dict):
+                            url = image_url.get("url")
+                            if isinstance(url, str) and not url.startswith("data:"):
+                                ref = url
+                    if isinstance(ref, str) and ref:
+                        refs.append(ref)
+            for ref in msg.get("image_refs") or []:
+                if isinstance(ref, str) and ref:
+                    refs.append(ref)
+        return list(dict.fromkeys(refs))
+
 
     def add_message(self, chat_id: str, message: Dict, should_prune: bool = False):
         """
@@ -442,7 +481,16 @@ class ConversationLedger:
         ):
             return messages
         ts = messages[0].get("timestamp", time.time()) if messages else time.time()
-        return [self._make_summary_message(summary, ts)] + messages
+        summary_refs: List[str] = []
+        for msg in messages:
+            if msg.get("kind") in (
+                "context_summary",
+                "summary_context",
+                "context_compaction",
+            ):
+                summary_refs = self._collect_message_image_refs([msg])
+                break
+        return [self._make_summary_message(summary, ts, summary_refs)] + messages
 
     def organize_context(
         self,
@@ -710,7 +758,10 @@ class ConversationLedger:
             ]
             if summary:
                 ts = retained[0].get("timestamp", time.time()) if retained else time.time()
-                retained = [self._make_summary_message(summary, ts)] + retained
+                summary_image_refs = self._collect_message_image_refs(discarded)
+                retained = [
+                    self._make_summary_message(summary, ts, summary_image_refs)
+                ] + retained
             original = len(messages)
             ledger["messages"] = retained
             self._last_compression_time[chat_id] = time.time()
@@ -770,8 +821,14 @@ class ConversationLedger:
                 retained.reverse()
 
             ts = retained[0].get("timestamp", time.time()) if retained else time.time()
+            retained_ids = {id(m) for m in retained}
+            summary_image_refs = self._collect_message_image_refs(
+                [m for m in messages if id(m) not in retained_ids]
+            )
             ledger["current_summary"] = summary_text
-            ledger["messages"] = [self._make_summary_message(summary_text, ts)] + retained
+            ledger["messages"] = [
+                self._make_summary_message(summary_text, ts, summary_image_refs)
+            ] + retained
             self._last_compression_time[chat_id] = time.time()
             logger.info(
                 f"AngelHeart[{chat_id}]: 摘要提交完成({reason}) "
