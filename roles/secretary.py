@@ -38,10 +38,9 @@ class Secretary:
         # -- 核心组件 --
         # 初始化 LLMAnalyzer
         analyzer_model_name = self.config_manager.analyzer_model
-        reply_strategy_guide = self.config_manager.reply_strategy_guide
         # 传递 context 对象，让 LLMAnalyzer 在需要时动态获取 provider
         self.llm_analyzer = LLMAnalyzer(
-            analyzer_model_name, context, reply_strategy_guide, self.config_manager
+            analyzer_model_name, context, self.config_manager
         )
 
     async def handle_message_by_state(self, event: AstrMessageEvent) -> SecretaryDecision:

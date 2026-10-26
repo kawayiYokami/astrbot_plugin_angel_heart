@@ -40,9 +40,6 @@ _MIGRATION_MAP = {
     "chat_ids": ("access_control", "chat_ids"),
     "group_chat_enhancement": ("access_control", "group_chat_enhancement"),
     "takeover_private_chat_context": ("access_control", "takeover_private_chat_context"),
-    # personality
-    "ai_self_identity": ("personality", "ai_self_identity"),
-    "reply_strategy_guide": ("personality", "reply_strategy_guide"),
     # context_compression
     "max_conversation_tokens": ("context_compression", "max_conversation_tokens"),
     "context_content_retain_tokens": ("context_compression", "content_retain_tokens"),
@@ -65,6 +62,10 @@ _DEPRECATED_FLAT_KEYS = {
     "debug_mode",
     # 旧分析机制字段：被 enter_on_mention_only（入场机制）完全替代，直接废弃不迁移
     "analysis_on_mention_only",
+    # 助理画像配置页已删除：身份改由 AstrBot 会话人格提供，提示词改为插件内置规则
+    "ai_self_identity",
+    "reply_strategy_guide",
+    "reply_strategy_mode",
 }
 
 _DEPRECATED_GROUPED_KEYS = {
@@ -78,6 +79,12 @@ _DEPRECATED_GROUPED_KEYS = {
     "wake_interaction": {
         # 旧分析机制字段：被 enter_on_mention_only（入场机制）完全替代，直接废弃不迁移
         "analysis_on_mention_only",
+    },
+    "personality": {
+        # 助理画像配置页已删除：身份改由 AstrBot 会话人格提供
+        "ai_self_identity",
+        "reply_strategy_guide",
+        "reply_strategy_mode",
     },
     "comfort": {
         "patience_interval",

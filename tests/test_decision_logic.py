@@ -23,10 +23,6 @@ def make_config(reply_even: bool, force_reply: bool = True):
             "reply_even_not_questioned": reply_even,
             "alias": "fairy",
         },
-        "personality": {
-            "ai_self_identity": "测试用",
-            "reply_strategy_guide": "",
-        },
         "timing": {},
         "leave_reply": {},
         "access_control": {},
@@ -88,12 +84,13 @@ class TestAnalyzerForwardCondition:
 
             with patch("astrbot_plugin_angel_heart.core.llm_analyzer.PromptModuleLoader") as mock_loader_cls:
                 mock_loader = mock_loader_cls.return_value
-                mock_loader.build_prompt_template.return_value = "mock template {historical_context} {recent_dialogue} {reply_strategy_guide} {alias} {ai_self_identity}"
+                mock_loader.build_output_contract.return_value = "mock contract"
+                mock_loader.system_prompt = "mock rules {alias}"
+                mock_loader.conversation_template = "{historical_context}\n{recent_dialogue}"
 
                 analyzer = LLMAnalyzer(
                     analyzer_model_name="mock-model",
                     context=None,
-                    strategy_guide="",
                     config_manager=config,
                 )
 

@@ -12,6 +12,9 @@ except ImportError:
     logger = logging.getLogger(__name__)
 
 
+from .prompt_presets import load_preset_system_prompt
+
+
 class ConfigManager:
     """
     配置管理器 - 提供对插件配置的中心化访问。
@@ -32,11 +35,16 @@ class ConfigManager:
     def __init__(self, config_data: dict):
         self._config = config_data or {}
         self._profile_store = None
+        self._prompt_settings = None
         self._active_chat_id = ""
 
     def attach_profile_store(self, profile_store) -> None:
         """挂载群聊配置模板存储；重复挂载会替换旧引用。"""
         self._profile_store = profile_store
+
+    def attach_prompt_settings(self, prompt_settings) -> None:
+        """挂载系统提示词设置存储（插件自有 JSON，不走 AstrBot 插件配置）。"""
+        self._prompt_settings = prompt_settings
 
     def for_chat(self, chat_id: str) -> "ConfigManager":
         """返回按群聊覆盖的配置视图（共享全局配置与模板存储）。
@@ -51,6 +59,7 @@ class ConfigManager:
             logger.warning("AngelHeart: for_chat 收到空 chat_id，本次读取将回退全局配置，请检查调用方是否漏传")
         view = ConfigManager(self._config)
         view._profile_store = self._profile_store
+        view._prompt_settings = self._prompt_settings
         view._active_chat_id = str(chat_id or "")
         return view
 
@@ -251,18 +260,26 @@ class ConfigManager:
     def takeover_private_chat_context(self) -> bool:
         return self._get_grouped("access_control", "takeover_private_chat_context", False)
 
-    # ========== personality ==========
+    # ========== 系统提示词 ==========
 
     @property
-    def ai_self_identity(self) -> str:
-        return self._get_grouped(
-            "personality", "ai_self_identity",
-            "你拥有强大的检索能力和庞大的知识储备和记忆能力。\n你喜爱跟群友进行语言游戏沟通。\n群友对AI的善意测试你必须回应满足群友的期待，展示你的能力。",
-        )
+    def reply_strategy_mode(self) -> str:
+        """系统提示词来源：preset（内置固定文本）或 custom（用户自定义）。"""
+        if self._prompt_settings is None:
+            return "preset"
+        return self._prompt_settings.get_mode()
 
     @property
     def reply_strategy_guide(self) -> str:
-        return self._get_grouped("personality", "reply_strategy_guide", "")
+        """系统提示词正文：预设返回内置全文，自定义返回用户填写内容。
+
+        自定义内容为空时回落到内置预设，避免提示词退化成空文本。
+        """
+        if self.reply_strategy_mode == "custom" and self._prompt_settings is not None:
+            custom = self._prompt_settings.get_custom_prompt().strip()
+            if custom:
+                return custom
+        return load_preset_system_prompt()
 
     # ========== context_compression ==========
 

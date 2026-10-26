@@ -63,12 +63,10 @@ class LLMAnalyzer:
         self,
         analyzer_model_name: str,
         context,
-        strategy_guide: str = None,
         config_manager=None,
     ):
         self.analyzer_model_name = analyzer_model_name
         self.context = context  # 存储 context 对象，用于动态获取 provider
-        self.strategy_guide = strategy_guide or ""  # 存储策略指导文本
         self.config_manager = config_manager  # 存储 config_manager 对象，用于访问配置
         self.is_ready = False  # 默认认为分析器未就绪
 
@@ -78,22 +76,21 @@ class LLMAnalyzer:
         # 初始化JSON解析器
         self.json_parser = JsonParser()
 
-        # 加载外部 Prompt 模板
+        # 加载固定的输出契约
         try:
-            # 使用 PromptModuleLoader 构建提示词模板
             is_reasoning_model = config_manager.is_reasoning_model if config_manager else False
-            self.base_prompt_template = self.prompt_loader.build_prompt_template(is_reasoning_model)
+            self.output_contract = self.prompt_loader.build_output_contract(is_reasoning_model)
 
-            if self.base_prompt_template:
+            if self.output_contract:
                 self.is_ready = True
-                output_type = "指令" if is_reasoning_model else "推理"
-                logger.info(f"AngelHeart分析器: Prompt模块组装成功，使用 {output_type} 版本。")
+                output_type = "推理模型" if is_reasoning_model else "常规模型"
+                logger.info(f"AngelHeart分析器: 输出契约加载成功，分析模型为{output_type}。")
             else:
                 self.is_ready = False
-                logger.critical("AngelHeart分析器: Prompt模块组装失败，未生成有效模板。分析器将无法工作。")
+                logger.critical("AngelHeart分析器: 输出契约加载失败，分析器将无法工作。")
         except Exception as e:
             self.is_ready = False
-            logger.critical(f"AngelHeart分析器: Prompt模块组装时发生错误: {e}。分析器将无法工作。")
+            logger.critical(f"AngelHeart分析器: 输出契约加载时发生错误: {e}。分析器将无法工作。")
 
         if not self.analyzer_model_name:
             logger.warning("AngelHeart的分析模型未配置，功能将受限。")
@@ -102,22 +99,21 @@ class LLMAnalyzer:
         """重新加载配置"""
         self.config_manager = new_config_manager
 
-        # 重新加载提示词模块
+        # 重新加载提示词文档
         try:
             self.prompt_loader.reload_modules()
             is_reasoning_model = new_config_manager.is_reasoning_model if new_config_manager else False
-            self.base_prompt_template = self.prompt_loader.build_prompt_template(is_reasoning_model)
+            self.output_contract = self.prompt_loader.build_output_contract(is_reasoning_model)
 
-            if self.base_prompt_template:
+            if self.output_contract:
                 self.is_ready = True
-                output_type = "指令" if is_reasoning_model else "推理"
-                logger.info(f"AngelHeart分析器: Prompt模板重新加载成功，使用 {output_type} 版本。")
+                logger.info("AngelHeart分析器: 输出契约重新加载成功。")
             else:
                 self.is_ready = False
-                logger.warning("AngelHeart分析器: Prompt模板重新加载失败，分析器未就绪。")
+                logger.warning("AngelHeart分析器: 输出契约重新加载失败，分析器未就绪。")
         except Exception as e:
             self.is_ready = False
-            logger.error(f"AngelHeart分析器: Prompt模板重新加载时发生错误: {e}")
+            logger.error(f"AngelHeart分析器: 输出契约重新加载时发生错误: {e}")
 
     def _parse_response(self, response_text: str, alias: str, chat_id: str = "") -> SecretaryDecision:
         """
@@ -133,7 +129,44 @@ class LLMAnalyzer:
         """
         return self._parse_and_validate_decision(response_text, alias, chat_id)
 
-    async def _call_ai_model(self, prompt: str, chat_id: str) -> str:
+    async def _resolve_persona_prompt(self, chat_id: str) -> str:
+        """取当前会话生效的人格提示词，作为分析请求的系统提示词。
+
+        人格由 AstrBot 人格系统维护，插件不再自建身份配置。
+        """
+        persona_manager = getattr(self.context, "persona_manager", None)
+        if not persona_manager or not chat_id:
+            return ""
+
+        try:
+            conversation_persona_id = None
+            conversation_manager = getattr(self.context, "conversation_manager", None)
+            if conversation_manager:
+                conversation_id = await conversation_manager.get_curr_conversation_id(chat_id)
+                if conversation_id:
+                    conversation = await conversation_manager.get_conversation(
+                        chat_id, conversation_id
+                    )
+                    conversation_persona_id = getattr(conversation, "persona_id", None)
+
+            platform_name = chat_id.split(":", 1)[0]
+            _, persona, _, _ = await persona_manager.resolve_selected_persona(
+                umo=chat_id,
+                conversation_persona_id=conversation_persona_id,
+                platform_name=platform_name,
+            )
+            if not persona:
+                return ""
+            return str(persona.get("prompt") or "").strip()
+        except Exception as e:
+            logger.warning(
+                f"AngelHeart分析器: 获取会话人格失败，本次只使用插件提示词: {e}"
+            )
+            return ""
+
+    async def _call_ai_model(
+        self, prompt: str, rules_text: str, chat_id: str
+    ) -> str:
         """
         调用AI模型并返回响应文本，包含3秒后自动重试1次机制
         """
@@ -153,6 +186,10 @@ class LLMAnalyzer:
             )
             raise Exception("未找到分析模型提供商")
 
+        # 系统提示词用会话人格，插件规则作为第一条用户提示词
+        persona_prompt = await self._resolve_persona_prompt(chat_id)
+        contexts = [{"role": "user", "content": rules_text}] if rules_text else None
+
         # 重试机制：最多重试1次，间隔3秒
         max_retries = 1
         retry_delay = 3  # 秒
@@ -161,7 +198,11 @@ class LLMAnalyzer:
             try:
                 # Provider 请求的超时/取消以上游及用户配置为单一真相；插件不再套本地 wait_for。
                 # 上游正常抛错后由本层重试，最终仍失败则交给 analyze_and_decide 降级为不回复。
-                token = await provider.text_chat(prompt=prompt)
+                token = await provider.text_chat(
+                    prompt=prompt,
+                    contexts=contexts,
+                    system_prompt=persona_prompt or None,
+                )
                 response_text = token.completion_text.strip()
 
                 # 记录AI模型的完整响应内容
@@ -186,15 +227,17 @@ class LLMAnalyzer:
                     )
                     raise
 
-    def _build_prompt(
+    def _build_prompts(
         self,
         historical_context: List[Dict],
         recent_dialogue: List[Dict],
         work_ledger_text: str = "",
         chat_id: str = "",
-    ) -> str:
-        """
-        使用给定的对话历史构建分析提示词
+    ) -> tuple[str, str]:
+        """构建两条用户消息：插件规则与待分析的对话记录。
+
+        Returns:
+            tuple[str, str]: (规则文本, 对话记录文本)
         """
         # 分别格式化历史上下文和最近对话，并添加 XML 包裹
         historical_body = self._format_conversation_history(historical_context, chat_id)
@@ -215,28 +258,36 @@ class LLMAnalyzer:
         # 获取配置中的昵称
         alias = cm.alias if cm else "AngelHeart"
 
-        # 使用直接的字符串替换来构建提示词，规避.format()方法对特殊字符的解析问题
-        base_prompt = self.base_prompt_template
-        base_prompt = base_prompt.replace("{historical_context}", historical_text)
-        base_prompt = base_prompt.replace("{recent_dialogue}", recent_text)
-        base_prompt = base_prompt.replace(
-            "{reply_strategy_guide}", cm.reply_strategy_guide if cm else ""
+        # 规则消息：群聊参与判定 + 输出契约，占位符按配置替换
+        # 判定正文按系统提示词设置二选一：预设为内置全文，自定义为用户填写内容
+        rules_base = ""
+        if cm is not None:
+            try:
+                rules_base = str(cm.reply_strategy_guide or "").strip()
+            except Exception:
+                rules_base = ""
+        if not rules_base:
+            rules_base = self.prompt_loader.system_prompt
+        rules_text = (
+            f"{rules_base}\n\n---\n\n{self.output_contract}"
         )
-        base_prompt = base_prompt.replace("{alias}", alias)
-        base_prompt = base_prompt.replace(
-            "{ai_self_identity}", cm.ai_self_identity if cm else ""
-        )
+        rules_text = rules_text.replace("{alias}", alias)
+
+        # 对话记录消息：历史与最新对话填入模板
+        conversation_text = self.prompt_loader.conversation_template
+        conversation_text = conversation_text.replace("{historical_context}", historical_text)
+        conversation_text = conversation_text.replace("{recent_dialogue}", recent_text)
 
         # 动态追加工作账本（第三人称）
         ledger_text = (work_ledger_text or "").strip()
         if ledger_text:
-            base_prompt = (
-                f"{base_prompt}\n\n"
-                f"<助理工作账本>\n{ledger_text}\n</助理工作账本>\n"
+            conversation_text = (
+                f"{conversation_text}\n\n"
+                f"## 助理工作账本\n\n{ledger_text}\n\n"
                 "请结合工作账本判断，不要让助理处理重复的问题。"
             )
 
-        return base_prompt
+        return rules_text, conversation_text
 
     async def analyze_and_decide(
         self,
@@ -271,7 +322,7 @@ class LLMAnalyzer:
 
         # 1. 调用轻量级AI进行分析
         logger.debug("AngelHeart分析器: 准备调用轻量级AI进行分析...")
-        prompt = self._build_prompt(
+        rules_text, prompt = self._build_prompts(
             historical_context,
             recent_dialogue,
             work_ledger_text=work_ledger_text,
@@ -292,7 +343,7 @@ class LLMAnalyzer:
 
         response_text = ""
         try:
-            response_text = await self._call_ai_model(prompt, chat_id)
+            response_text = await self._call_ai_model(prompt, rules_text, chat_id)
             # 调用新方法解析和验证响应，并传递 alias
             return self._parse_response(response_text, alias, chat_id)
         except (json.JSONDecodeError, KeyError) as e:

@@ -22,15 +22,6 @@ export interface GroupDef {
 
 export const GROUPS: GroupDef[] = [
   {
-    key: 'personality',
-    label: '助理画像',
-    desc: 'AI 的身份定位与回复策略指引',
-    fields: [
-      { key: 'ai_self_identity', label: '自我身份设定', type: 'textarea', placeholder: 'AI 的角色、性格与知识定位', hint: '描述助理的身份、能力、兴趣，前台根据这些信息判断什么消息跟助理相关。' },
-      { key: 'reply_strategy_guide', label: '回复策略指引', type: 'textarea', placeholder: '告诉 AI 在群里应该怎么说话、何时说话', hint: '告诉前台「助理关心什么话题、什么情况该接话、什么时候别打扰」。' },
-    ],
-  },
-  {
     key: 'wake_interaction',
     label: '点名与交互',
     desc: '被点名、被召唤时的行为规则',

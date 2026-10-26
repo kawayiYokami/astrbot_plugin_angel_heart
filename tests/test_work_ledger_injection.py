@@ -202,20 +202,14 @@ class TestAnalyzerPromptInjection:
         config = MagicMock()
         config.for_chat.return_value = config
         config.alias = "草王"
-        config.ai_self_identity = "测试身份"
-        config.reply_strategy_guide = "策略"
-        analyzer = LLMAnalyzer("mock", MagicMock(), "策略", config)
-        analyzer.base_prompt_template = (
-            "BASE\n{historical_context}\n{recent_dialogue}\n"
-            "{reply_strategy_guide}\n{alias}\n{ai_self_identity}"
-        )
-        analyzer.strategy_guide = "策略"
-        prompt = analyzer._build_prompt(
+        config.reply_strategy_guide = "系统提示词正文"
+        analyzer = LLMAnalyzer("mock", MagicMock(), config)
+        prompt = analyzer._build_prompts(
             historical_context=[],
             recent_dialogue=[{"role": "user", "content": "hi", "sender_name": "u"}],
             work_ledger_text="助理正在处理：解释双防抖。不要让助理处理重复的问题。",
-        )
-        assert "<助理工作账本>" in prompt
+        )[1]
+        assert "助理工作账本" in prompt
         assert "不要让助理处理重复的问题" in prompt
         assert "解释双防抖" in prompt
 

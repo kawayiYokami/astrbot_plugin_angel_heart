@@ -89,6 +89,11 @@ class AngelHeartPlugin(Star):
         from .core.last_decisions import LastDecisionStore
         self.last_decisions = LastDecisionStore(plugin_data_dir)
 
+        # -- 系统提示词设置（插件自有 JSON，不进 AstrBot 自带设置页，只由本插件 WebUI 读写）--
+        from .core.prompt_settings import PromptSettingsStore
+        self.prompt_settings = PromptSettingsStore(plugin_data_dir)
+        self.config_manager.attach_prompt_settings(self.prompt_settings)
+
         # -- 创建 AngelHeartContext 全局上下文（包含 ConversationLedger）--
         self.angel_context = AngelHeartContext(self.config_manager, self.context, plugin_data_dir)
         self.context.add_llm_tools(
@@ -125,6 +130,7 @@ class AngelHeartPlugin(Star):
                 self.last_decisions,
                 config=self.config,
                 plugin=self,
+                prompt_settings=self.prompt_settings,
             )
             logger.info("AngelHeart: 已注册群聊配置 WebUI API 路由")
         except Exception as e:  # pragma: no cover - 兼容旧版 AstrBot

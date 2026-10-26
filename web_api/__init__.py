@@ -325,6 +325,7 @@ def register_all_routes(
     last_decisions=None,
     config=None,
     plugin=None,
+    prompt_settings=None,
 ) -> None:
     """注册全部 WebUI API 路由。"""
     api = ProfileAPI(
@@ -348,6 +349,25 @@ def register_all_routes(
         ("/astrbot_plugin_angel_heart/chat_sources", api.list_chat_sources, ["GET"], "来源登记列表"),
         ("/astrbot_plugin_angel_heart/chat_status", api.chat_status, ["GET"], "群聊状态仪表盘"),
     ]
+
+    if prompt_settings is not None:
+        prompt_api = PromptSettingsAPI(prompt_settings)
+        routes.append(
+            (
+                "/astrbot_plugin_angel_heart/prompt_settings",
+                prompt_api.get_settings,
+                ["GET"],
+                "系统提示词设置（预设/自定义二选一）",
+            )
+        )
+        routes.append(
+            (
+                "/astrbot_plugin_angel_heart/prompt_settings/save",
+                prompt_api.save_settings,
+                ["POST"],
+                "保存系统提示词设置",
+            )
+        )
 
     if config is not None and plugin is not None:
         plugin_config_api = PluginConfigAPI(config, plugin)
@@ -492,3 +512,37 @@ class PluginConfigAPI:
                 return _err(f"配置已保存，但热生效刷新失败: {e}")
 
         return _ok(message="已保存并即时生效")
+
+
+class PromptSettingsAPI:
+    """系统提示词设置（插件自有 JSON）读取与保存。
+
+    预设与自定义二选一，同一时刻只有一种生效。预设为 prompts/system_prompt.md
+    的内置全文，只展示不保存；自定义文本保存在 prompt_settings.json。
+    """
+
+    def __init__(self, prompt_settings):
+        self._store = prompt_settings
+
+    def get_settings(self):
+        from ..core.prompt_presets import INITIAL_CUSTOM_PROMPT, load_preset_system_prompt
+
+        snapshot = self._store.snapshot()
+        return _ok(
+            {
+                "mode": snapshot.get("mode", "preset"),
+                "custom_prompt": snapshot.get("custom_prompt", ""),
+                "preset_text": load_preset_system_prompt(),
+                "initial_prompt": INITIAL_CUSTOM_PROMPT,
+            }
+        )
+
+    async def save_settings(self):
+        payload = await _get_json()
+        if not isinstance(payload, dict):
+            return _err("请求体必须是 JSON 对象")
+        snapshot = self._store.update(
+            mode=payload.get("mode"),
+            custom_prompt=payload.get("custom_prompt"),
+        )
+        return _ok(snapshot, "已保存")

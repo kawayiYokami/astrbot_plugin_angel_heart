@@ -143,6 +143,45 @@
           <h2>全局配置</h2>
           <span class="content-sub">未绑定群聊使用的默认配置，与原生插件配置页同源</span>
         </div>
+        <n-card title="系统提示词" class="prompt-card" embedded>
+          <p class="group-desc">预设与自定义二选一，同一时刻只有一种生效。选预设时使用插件内置的固定文本，此处内容不参与；选自定义时使用你填写的文本。</p>
+          <n-tabs v-model:value="promptMode" type="segment" size="small">
+            <n-tab-pane name="preset" tab="预设">
+              <div v-if="promptLoaded" class="preset-text">{{ promptPreset }}</div>
+              <n-spin v-else style="margin-top: 12px" />
+            </n-tab-pane>
+            <n-tab-pane name="custom" tab="自定义">
+              <n-input
+                v-model:value="promptCustom"
+                type="textarea"
+                :rows="8"
+                placeholder="填写你自己的系统提示词"
+              />
+              <div class="preset-actions">
+                <n-button size="tiny" @click="promptCustom = promptPreset">
+                  <template #icon><Icon icon="lucide:clipboard-copy" /></template>
+                  填入预设提示词
+                </n-button>
+                <n-button size="tiny" @click="promptCustom = promptInitial">
+                  <template #icon><Icon icon="lucide:sparkles" /></template>
+                  填入初始提示词
+                </n-button>
+              </div>
+            </n-tab-pane>
+          </n-tabs>
+          <div class="prompt-save">
+            <n-button
+              type="primary"
+              size="small"
+              :disabled="!promptDirty"
+              :loading="promptSaving"
+              @click="savePromptSettings"
+            >
+              <template #icon><Icon icon="lucide:save" /></template>
+              保存提示词
+            </n-button>
+          </div>
+        </n-card>
         <SchemaForm
           v-if="settingsLoaded"
           :schema="settingsSchema"
@@ -225,6 +264,7 @@
 import { computed, h, inject, onMounted, onUnmounted, reactive, ref } from 'vue'
 import {
   NButton,
+  NCard,
   NEmpty,
   NForm,
   NFormItem,
@@ -387,6 +427,71 @@ const settingsDirty = computed(
     JSON.stringify(settingsValues.value) !== settingsBaseline.value,
 )
 
+// ---------- 系统提示词（插件自有存储，不进自带设置页） ----------
+
+const promptMode = ref<'preset' | 'custom'>('preset')
+const promptCustom = ref('')
+const promptPreset = ref('')
+const promptInitial = ref('')
+const promptLoaded = ref(false)
+const promptSaving = ref(false)
+const promptBaseline = ref('')
+const promptDirty = computed(
+  () =>
+    promptLoaded.value &&
+    JSON.stringify({ mode: promptMode.value, custom_prompt: promptCustom.value }) !==
+      promptBaseline.value,
+)
+
+function loadPromptSettings() {
+  if (promptLoaded.value) return
+  void (async () => {
+    try {
+      const data = await apiGet<{
+        mode: string
+        custom_prompt: string
+        preset_text: string
+        initial_prompt: string
+      }>('prompt_settings')
+      promptMode.value = data?.mode === 'custom' ? 'custom' : 'preset'
+      promptCustom.value = String(data?.custom_prompt ?? '')
+      promptPreset.value = String(data?.preset_text ?? '')
+      promptInitial.value = String(data?.initial_prompt ?? '')
+      promptBaseline.value = JSON.stringify({
+        mode: promptMode.value,
+        custom_prompt: promptCustom.value,
+      })
+      promptLoaded.value = true
+    } catch (e) {
+      message.error(`加载系统提示词失败: ${(e as Error).message}`)
+    }
+  })()
+}
+
+async function savePromptSettings() {
+  promptSaving.value = true
+  try {
+    const data = await apiPost<{
+      mode: string
+      custom_prompt: string
+    }>('prompt_settings/save', {
+      mode: promptMode.value,
+      custom_prompt: promptCustom.value,
+    })
+    promptMode.value = data?.mode === 'custom' ? 'custom' : 'preset'
+    promptCustom.value = String(data?.custom_prompt ?? '')
+    promptBaseline.value = JSON.stringify({
+      mode: promptMode.value,
+      custom_prompt: promptCustom.value,
+    })
+    message.success('提示词已保存')
+  } catch (e) {
+    message.error(`保存失败: ${(e as Error).message}`)
+  } finally {
+    promptSaving.value = false
+  }
+}
+
 // 全局配置可编辑：首次切到全局配置视图时加载 schema + 当前值
 function loadPluginConfig() {
   if (settingsLoaded.value) return
@@ -448,6 +553,7 @@ function selectTemplate(id: string | null) {
   if (!id) {
     // 全局配置视图：懒加载可编辑数据源
     loadPluginConfig()
+    loadPromptSettings()
     return
   }
   const tpl = templates.value.find((t) => t.id === id)
@@ -646,6 +752,7 @@ async function loadAll() {
 
 onMounted(async () => {
   loadPluginConfig()
+  loadPromptSettings()
   await loadAll()
   await refreshStatus()
   statusTimer = setInterval(refreshStatus, 3000)
@@ -773,6 +880,42 @@ onUnmounted(() => {
 .content-sub {
   font-size: 12px;
   color: var(--text-3);
+}
+
+.prompt-card {
+  margin-bottom: 12px;
+}
+
+.group-desc {
+  font-size: 12px;
+  color: var(--text-3);
+  margin-bottom: 10px;
+}
+
+.preset-text {
+  padding: 10px 12px;
+  border-radius: 6px;
+  background: var(--glass-divider);
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--text-1);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 360px;
+  overflow-y: auto;
+}
+
+.preset-actions {
+  display: flex;
+  justify-content: flex-start;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.prompt-save {
+  display: flex;
+  justify-content: flex-start;
+  margin-top: 12px;
 }
 
 .status-grid {

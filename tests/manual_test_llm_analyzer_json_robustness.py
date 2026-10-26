@@ -31,7 +31,6 @@ def build_analyzer() -> LLMAnalyzer:
     return LLMAnalyzer(
         analyzer_model_name="dummy-analyzer",
         context=DummyContext(),
-        strategy_guide="",
         config_manager=DummyConfigManager(),
     )
 

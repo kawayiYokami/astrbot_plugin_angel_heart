@@ -12,7 +12,6 @@ def global_config():
         "timing": {"waiting_time": 30.0},
         "energy": {"max_energy": 100.0},
         "wake_interaction": {"alias": "AngelHeart"},
-        "personality": {"ai_self_identity": "全局画像"},
     }
 
 
@@ -48,7 +47,6 @@ def test_bound_chat_override_fields(manager, store):
     # 模板未覆盖的字段回退全局
     assert view.max_energy == 100.0
     assert view.alias == "AngelHeart"
-    assert view.ai_self_identity == "全局画像"
 
 
 def test_partial_override_within_group(manager, store):
@@ -105,7 +103,7 @@ def test_template_from_global(manager, store):
     result = store.template_from_global(manager)
     assert result["timing"]["waiting_time"] == 30.0
     assert result["energy"]["max_energy"] == 100.0
-    assert result["personality"]["ai_self_identity"] == "全局画像"
+    assert result["wake_interaction"]["alias"] == "AngelHeart"
 
 
 def test_binding_with_plain_group_id_matches_unified_origin(manager, store):

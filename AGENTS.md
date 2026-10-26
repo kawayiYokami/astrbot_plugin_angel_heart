@@ -164,13 +164,13 @@ async def custom_trigger(chat_id: str, context_data: Dict) -> bool:
 angel_context.proactive_manager.register_custom_trigger("my_trigger", custom_trigger)
 ```
 
-### 提示词模块
+### 提示词文档
 
-通过修改 [`prompts/modules/`](prompts/modules/) 目录下的Markdown文件自定义AI行为：
+分析提示词由三份文档组成，均位于 [`prompts/`](prompts/) 目录下：
 
-- [`identity.md`](prompts/modules/identity.md)：AI身份定义
-- [`behavior_rules.md`](prompts/modules/behavior_rules.md)：行为规则
-- [`decision_logic.md`](prompts/modules/decision_logic.md)：决策逻辑
+- [`system_prompt.md`](prompts/system_prompt.md)：群聊参与判定，作为第一条用户提示词（预设固定文本 / 自定义二选一，见 `core/prompt_settings.py`）
+- [`output_contract.md`](prompts/output_contract.md)：输出字段与格式要求，固定不变
+- [`conversation_template.md`](prompts/conversation_template.md)：待分析的对话记录模板，固定不变
 
 ## 调试与监控
 

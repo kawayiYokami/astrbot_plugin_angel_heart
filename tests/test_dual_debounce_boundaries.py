@@ -141,10 +141,6 @@ def make_config(
             "access_control": {},
             "context_compression": {},
             "output_rewrite": {},
-            "personality": {
-                "ai_self_identity": "test",
-                "reply_strategy_guide": "",
-            },
         }
     )
 

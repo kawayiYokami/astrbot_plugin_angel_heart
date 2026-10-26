@@ -17,10 +17,6 @@ from typing import Any, Dict, List, Optional
 
 # 模板字段白名单：只允许六类分组内的键写入，拒绝未知键防脏数据。
 TEMPLATE_GROUPS: Dict[str, Dict[str, Any]] = {
-    "personality": {
-        "ai_self_identity": None,
-        "reply_strategy_guide": None,
-    },
     "wake_interaction": {
         "enter_on_mention_only": None,
         "force_reply_when_summoned": None,
