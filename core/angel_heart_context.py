@@ -71,6 +71,20 @@ class AngelHeartContext:
         # 主动应答管理器
         self.proactive_manager = ProactiveManager(self)
 
+        # 媒体缓存清理门闩：会话仍在调度中时延迟清理
+        self.conversation_ledger.set_cleanup_busy_check(self._is_chat_busy)
+
+    def _is_chat_busy(self, chat_id: str) -> bool:
+        """会话是否仍在调度中：防抖记录、秘书单飞、运行中的工作任一存在即为忙。"""
+        dm = self.debounce_manager
+        if (
+            dm.has_assistant_debounce(chat_id)
+            or dm.has_secretary_debounce(chat_id)
+            or dm.has_secretary_dispatch(chat_id)
+        ):
+            return True
+        return bool(self.work_ledger.get_active_works(chat_id))
+
     async def cleanup(self) -> None:
         """清理全局运行态：后台任务、调度账本、状态内存与持久连接。"""
         try:

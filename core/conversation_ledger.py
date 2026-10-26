@@ -48,6 +48,11 @@ class ConversationLedger:
         # 缓存 bisect 模块
         self._bisect = bisect
 
+        # 媒体缓存清理门闩：会话仍在调度中时延迟清理，避免删掉运行中请求正在引用的图片。
+        # 由 AngelContext 注入判定函数；未注入时视为空闲，保持旧行为。
+        self._cleanup_busy_check = None
+        self._pending_cleanup: set[str] = set()
+
         # 每个会话的最后压缩时间戳 {chat_id: timestamp}
         self._last_compression_time: Dict[str, float] = {}
         # 压缩锁：整理期间互斥，防止半成品外泄
@@ -900,13 +905,49 @@ class ConversationLedger:
             referenced_paths.update(self._extract_managed_cache_paths_from_message(msg))
         return referenced_paths
 
+    def set_cleanup_busy_check(self, check) -> None:
+        """注入「会话是否仍在调度中」的判定函数。"""
+        self._cleanup_busy_check = check
+
+    def _is_chat_busy(self, chat_id: str) -> bool:
+        """会话是否仍在调度中（防抖记录、秘书单飞、运行中的工作）。"""
+        if not chat_id or not self._cleanup_busy_check:
+            return False
+        try:
+            return bool(self._cleanup_busy_check(chat_id))
+        except Exception as e:
+            logger.debug(f"AngelHeart[{chat_id}]: 查询调度忙闲失败: {e}")
+            return False
+
     def _cleanup_unreferenced_media_cache(self, chat_id: str = ""):
-        """扫描插件媒体缓存，删除不在当前账本引用集合里的文件。"""
+        """扫描插件媒体缓存，删除不在当前账本引用集合里的文件。
+
+        会话仍在调度中时只登记待清理，不删文件：运行中的请求与工具续轮
+        持有的是请求发出那一刻的图片路径，账本此时折叠消息并不代表文件没人用。
+        """
+        if self._is_chat_busy(chat_id):
+            self._pending_cleanup.add(chat_id)
+            logger.debug(
+                f"AngelHeart[{chat_id}]: 会话调度中，媒体缓存清理延后"
+            )
+            return
         referenced_paths = self._collect_referenced_cache_paths(chat_id)
         for path in self.image_cache.iter_managed_files(chat_id):
             normalized = self._normalize_managed_cache_path(path)
             if normalized and normalized not in referenced_paths:
                 self.image_cache.remove_managed_path(path)
+        self._pending_cleanup.discard(chat_id)
+
+    def flush_pending_cleanup(self, chat_id: str = "") -> None:
+        """调度收口后补做被延后的媒体缓存清理；仍忙则继续留着。"""
+        if chat_id:
+            targets = [chat_id] if chat_id in self._pending_cleanup else []
+        else:
+            targets = list(self._pending_cleanup)
+        for target in targets:
+            if self._is_chat_busy(target):
+                continue
+            self._cleanup_unreferenced_media_cache(target)
 
     def _cleanup_removed_messages(
         self,

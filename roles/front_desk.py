@@ -906,6 +906,10 @@ class FrontDesk:
                 )
             except Exception:
                 pass
+            try:
+                self.context.conversation_ledger.flush_pending_cleanup(chat_id)
+            except Exception:
+                pass
 
             await self._finish_secretary_dispatch(
                 event,
