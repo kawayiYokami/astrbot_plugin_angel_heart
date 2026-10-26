@@ -22,6 +22,10 @@ except ImportError:
     logger = logging.getLogger(__name__)
 from astrbot.api.event import AstrMessageEvent
 from astrbot.core.message.components import At, File, Image, Plain, Reply
+
+# 这几类组件本身就带着内容，主脑不会被核心当空消息跳过，无需补 message_str。
+# 用类名判断：不同 AstrBot 版本对 Record / Video 的导出不一致，直接 import 会崩。
+_PROMPT_EXEMPT_COMPONENTS = frozenset({"Record", "Video"})
 from typing import Any, List, Dict  # 导入类型提示
 
 # 导入公共工具函数和 ConversationLedger
@@ -1026,6 +1030,8 @@ class FrontDesk:
             except Exception as e:
                 logger.warning(f"AngelHeart[{chat_id}]: 启动助理休息失败: {e}")
 
+            self._ensure_prompt_text_for_empty_at(event, chat_id)
+
             event.is_at_or_wake_command = True
             logger.debug(f"AngelHeart[{chat_id}]: 已设置唤醒主脑标志")
             # 秘书判断结束即释放单飞；助理生成/发送不再占用。
@@ -1036,6 +1042,54 @@ class FrontDesk:
                 reason="reply_handoff",
             )
             # 需要回复时，由主框架继续处理该事件（一事件一子代理）
+
+    def _ensure_prompt_text_for_empty_at(
+        self, event: AstrMessageEvent, chat_id: str
+    ) -> None:
+        """仅 @ 无正文时补上 @显示名，避免主脑被核心跳过（issue #79）。
+
+        核心在「无 provider_request、message_str 为空、无媒体组件、无引用组件」时
+        直接返回，既不请求 LLM 也不触发发送回调；AngelHeart 已在放行前登记
+        running 工作，于是账本收不了口，assistant_busy 门闩会一直拦同会话的
+        后续事件，直到 running_timeout 兜底。这里用与核心同口径的判断，把消息链里
+        At 组件的显示名补回 message_str，只改 message_str，不动原始组件链。
+
+        补的是这条消息本来就有的内容（人类看到的就是「@昵称」），不是合成占位串。
+        """
+        try:
+            if (event.message_str or "").strip():
+                return
+            components = event.get_messages() or []
+            if any(
+                isinstance(comp, (Image, File, Reply))
+                or type(comp).__name__ in _PROMPT_EXEMPT_COMPONENTS
+                for comp in components
+            ):
+                return
+            at_parts: List[str] = []
+            for component in components:
+                if not isinstance(component, At):
+                    continue
+                name = getattr(component, "name", None) or getattr(
+                    component, "display", None
+                )
+                name = str(name).strip() if name else ""
+                qq = str(getattr(component, "qq", "") or "").strip()
+                if name:
+                    at_parts.append(f"@{name}")
+                elif qq:
+                    at_parts.append(f"@{qq}")
+        except Exception as e:
+            logger.debug(f"AngelHeart[{chat_id}]: 补 @ 正文判断失败，跳过: {e}")
+            return
+
+        if not at_parts:
+            return
+
+        event.message_str = " ".join(at_parts)
+        logger.debug(
+            f"AngelHeart[{chat_id}]: 仅@无正文，补 message_str='{event.message_str}' 后放行主脑"
+        )
 
     async def _ensure_minimum_context(self, chat_id: str, event: AstrMessageEvent):
         """

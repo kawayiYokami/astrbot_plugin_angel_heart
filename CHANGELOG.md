@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.2.9 - 2026-10-26
+
+### Fixed
+- **仅 @ 无正文卡住同会话（#79）**：秘书判定回复后放行主脑，但核心在 `message_str` 为空且无媒体/引用组件时直接跳过 Agent，既不请求 LLM 也不触发发送回调，已登记的 `running` 工作无人收口，`assistant_busy` 门闩持续拦截同会话后续 @，直到 `running_timeout(300s)` 兜底。放行前把 At 组件的显示名补回 `event.message_str`（无显示名时用 `@QQ号`），只改 `message_str`，原始组件链与账本内容不变。`roles/front_desk.py`。
+
+### Changed
+- 补测试：仅 @ 补正文、无显示名回退 QQ 号，以及图片/文件/引用组件豁免（`tests/test_no_text_event_boundaries.py`）。
+
 ## 2.2.6 - 2026-09-04
 
 ### Fixed

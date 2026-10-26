@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from astrbot.core.message.components import At, Plain, Poke
+from astrbot.core.message.components import At, Image, Plain, Poke, Reply
 
 
 class _FakeRuntimeTasks:
@@ -95,3 +95,48 @@ class TestPokeEntranceIgnore:
             chain=[At(qq="10000")], outline="[At:10000]", message_str="", is_at=True
         )
         assert plugin._should_process(event) is True
+
+
+class TestEmptyAtPromptFill:
+    """仅 @ 无正文时补 @显示名：否则主脑被核心跳过，running 工作卡住门闩（issue #79）。"""
+
+    def _front_desk(self):
+        from astrbot_plugin_angel_heart.roles.front_desk import FrontDesk
+
+        return object.__new__(FrontDesk)
+
+    def test_at_with_name_fills_display_name(self):
+        front_desk = self._front_desk()
+        event = _Event(chain=[At(qq="10000", name="红豆")], outline="[At:红豆]")
+        front_desk._ensure_prompt_text_for_empty_at(event, event.unified_msg_origin)
+        assert event.message_str == "@红豆"
+
+    def test_at_without_name_falls_back_to_qq(self):
+        front_desk = self._front_desk()
+        event = _Event(chain=[At(qq="10000")], outline="[At:10000]")
+        front_desk._ensure_prompt_text_for_empty_at(event, event.unified_msg_origin)
+        assert event.message_str == "@10000"
+
+    def test_plain_text_untouched(self):
+        front_desk = self._front_desk()
+        event = _Event(chain=[At(qq="10000", name="红豆")], message_str="在吗")
+        front_desk._ensure_prompt_text_for_empty_at(event, event.unified_msg_origin)
+        assert event.message_str == "在吗"
+
+    def test_reply_component_not_filled(self):
+        front_desk = self._front_desk()
+        event = _Event(chain=[At(qq="10000", name="红豆"), Reply()])
+        front_desk._ensure_prompt_text_for_empty_at(event, event.unified_msg_origin)
+        assert event.message_str == ""
+
+    def test_media_component_not_filled(self):
+        front_desk = self._front_desk()
+        event = _Event(chain=[At(qq="10000", name="红豆"), Image()])
+        front_desk._ensure_prompt_text_for_empty_at(event, event.unified_msg_origin)
+        assert event.message_str == ""
+
+    def test_no_at_component_left_empty(self):
+        front_desk = self._front_desk()
+        event = _Event(chain=[Plain("")])
+        front_desk._ensure_prompt_text_for_empty_at(event, event.unified_msg_origin)
+        assert event.message_str == ""
