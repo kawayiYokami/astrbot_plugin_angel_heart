@@ -7,11 +7,7 @@ from typing import Any
 from .xml_formatter import format_message_to_text
 
 # 条件导入：当缺少astrbot依赖时使用Mock
-try:
-    from astrbot.api import logger
-except ImportError:
-    import logging
-    logger = logging.getLogger(__name__)
+from astrbot.api import logger
 
 
 def prune_old_messages(

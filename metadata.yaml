@@ -2,7 +2,7 @@ name: astrbot_plugin_angel_heart
 display_name: 天使之心
 desc: "群聊拟人接话：离场/在场两态控制，只在被点名时进场；轻重双AI判断是否接话，防频繁插话，省API成本。"
 short_desc: "被点名才说话的群聊AI"
-version: 2.2.12
+version: 2.2.13
 author: kawayiYokami
 repo: https://github.com/kawayiYokami/astrbot_plugin_angel_heart
 social_link: https://github.com/kawayiYokami

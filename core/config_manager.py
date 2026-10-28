@@ -4,12 +4,7 @@ AngelHeart 插件 - 配置管理器
 支持新版嵌套 object 结构，兼容旧版扁平结构读取。
 """
 
-try:
-    from astrbot.api import logger
-except ImportError:
-    import logging
-
-    logger = logging.getLogger(__name__)
+from astrbot.api import logger
 
 
 from .prompt_presets import load_preset_system_prompt

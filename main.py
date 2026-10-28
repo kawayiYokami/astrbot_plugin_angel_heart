@@ -21,12 +21,7 @@ from astrbot.core.star.star_tools import StarTools
 from astrbot.core.star.filter.command import CommandFilter
 from astrbot.core.star.filter.command_group import CommandGroupFilter
 
-try:
-    from astrbot.api import logger
-except ImportError:
-    import logging
-
-    logger = logging.getLogger(__name__)
+from astrbot.api import logger
 from astrbot.core.message.components import Plain, At, AtAll, Reply, Poke
 
 from .core.config_manager import ConfigManager

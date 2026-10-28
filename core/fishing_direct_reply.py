@@ -7,11 +7,7 @@ AngelHeart 插件 - 离场应答策略生成模块
 
 
 
-try:
-    from astrbot.api import logger
-except ImportError:
-    import logging
-    logger = logging.getLogger(__name__)
+from astrbot.api import logger
 
 from ..models.analysis_result import SecretaryDecision
 

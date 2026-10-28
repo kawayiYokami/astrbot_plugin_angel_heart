@@ -7,11 +7,7 @@
 - conversation_template.md：待分析的对话记录模板，固定不变
 """
 from pathlib import Path
-try:
-    from astrbot.api import logger
-except ImportError:
-    import logging
-    logger = logging.getLogger(__name__)
+from astrbot.api import logger
 
 
 class PromptModuleLoader:

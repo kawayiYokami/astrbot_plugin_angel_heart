@@ -7,11 +7,7 @@ import time
 import asyncio
 from typing import Dict, Optional, Any
 
-try:
-    from astrbot.api import logger
-except ImportError:
-    import logging
-    logger = logging.getLogger(__name__)
+from astrbot.api import logger
 
 from astrbot.core.star.context import Context
 from ..core.conversation_ledger import ConversationLedger

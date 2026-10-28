@@ -3,11 +3,7 @@ from typing import List, Dict
 import json
 import string
 
-try:
-    from astrbot.api import logger
-except ImportError:
-    import logging
-    logger = logging.getLogger(__name__)
+from astrbot.api import logger
 from ..core.utils import JsonParser, format_message_for_llm
 from ..models.analysis_result import SecretaryDecision
 from .prompt_module_loader import PromptModuleLoader

@@ -11,11 +11,7 @@ from ..models.analysis_result import SecretaryDecision
 from ..core.angel_heart_status import AngelHeartStatus
 from astrbot.api.event import AstrMessageEvent
 
-try:
-    from astrbot.api import logger
-except ImportError:
-    import logging
-    logger = logging.getLogger(__name__)
+from astrbot.api import logger
 
 
 class Secretary:

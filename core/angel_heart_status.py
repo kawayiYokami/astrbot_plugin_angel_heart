@@ -4,12 +4,7 @@ import time
 from enum import Enum
 from typing import Dict, Optional, Tuple
 
-try:
-    from astrbot.api import logger
-except ImportError:
-    import logging
-
-    logger = logging.getLogger(__name__)
+from astrbot.api import logger
 
 from .utils.message_hits import (
     extract_plain_body_from_components,

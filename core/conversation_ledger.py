@@ -12,11 +12,7 @@ from urllib.parse import unquote, urlparse
 from . import utils
 
 # 条件导入：当缺少astrbot依赖时使用Mock
-try:
-    from astrbot.api import logger
-except ImportError:
-    import logging
-    logger = logging.getLogger(__name__)
+from astrbot.api import logger
 
 
 class ConversationLedger:

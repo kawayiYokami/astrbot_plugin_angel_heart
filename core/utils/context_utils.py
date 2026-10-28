@@ -12,11 +12,7 @@ if TYPE_CHECKING:
     from ..conversation_ledger import ConversationLedger
 
 # 条件导入：当缺少astrbot依赖时使用Mock
-try:
-    from astrbot.api import logger
-except ImportError:
-    import logging
-    logger = logging.getLogger(__name__)
+from astrbot.api import logger
 
 
 _GENERIC_IMAGE_PLACEHOLDER_RE = re.compile(r"(?:\s*\[图片\]\s*)+")

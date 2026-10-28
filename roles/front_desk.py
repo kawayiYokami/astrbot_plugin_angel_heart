@@ -14,12 +14,7 @@ import uuid
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
-try:
-    from astrbot.api import logger
-except ImportError:
-    import logging
-
-    logger = logging.getLogger(__name__)
+from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
 from astrbot.core.message.components import At, File, Image, Plain, Reply
 

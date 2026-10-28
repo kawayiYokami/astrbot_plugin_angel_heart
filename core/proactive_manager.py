@@ -9,11 +9,7 @@ import asyncio
 from typing import Dict, Optional, Callable
 from enum import Enum
 
-try:
-    from astrbot.api import logger
-except ImportError:
-    import logging
-    logger = logging.getLogger(__name__)
+from astrbot.api import logger
 
 from .angel_heart_status import AngelHeartStatus
 

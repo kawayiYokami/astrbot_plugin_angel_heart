@@ -7,9 +7,8 @@ AngelHeart 配置迁移模块
 
 import json
 import os
-import logging
 
-logger = logging.getLogger(__name__)
+from astrbot.api import logger
 
 # 插件目录名（用于定位配置文件）
 _PLUGIN_DIR_NAME = "astrbot_plugin_angel_heart"

@@ -2,11 +2,7 @@ import aiohttp
 import base64
 import io
 from PIL import Image
-try:
-    from astrbot.api import logger
-except ImportError:
-    import logging
-    logger = logging.getLogger(__name__)
+from astrbot.api import logger
 
 class ImageProcessor:
     """图片处理器 - 负责异步下载和转换图片为JPEG格式"""

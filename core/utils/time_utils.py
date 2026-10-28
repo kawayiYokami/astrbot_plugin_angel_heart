@@ -6,11 +6,7 @@ import time
 from datetime import datetime, timezone, timedelta
 
 # 条件导入：当缺少astrbot依赖时使用Mock
-try:
-    from astrbot.api import logger
-except ImportError:
-    import logging
-    logger = logging.getLogger(__name__)
+from astrbot.api import logger
 
 # 定义默认时间戳回退时间（1小时），用于当消息没有时间戳时提供一个基准时间
 DEFAULT_TIMESTAMP_FALLBACK_SECONDS = 3600
