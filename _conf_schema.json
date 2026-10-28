@@ -198,7 +198,7 @@
       "force_reply_when_summoned": {
         "type": "bool",
         "description": "被点名时必须回应",
-        "hint": "启用后，只要消息命中人格名称或助理昵称，助理都会直接回复。",
+        "hint": "启用后，只要消息命中人格名称或助理昵称，助理都会直接回复。昵称点名仍受昵称唤醒冷却限制。",
         "default": true
       },
       "reply_even_not_questioned": {
@@ -218,6 +218,19 @@
         "description": "助理昵称",
         "hint": "用于点名匹配。多个昵称请用 '|' 分隔。",
         "default": "AI|助手"
+      },
+      "ignored_sender_ids": {
+        "type": "list",
+        "description": "忽略的群聊发送者 ID",
+        "hint": "仅群聊生效。填写发送者 ID 字符串列表；上游命令旁路后拦截这些发送者的消息，不写入新历史、不进入秘书或防抖，也不影响已有待处理请求；已有历史保留。默认空列表不忽略任何人。",
+        "items": { "type": "string" },
+        "default": []
+      },
+      "alias_wake_cooldown_seconds": {
+        "type": "float",
+        "description": "昵称唤醒冷却（秒）",
+        "hint": "仅群聊昵称点名生效。首次昵称唤醒放行后，按完整会话来源独立冷却；期间再次命中昵称按普通消息调度，不延长冷却。直接 @ 或引用回复机器人、命令和私聊不受影响。默认 0 表示不限制。",
+        "default": 0
       },
       "slap_words": {
         "type": "string",

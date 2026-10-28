@@ -605,6 +605,7 @@ const templateSchema = computed<Record<string, SchemaMeta>>(() => {
 function defaultFor(type: string): unknown {
   if (type === 'bool') return false
   if (type === 'number') return 0
+  if (type === 'list') return []
   return ''
 }
 
