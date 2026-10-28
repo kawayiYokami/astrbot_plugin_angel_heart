@@ -237,6 +237,14 @@ class ConfigManager:
     def silence_duration(self) -> int:
         return self._get_grouped("wake_interaction", "silence_duration", 600)
 
+    @property
+    def poke_on_reply_enabled(self) -> bool:
+        return self._get_grouped("wake_interaction", "poke_on_reply_enabled", True)
+
+    @property
+    def poke_on_reply_cooldown(self) -> int:
+        return self._get_grouped("wake_interaction", "poke_on_reply_cooldown", 60)
+
     # ========== access_control ==========
 
     @property

@@ -113,6 +113,9 @@ class FrontDesk:
         # 私聊摘要是插件自建后台任务，必须登记，供去重与 terminate 完整取消。
         self._private_compression_tasks: Dict[str, asyncio.Task] = {}
 
+        # 回复时戳触发者：按群记录上次戳时间，做冷却防刷。
+        self._last_poke_time: Dict[str, float] = {}
+
     def _get_event_message_id(self, event: AstrMessageEvent) -> str:
         """读取 AstrBot 当前入站消息 ID。"""
         try:
@@ -1031,6 +1034,8 @@ class FrontDesk:
 
             self._ensure_prompt_text_for_empty_at(event, chat_id)
 
+            await self._maybe_poke_trigger_user(event, chat_id)
+
             event.is_at_or_wake_command = True
             logger.debug(f"AngelHeart[{chat_id}]: 已设置唤醒主脑标志")
             # 秘书判断结束即释放单飞；助理生成/发送不再占用。
@@ -1440,6 +1445,89 @@ class FrontDesk:
         except Exception as e:
             logger.error(f"AngelHeart: 获取bot实例失败: {e}")
             return None
+
+    async def _maybe_poke_trigger_user(
+        self, event: AstrMessageEvent, chat_id: str
+    ) -> None:
+        """决定回复时戳一下触发者，仅群聊生效。
+
+        只在 aiocqhttp 群聊下真戳，其他平台自动跳过；
+        失败只记 debug，不打断回复主流程。
+        """
+        try:
+            cm = self.config_manager.for_chat(chat_id)
+            if not cm.poke_on_reply_enabled:
+                return
+            if not self._is_group_chat(chat_id):
+                return
+            try:
+                platform_name = str(event.get_platform_name() or "")
+            except Exception:
+                platform_name = ""
+            if platform_name != "aiocqhttp":
+                # 元数据可能被改名：真 aiocqhttp 事件按类型名放行，避免误杀。
+                event_type = f"{type(event).__module__}.{type(event).__name__}".lower()
+                if "aiocqhttp" not in event_type:
+                    logger.debug(
+                        f"AngelHeart[{chat_id}]: 非 aiocqhttp 平台，跳过戳触发者 "
+                        f"(platform_name={platform_name!r}, "
+                        f"event_type={type(event).__name__})."
+                    )
+                    return
+                logger.debug(
+                    f"AngelHeart[{chat_id}]: 平台名非 aiocqhttp "
+                    f"(platform_name={platform_name!r})，但事件类型为真 aiocqhttp，放行。"
+                )
+            try:
+                group_id = str(event.get_group_id() or "") or self._extract_group_id(chat_id)
+            except Exception:
+                group_id = self._extract_group_id(chat_id)
+            try:
+                sender_id = str(event.get_sender_id() or "")
+            except Exception:
+                sender_id = ""
+            if not sender_id:
+                try:
+                    raw_sender = getattr(getattr(event, "message_obj", None), "sender", None)
+                    sender_id = str(getattr(raw_sender, "user_id", "") or "")
+                except Exception:
+                    sender_id = ""
+            try:
+                self_id = str(event.get_self_id() or "")
+            except Exception:
+                self_id = ""
+            if not self_id:
+                try:
+                    self_id = str(getattr(getattr(event, "message_obj", None), "self_id", "") or "")
+                except Exception:
+                    self_id = ""
+            if not group_id.isdigit() or not sender_id.isdigit():
+                return
+            if self_id and sender_id == self_id:
+                return
+            try:
+                cooldown = int(cm.poke_on_reply_cooldown or 0)
+            except (TypeError, ValueError):
+                cooldown = 0
+            now = time.time()
+            if cooldown > 0:
+                last = self._last_poke_time.get(chat_id, 0.0)
+                if now - last < cooldown:
+                    logger.debug(
+                        f"AngelHeart[{chat_id}]: 戳触发者冷却中，跳过。"
+                    )
+                    return
+            bot = self._get_bot_instance(event)
+            if bot is None or not hasattr(bot, "group_poke"):
+                logger.debug(f"AngelHeart[{chat_id}]: bot 不支持 group_poke，跳过。")
+                return
+            await bot.group_poke(group_id=int(group_id), user_id=int(sender_id))
+            self._last_poke_time[chat_id] = now
+            logger.debug(
+                f"AngelHeart[{chat_id}]: 已戳触发者 user_id={sender_id}。"
+            )
+        except Exception as e:
+            logger.debug(f"AngelHeart[{chat_id}]: 戳触发者失败（不影响回复）: {e}")
 
     def _convert_raw_qq_message_to_angelheart_format(self, raw_msg: Dict) -> Dict:
         """

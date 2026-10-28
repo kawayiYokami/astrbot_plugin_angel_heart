@@ -26,6 +26,8 @@ TEMPLATE_GROUPS: Dict[str, Dict[str, Any]] = {
         "slap_words": None,
         "speak_words": None,
         "silence_duration": None,
+        "poke_on_reply_enabled": None,
+        "poke_on_reply_cooldown": None,
     },
     "leave_reply": {
         "leave_echo_reply": None,

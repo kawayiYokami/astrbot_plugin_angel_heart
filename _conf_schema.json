@@ -236,6 +236,18 @@
         "description": "闭嘴时长（秒）",
         "hint": "触发掌嘴后，插件保持静默的时间。",
         "default": 600
+      },
+      "poke_on_reply_enabled": {
+        "type": "bool",
+        "description": "回复时戳触发者",
+        "hint": "仅群聊生效。决定回复时戳一下触发那条消息的人，仅 aiocqhttp 平台支持真戳，其他平台自动跳过。",
+        "default": true
+      },
+      "poke_on_reply_cooldown": {
+        "type": "int",
+        "description": "戳触发者冷却（秒）",
+        "hint": "同一群内两次戳触发者的最短间隔，避免连续回复时刷屏。",
+        "default": 60
       }
     }
   },
