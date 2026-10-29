@@ -5,6 +5,7 @@ AngelHeart 插件 - 全局上下文管理器
 
 import time
 import asyncio
+import threading
 from typing import Dict, Optional, Any
 
 from astrbot.api import logger
@@ -45,6 +46,9 @@ class AngelHeartContext:
         # 时序控制
         self.last_analysis_time: Dict[str, float] = {}  # chat_id -> 上次分析时间
         self.silenced_until: Dict[str, float] = {}  # chat_id -> 闭嘴结束时间
+        # 昵称唤醒冷却使用单调时钟；不随在场超时或防抖清理重置。
+        self.last_alias_wake_time: Dict[str, float] = {}
+        self.alias_wake_lock = threading.Lock()
 
         # 离场应答冷却：一次性回复后，短时间内不再因复读或密集聊天触发回复。
         self.leave_reply_cooldown_until: Dict[str, float] = {}
@@ -94,6 +98,8 @@ class AngelHeartContext:
 
         self.last_analysis_time.clear()
         self.silenced_until.clear()
+        with self.alias_wake_lock:
+            self.last_alias_wake_time.clear()
         self.leave_reply_cooldown_until.clear()
         self.current_states.clear()
         self.status_transition_manager.status_start_times.clear()

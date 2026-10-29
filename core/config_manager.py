@@ -4,6 +4,8 @@ AngelHeart 插件 - 配置管理器
 支持新版嵌套 object 结构，兼容旧版扁平结构读取。
 """
 
+import math
+
 from astrbot.api import logger
 
 
@@ -226,6 +228,23 @@ class ConfigManager:
         return self._get_grouped("wake_interaction", "alias", "AngelHeart")
 
     @property
+    def ignored_sender_ids(self) -> list[str]:
+        """不触发群聊处理的发送者账号；账号统一按字符串匹配。"""
+        values = self._get_grouped("wake_interaction", "ignored_sender_ids", [])
+        if not isinstance(values, list):
+            return []
+        return [str(value).strip() for value in values if value is not None and str(value).strip()]
+
+    @property
+    def alias_wake_cooldown_seconds(self) -> float:
+        """昵称唤醒间隔（秒）；零、负数或无效值关闭冷却。"""
+        try:
+            seconds = float(self._get_grouped("wake_interaction", "alias_wake_cooldown_seconds", 0))
+        except (TypeError, ValueError):
+            return 0.0
+        return seconds if math.isfinite(seconds) and seconds > 0 else 0.0
+
+    @property
     def slap_words(self) -> str:
         return self._get_grouped("wake_interaction", "slap_words", "")
 
@@ -346,6 +365,8 @@ class ConfigManager:
             },
             "wake_interaction": {
                 "alias": self.alias,
+                "ignored_sender_ids": self.ignored_sender_ids,
+                "alias_wake_cooldown_seconds": self.alias_wake_cooldown_seconds,
                 "enter_on_mention_only": self.enter_on_mention_only,
                 "force_reply_when_summoned": self.force_reply_when_summoned,
             },

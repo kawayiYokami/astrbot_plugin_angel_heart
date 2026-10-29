@@ -373,6 +373,15 @@ class AngelHeartPlugin(Star):
                 )
                 return False
 
+            if (
+                not self._is_private_chat(chat_id)
+                and str(event.get_sender_id()).strip()
+                in self.config_manager.for_chat(chat_id).ignored_sender_ids
+            ):
+                logger.debug(f"AngelHeart[{chat_id}]: 发送者命中忽略名单，停止本次群聊事件。")
+                event.stop_event()
+                return False
+
             blocked_by_provider_wake_prefix = self._is_blocked_by_provider_wake_prefix(event)
             event.set_extra(
                 "angelheart_blocked_by_provider_wake_prefix",
