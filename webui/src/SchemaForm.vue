@@ -11,7 +11,7 @@
       <template v-if="group.canReset" #header-extra>
         <n-button size="tiny" quaternary @click.stop="resetGroup(group)">
           <template #icon><Icon icon="lucide:rotate-ccw" /></template>
-          恢复默认
+          {{ fallbackValues !== undefined ? '恢复全局配置' : '恢复默认' }}
         </n-button>
       </template>
 
@@ -226,14 +226,21 @@ const groups = computed<Group[]>(() => {
     result.push({ key: '__root__', title: '常规', canReset: false, rows: rootRows })
   }
   for (const s of sections) {
-    s.canReset = s.rows.some((r) => r.kind === 'field' && r.meta.default !== undefined)
+    s.canReset = props.fallbackValues !== undefined
+      || s.rows.some((r) => r.kind === 'field' && r.meta.default !== undefined)
     result.push(s)
   }
   return result
 })
 
-// 恢复默认：组内所有带 default 的字段重置为 schema 默认值；改动后由父级 dirty 检测浮出保存按钮
+// 模板清除当前组覆盖以恢复继承；全局配置恢复 schema 默认值。均由保存按钮提交。
 function resetGroup(group: Group) {
+  if (props.fallbackValues !== undefined) {
+    const root = { ...(props.modelValue || {}) }
+    delete root[group.key]
+    emit('update:modelValue', root)
+    return
+  }
   for (const row of group.rows) {
     if (row.kind === 'field' && row.meta.default !== undefined) {
       setIn(row.path, row.meta.default)

@@ -63,7 +63,7 @@ function editor(config = {}, globals = globalConfig()) {
     },
   })
   panel.selectTemplate(tpl.id)
-  const form = loadHandlers('SchemaForm.vue', ['getIn', 'setIn'], {
+  const form = loadHandlers('SchemaForm.vue', ['getIn', 'setIn', 'resetGroup'], {
     props: {
       get modelValue() { return panel.configModel.value },
       get fallbackValues() { return panel.templateDefaults.value },
@@ -165,4 +165,44 @@ test('a delayed initial response cannot overwrite the refreshed global values', 
   pending[0](response(30))
   await firstLoad
   assert.equal(form.getIn(wakePath('alias_wake_cooldown_seconds')), 60)
+})
+
+
+const wakeSchema = JSON.parse(readFileSync(new URL('../../_conf_schema.json', import.meta.url), 'utf8')).wake_interaction
+const wakeGroup = {
+  key: 'wake_interaction',
+  rows: Object.entries(wakeSchema.items).map(([key, meta]) => ({
+    kind: 'field', path: wakePath(key), meta,
+  })),
+}
+
+test('resetting a template group clears its overrides and keeps following global values', async () => {
+  const { panel, form, posts } = editor({
+    wake_interaction: { ignored_sender_ids: [], alias_wake_cooldown_seconds: 0, enter_on_mention_only: false },
+    timing: { waiting_time: 7 },
+  })
+  form.resetGroup(wakeGroup)
+  await panel.saveTemplate()
+  assert.deepEqual(posts.at(-1).body.config, { timing: { waiting_time: 7 } })
+  assert.deepEqual(clone(form.getIn(wakePath('ignored_sender_ids'))), ['999'])
+  assert.equal(form.getIn(wakePath('alias_wake_cooldown_seconds')), 30)
+  assert.equal(form.getIn(wakePath('enter_on_mention_only')), true)
+  panel.settingsValues.value.wake_interaction.alias_wake_cooldown_seconds = 60
+  await panel.savePluginConfig()
+  assert.equal(form.getIn(wakePath('alias_wake_cooldown_seconds')), 60)
+  await panel.saveTemplate()
+  assert.deepEqual(posts.at(-1).body.config, { timing: { waiting_time: 7 } })
+})
+
+test('resetting a global group still writes schema defaults and preserves other groups', () => {
+  const context = {
+    props: { modelValue: { ...globalConfig(), timing: { waiting_time: 7 } } },
+    emit(_event, model) { context.props.modelValue = model },
+  }
+  const form = loadHandlers('SchemaForm.vue', ['resetGroup', 'getIn', 'setIn'], context)
+  form.resetGroup(wakeGroup)
+  assert.deepEqual(clone(form.getIn(wakePath('ignored_sender_ids'))), [])
+  assert.equal(form.getIn(wakePath('alias_wake_cooldown_seconds')), 0)
+  assert.equal(form.getIn(wakePath('alias')), wakeSchema.items.alias.default)
+  assert.deepEqual(form.props.modelValue.timing, { waiting_time: 7 })
 })
