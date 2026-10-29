@@ -148,6 +148,7 @@ interface Group {
 const props = defineProps<{
   schema: Record<string, SchemaMeta>
   modelValue?: Record<string, unknown>
+  fallbackValues?: Record<string, unknown>
   providers?: Record<string, string[]>
 }>()
 
@@ -241,12 +242,16 @@ function resetGroup(group: Group) {
 }
 
 function getIn(path: string[]): unknown {
+  // 继承值只用于显示；setIn 仍只写入用户实际修改的字段。
   let cur: unknown = props.modelValue
+  let fallback: unknown = props.fallbackValues
   for (const k of path) {
-    if (cur && typeof cur === 'object') cur = (cur as Record<string, unknown>)[k]
-    else return undefined
+    cur = cur && typeof cur === 'object' ? (cur as Record<string, unknown>)[k] : undefined
+    fallback = fallback && typeof fallback === 'object'
+      ? (fallback as Record<string, unknown>)[k]
+      : undefined
   }
-  return cur
+  return cur === undefined ? fallback : cur
 }
 
 function setIn(path: string[], value: unknown) {

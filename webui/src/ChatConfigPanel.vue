@@ -200,6 +200,7 @@
           v-if="settingsLoaded"
           v-model:model-value="configModel"
           :schema="templateSchema"
+          :fallback-values="templateDefaults"
           :providers="settingsProviders"
         />
         <n-spin v-else style="margin-top: 40px" />
@@ -326,6 +327,7 @@ const saving = ref(false)
 let statusTimer: ReturnType<typeof setInterval> | null = null
 
 const configModel = ref<Record<string, Record<string, unknown>>>({})
+const templateDefaults = ref<TemplateConfig>({})
 const createModalVisible = ref(false)
 const renameModalVisible = ref(false)
 const createForm = reactive({ name: '', mode: 'empty' })
@@ -518,6 +520,7 @@ async function savePluginConfig() {
   try {
     await apiPost('plugin_config/save', { values: settingsValues.value })
     settingsBaseline.value = JSON.stringify(settingsValues.value)
+    await loadAll()
     message.success('已保存并即时生效')
   } catch (e) {
     message.error(`保存失败: ${(e as Error).message}`)
@@ -558,17 +561,9 @@ function selectTemplate(id: string | null) {
   }
   const tpl = templates.value.find((t) => t.id === id)
   if (!tpl) return
-  // 初始化编辑模型：按组补全缺失字段
-  const model: Record<string, Record<string, unknown>> = {}
-  for (const group of GROUPS) {
-    model[group.key] = {}
-    for (const field of group.fields) {
-      model[group.key][field.key] =
-        tpl.config?.[group.key]?.[field.key] ?? defaultFor(field.type)
-    }
-  }
-  configModel.value = model
-  templateBaseline.value = JSON.stringify(model)
+  // 缺失字段继续继承全局配置；仅复制显式覆盖，避免保存时将继承值固化。
+  configModel.value = JSON.parse(JSON.stringify(tpl.config || {}))
+  templateBaseline.value = JSON.stringify(configModel.value)
 }
 
 // 模板草稿基线：与全局配置共用悬浮保存按钮
@@ -601,13 +596,6 @@ const templateSchema = computed<Record<string, SchemaMeta>>(() => {
   }
   return out
 })
-
-function defaultFor(type: string): unknown {
-  if (type === 'bool') return false
-  if (type === 'number') return 0
-  if (type === 'list') return []
-  return ''
-}
 
 function openCreateModal() {
   createForm.name = ''
@@ -723,16 +711,22 @@ async function refreshStatus() {
   }
 }
 
+let profilesLoadVersion = 0
+
 async function loadAll() {
+  const version = ++profilesLoadVersion
   try {
     const data = await apiGet<{
       templates: TemplateDetail[]
       bindings: Record<string, string>
       global_config: TemplateConfig
     }>('profiles')
+    if (version !== profilesLoadVersion) return
     templates.value = data.templates || []
+    templateDefaults.value = data.global_config || {}
     const bindingMap = data.bindings || {}
     const chatList = await apiGet<ChatItem[]>('chats')
+    if (version !== profilesLoadVersion) return
     // chats 已含绑定，补上仅存在于 bindingMap 的群聊
     const merged = new Map<string, ChatItem>()
     for (const c of chatList || []) merged.set(c.chat_id, c)
