@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
 import vm from 'node:vm'
 import ts from 'typescript'
+import { createRenderer, defineComponent, h, nextTick, ref } from 'vue'
 
 // Exercise the SFC's actual handlers without a browser or an extra test framework.
 function loadHandlers(file, names, context) {
@@ -18,6 +19,37 @@ function loadHandlers(file, names, context) {
   })
   vm.runInNewContext(outputText, context)
   return context
+}
+
+// A memory-only host keeps Vue's real parent/child prop update scheduling.
+function mountForm(initial, inherited) {
+  const model = ref(clone(initial))
+  const fallback = ref(inherited === undefined ? undefined : clone(inherited))
+  const updates = []
+  let form
+  const renderer = createRenderer({
+    createElement: () => ({}), createText: () => ({}), createComment: () => ({}),
+    insert() {}, remove() {}, setElementText() {}, setText() {}, patchProp() {},
+    parentNode: () => null, nextSibling: () => null,
+  })
+  const Child = defineComponent({
+    props: ['modelValue', 'fallbackValues'],
+    emits: ['update:modelValue'],
+    setup(props, { emit }) {
+      form = loadHandlers('SchemaForm.vue', ['resetGroup', 'getIn', 'setIn'], { props, emit })
+      return () => h('div')
+    },
+  })
+  const Parent = defineComponent({
+    setup: () => () => h(Child, {
+      modelValue: model.value,
+      fallbackValues: fallback.value,
+      'onUpdate:modelValue': (value) => { updates.push(clone(value)); model.value = value },
+    }),
+  })
+  const app = renderer.createApp(Parent)
+  app.mount({})
+  return { form, model, fallback, updates, unmount: () => app.unmount() }
 }
 
 const clone = (value) => JSON.parse(JSON.stringify(value))
@@ -194,15 +226,56 @@ test('resetting a template group clears its overrides and keeps following global
   assert.deepEqual(posts.at(-1).body.config, { timing: { waiting_time: 7 } })
 })
 
-test('resetting a global group still writes schema defaults and preserves other groups', () => {
-  const context = {
-    props: { modelValue: { ...globalConfig(), timing: { waiting_time: 7 } } },
-    emit(_event, model) { context.props.modelValue = model },
-  }
-  const form = loadHandlers('SchemaForm.vue', ['resetGroup', 'getIn', 'setIn'], context)
+test('a global reset applies every default through real Vue prop updates', async (t) => {
+  const initial = { ...globalConfig(), timing: { waiting_time: 7 } }
+  const { form, model, updates, unmount } = mountForm(initial)
+  t.after(unmount)
   form.resetGroup(wakeGroup)
-  assert.deepEqual(clone(form.getIn(wakePath('ignored_sender_ids'))), [])
-  assert.equal(form.getIn(wakePath('alias_wake_cooldown_seconds')), 0)
-  assert.equal(form.getIn(wakePath('alias')), wakeSchema.items.alias.default)
-  assert.deepEqual(form.props.modelValue.timing, { waiting_time: 7 })
+  await nextTick()
+  const expected = Object.fromEntries(Object.entries(wakeSchema.items)
+    .filter(([, meta]) => meta.default !== undefined).map(([key, meta]) => [key, meta.default]))
+  assert.deepEqual(clone(model.value), { wake_interaction: expected, timing: { waiting_time: 7 } })
+  assert.deepEqual(clone(initial), { ...globalConfig(), timing: { waiting_time: 7 } })
+  assert.equal(updates.length, 1)
+})
+
+test('a global reset preserves nested siblings and keeps list defaults independent', async (t) => {
+  const initial = { settings: { nested: { enabled: true, untouched: 7 }, noDefault: 'keep' }, other: { value: 9 } }
+  const listDefault = ['default']
+  const group = { key: 'settings', rows: [
+    { kind: 'subsection' },
+    { kind: 'field', path: ['settings', 'nested', 'enabled'], meta: { default: false } },
+    { kind: 'field', path: ['settings', 'nested', 'count'], meta: { default: 0 } },
+    { kind: 'field', path: ['settings', 'noDefault'], meta: {} },
+    { kind: 'field', path: ['settings', 'tags'], meta: { default: listDefault } },
+  ] }
+  const { form, model, updates, unmount } = mountForm(initial)
+  t.after(unmount)
+  form.resetGroup(group)
+  await nextTick()
+  assert.deepEqual(clone(model.value), {
+    settings: { nested: { enabled: false, untouched: 7, count: 0 }, noDefault: 'keep', tags: ['default'] },
+    other: { value: 9 },
+  })
+  assert.equal(updates.length, 1)
+  model.value.settings.tags.push('edited')
+  assert.deepEqual(listDefault, ['default'])
+  assert.deepEqual(initial.settings.nested, { enabled: true, untouched: 7 })
+})
+
+test('a template reset still inherits with real Vue prop updates', async (t) => {
+  const { form, model, fallback, updates, unmount } = mountForm({
+    wake_interaction: { ignored_sender_ids: [], alias_wake_cooldown_seconds: 0 },
+    timing: { waiting_time: 7 },
+  }, globalConfig())
+  t.after(unmount)
+  form.resetGroup(wakeGroup)
+  await nextTick()
+  assert.deepEqual(clone(model.value), { timing: { waiting_time: 7 } })
+  assert.deepEqual(clone(form.getIn(wakePath('ignored_sender_ids'))), ['999'])
+  assert.equal(form.getIn(wakePath('alias_wake_cooldown_seconds')), 30)
+  fallback.value.wake_interaction.alias_wake_cooldown_seconds = 60
+  await nextTick()
+  assert.equal(form.getIn(wakePath('alias_wake_cooldown_seconds')), 60)
+  assert.equal(updates.length, 1)
 })

@@ -241,11 +241,18 @@ function resetGroup(group: Group) {
     emit('update:modelValue', root)
     return
   }
+  // 在同一份副本上累计，再一次更新，避免循环读取尚未刷新的 prop。
+  const root: Record<string, unknown> = JSON.parse(JSON.stringify(props.modelValue || {}))
   for (const row of group.rows) {
-    if (row.kind === 'field' && row.meta.default !== undefined) {
-      setIn(row.path, row.meta.default)
+    if (row.kind !== 'field' || row.meta.default === undefined) continue
+    let cur = root
+    for (const key of row.path.slice(0, -1)) {
+      if (!cur[key] || typeof cur[key] !== 'object') cur[key] = {}
+      cur = cur[key] as Record<string, unknown>
     }
+    cur[row.path[row.path.length - 1]] = JSON.parse(JSON.stringify(row.meta.default))
   }
+  emit('update:modelValue', root)
 }
 
 function getIn(path: string[]): unknown {
