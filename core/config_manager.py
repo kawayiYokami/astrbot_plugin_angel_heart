@@ -326,6 +326,37 @@ class ConfigManager:
     def strip_period_before_newline(self) -> bool:
         return self._get_grouped("output_rewrite", "strip_period_before_newline", False)
 
+    @property
+    def quote_target_enabled(self) -> bool:
+        """是否启用本轮群友消息编号与引用目标接管。"""
+        return bool(self._get_grouped("output_rewrite", "quote_target_enabled", False))
+
+    @property
+    def quote_min_gap_messages(self) -> int:
+        """引用阈值：目标之后严格超过该条数的真实群友消息才引用。
+
+        只接受非负整数；无效类型或负值回退默认值 3，避免配置错误中断发送。
+        """
+        raw = self._get_grouped("output_rewrite", "quote_min_gap_messages", 3)
+        if isinstance(raw, bool):
+            logger.warning(
+                "AngelHeart: quote_min_gap_messages 不接受布尔值，已回退默认值 3"
+            )
+            return 3
+        try:
+            value = int(str(raw).strip())
+        except (TypeError, ValueError):
+            logger.warning(
+                f"AngelHeart: quote_min_gap_messages 配置无效({raw!r})，已回退默认值 3"
+            )
+            return 3
+        if value < 0:
+            logger.warning(
+                f"AngelHeart: quote_min_gap_messages 不能为负数({value})，已回退默认值 3"
+            )
+            return 3
+        return value
+
     # ========== 工具方法 ==========
 
     def get_config_summary(self) -> dict:

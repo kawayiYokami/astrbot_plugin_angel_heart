@@ -11,6 +11,7 @@ import os
 import re
 import time
 import uuid
+from collections import Counter
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
@@ -25,6 +26,7 @@ from typing import Any, List, Dict  # 导入类型提示
 
 # 导入公共工具函数和 ConversationLedger
 from ..core.utils import partition_dialogue_raw, format_final_prompt
+from ..core.quote_target import collect_known_message_ids
 from ..core.image_processor import ImageProcessor
 
 from ..core.fishing_direct_reply import FishingDirectReply
@@ -37,7 +39,7 @@ from ..core.utils.message_hits import (
     parse_pipe_phrases,
     parse_space_phrases,
 )
-from ..core.utils.message_utils import serialize_content_parts
+from ..core.utils.message_utils import message_dedup_key, serialize_content_parts
 
 # 导入状态枚举
 from ..core.angel_heart_status import AngelHeartStatus, StatusChecker
@@ -56,6 +58,17 @@ class FrontDesk:
     MAX_TEXT_FILE_BYTES = 100 * 1024
     MAX_IMAGE_SOURCE_BYTES = 20 * 1024 * 1024
     BLANK_SENDER_NAME = "空白"
+
+    # 引用目标协议：只提示编号用法，不改人格，不注入秘书决策
+    QUOTE_INSTRUCTION = (
+        "<引用说明>\n"
+        "如果这条回复针对上面某一条具体消息，请在正文最前面写 [引用:n]"
+        "（n 是行首编号，编号也可能出现在前面的本轮对话记录里）。\n"
+        "如果只是顺着话题继续说，不要写。\n"
+        "不要输出不存在的编号。\n"
+        "</引用说明>"
+    )
+    QUOTE_SUPPORTED_PLATFORM = "aiocqhttp"
 
     # OneBot 群成员角色 → 展示标签
     SENDER_ROLE_LABELS = {
@@ -1148,15 +1161,20 @@ class FrontDesk:
             supplement_messages = await self._fetch_database_history(chat_id, 19, event)
 
             if supplement_messages:
-                # 合并历史消息和当前内存消息；按时间戳去重，避免补历史时清空已有上下文。
+                # 按消息身份合并；无 ID 的重复发言按批内出现次数保留。
                 # is_processed 已退役：冷启动补种直接进入当前连续块。
-                messages_by_timestamp = {}
-                for msg in supplement_messages + current_messages:
-                    msg.pop("is_processed", None)
-                    messages_by_timestamp[msg.get("timestamp", 0)] = msg
+                messages_by_key = {}
+                for batch in (supplement_messages, current_messages):
+                    occurrences = Counter()
+                    for msg in batch:
+                        msg.pop("is_processed", None)
+                        key = message_dedup_key(msg)
+                        occurrences[key] += 1
+                        occurrence = 1 if msg.get("source_message_id") else occurrences[key]
+                        messages_by_key[(key, occurrence)] = msg
 
                 all_messages = sorted(
-                    messages_by_timestamp.values(), key=lambda m: m.get("timestamp", 0)
+                    messages_by_key.values(), key=lambda m: m.get("timestamp", 0)
                 )
 
                 # 使用公共方法更新消息列表
@@ -1909,14 +1927,119 @@ class FrontDesk:
         return context_messages, current_messages
 
     def _generate_final_prompt(
-        self, recent_dialogue: List[Dict], decision: Any, alias: str
+        self,
+        recent_dialogue: List[Dict],
+        decision: Any,
+        alias: str,
+        quote_map: Dict[int, str] | None = None,
     ) -> str:
         """生成聚焦指令"""
-        return format_final_prompt(recent_dialogue, decision, alias, use_absolute_time=True)
+        return format_final_prompt(
+            recent_dialogue,
+            decision,
+            alias,
+            use_absolute_time=True,
+            quote_map=quote_map,
+        )
 
     def _is_valid_final_prompt(self, prompt: str) -> bool:
         """检查重建后的当前提示词是否有有效内容。"""
         return isinstance(prompt, str) and bool(prompt.strip())
+
+    # ========== 引用目标接管 ==========
+
+    def _host_settings(self, chat_id: str, group: str) -> Dict[str, Any]:
+        """读取宿主会话级配置分组；不可用时返回空字典。
+
+        宿主配置按会话档案生效，不能只检查默认配置。
+        """
+        try:
+            host_config = self.astr_context.get_config(chat_id)
+        except Exception:
+            return {}
+        try:
+            value = host_config.get(group, {}) if host_config is not None else {}
+        except Exception:
+            return {}
+        return value if isinstance(value, dict) else {}
+
+    def _quote_target_platform_supported(self, event: Any) -> bool:
+        """首版只接管 aiocqhttp；读取失败视为不支持。"""
+        try:
+            platform_name = event.get_platform_name()
+        except Exception:
+            return False
+        return str(platform_name or "") == self.QUOTE_SUPPORTED_PLATFORM
+
+    def _should_manage_quote_target(self, chat_id: str, event: Any) -> bool:
+        """判断本轮是否由插件接管引用目标。
+
+        条件：群聊、已启用群聊上下文重写、插件开关开启、平台为 aiocqhttp、
+        宿主会话流式输出关闭。不满足时不注入编号或指令。
+        """
+        if not self._is_group_chat(chat_id):
+            return False
+        chat_config = self.config_manager.for_chat(chat_id)
+        if not chat_config.quote_target_enabled:
+            return False
+        if not chat_config.group_chat_enhancement:
+            return False
+        if not self._quote_target_platform_supported(event):
+            return False
+        provider_settings = self._host_settings(chat_id, "provider_settings")
+        if provider_settings.get("streaming_response", False) is True:
+            return False
+        return True
+
+    def _publish_quote_target_state(
+        self,
+        event: Any,
+        quote_map: Dict[int, str],
+        threshold: int,
+        chat_id: str = "",
+    ) -> None:
+        """请求重写成功后发布本事件的编号映射、阈值与引用索引已知 ID。
+
+        ``known_ids`` 只保留本轮编号映射里、且此刻已在引用索引中的目标 ID，
+        供发送阶段区分索引在生成期间被淘汰与请求时已缺少记录。
+        """
+        try:
+            event.set_extra("angelheart_quote_map", dict(quote_map))
+            event.set_extra(
+                "angelheart_quote_state",
+                {
+                    "threshold": threshold,
+                    "t0": 0.0,
+                    "target": "",
+                    "gap": None,
+                    "reason": "pending",
+                    "processed": False,
+                    "known_ids": sorted(
+                        self._request_known_quote_ids(chat_id, quote_map)
+                    ),
+                },
+            )
+        except Exception as e:
+            logger.warning(
+                f"AngelHeart: 发布引用目标状态失败: {e}"
+            )
+
+    def _request_known_quote_ids(
+        self, chat_id: str, quote_map: Dict[int, str]
+    ) -> set:
+        """请求阶段引用索引已持有、且本轮可能被引用的消息 ID。"""
+        targets = {
+            str(target or "").strip()
+            for target in (quote_map or {}).values()
+            if str(target or "").strip()
+        }
+        if not chat_id or not targets:
+            return set()
+        try:
+            messages = self.context.conversation_ledger.get_quote_messages(chat_id)
+        except Exception:
+            return set()
+        return collect_known_message_ids(messages) & targets
 
     def _parse_space_separated_phrases(self, raw: Any) -> List[str]:
         """解析空格分隔短语，去掉空项并去重保序。"""
@@ -2095,8 +2218,13 @@ class FrontDesk:
         chat_id: str,
         current_message_id: str,
         scene_hint: str | None = None,
+        quote_map: Dict[int, str] | None = None,
     ) -> List[Dict]:
-        """使用 MessageProcessor 构建上下文列表"""
+        """使用 MessageProcessor 构建上下文列表
+
+        quote_map 只作用于本轮 recent_dialogue：历史消息、场景说明、工作提醒
+        与字数提醒均不参与编号。
+        """
         new_contexts = []
         if scene_hint:
             # 在最顶部添加场景说明消息，避免某些模型不允许第一条消息是助理
@@ -2107,7 +2235,7 @@ class FrontDesk:
                 }
             )
 
-        # 1) 历史消息
+        # 1) 历史消息（不编号）
         for msg in historical_context:
             processed_msg = processor.process_message(msg)
             new_contexts.append(processed_msg)
@@ -2116,7 +2244,7 @@ class FrontDesk:
         for msg in recent_dialogue:
             if current_message_id and str(msg.get("source_message_id", "") or "") == current_message_id:
                 continue
-            processed_msg = processor.process_message(msg)
+            processed_msg = processor.process_message(msg, quote_map=quote_map)
             new_contexts.append(processed_msg)
 
         return new_contexts
@@ -2310,7 +2438,13 @@ class FrontDesk:
         else:
             req.system_prompt = original_system_prompt
 
-    async def rewrite_prompt_for_llm(self, chat_id: str, event: AstrMessageEvent, req: Any):
+    async def rewrite_prompt_for_llm(
+        self,
+        chat_id: str,
+        event: AstrMessageEvent,
+        req: Any,
+        allow_quote_target: bool = True,
+    ):
         """
         重构请求体，实现完整的对话历史格式化和指令注入。
         使用辅助方法和 MessageProcessor 类使逻辑更清晰。
@@ -2326,6 +2460,7 @@ class FrontDesk:
            保证助理上线就有完整上下文。
         缓存影响：历史前缀由账本稳定重排保持一致，临时提醒走 _no_save 尾部注入，
         前缀缓存命中不受全量重建影响。
+        allow_quote_target=False 时（如上游指令事件）不建立引用目标状态。
         """
         logger.debug(f"AngelHeart[{chat_id}]: 开始重构LLM请求体...")
 
@@ -2335,6 +2470,15 @@ class FrontDesk:
         scene_hint = None
         scene_prompt = None
         preserve_current_image_urls = self._should_preserve_current_image_urls(chat_id)
+        manage_quote_target = bool(allow_quote_target) and self._should_manage_quote_target(
+            chat_id, event
+        )
+        quote_map: Dict[int, str] | None = {} if manage_quote_target else None
+        quote_threshold = 0
+        if manage_quote_target:
+            quote_threshold = self.config_manager.for_chat(
+                chat_id
+            ).quote_min_gap_messages
 
         # 历史重写：
         # - 群聊：必须用秘书判断点固化的切片（秘书点=主脑点）
@@ -2355,7 +2499,6 @@ class FrontDesk:
         context_recent_dialogue, prompt_recent_dialogue = self._split_recent_dialogue_at_current_message(
             recent_dialogue, current_message_id
         )
-        final_prompt_str = self._generate_final_prompt(prompt_recent_dialogue, None, alias)
         should_mark_processed = True
         if self._is_group_chat(chat_id):
             scene_hint = "这是一个群聊场景。"
@@ -2365,7 +2508,7 @@ class FrontDesk:
         # 2. 标记已处理消息（如果需要）
         self._mark_processed_if_needed(chat_id, recent_dialogue, should_mark_processed)
 
-        # 3. 使用 MessageProcessor 构建上下文
+        # 3. 使用 MessageProcessor 构建上下文（本轮消息与 prompt 共用同一个编号映射）
         processor = MessageProcessor(alias)
         new_contexts = self._build_contexts_with_processor(
             processor,
@@ -2374,7 +2517,29 @@ class FrontDesk:
             chat_id,
             current_message_id,
             scene_hint,
+            quote_map=quote_map,
         )
+
+        # 3.1 渲染当前 prompt：编号按请求中的实际出现顺序接着 contexts 递增
+        final_prompt_str = self._generate_final_prompt(
+            prompt_recent_dialogue, None, alias, quote_map=quote_map
+        )
+        if quote_map:
+            if self._is_valid_final_prompt(final_prompt_str):
+                final_prompt_str = (
+                    f"{final_prompt_str}\n\n{self.QUOTE_INSTRUCTION}"
+                )
+            else:
+                # 当前 prompt 无效时不发布半成品映射，重建无编号上下文
+                quote_map = None
+                new_contexts = self._build_contexts_with_processor(
+                    processor,
+                    historical_context,
+                    context_recent_dialogue,
+                    chat_id,
+                    current_message_id,
+                    scene_hint,
+                )
         extra_image_urls = (
             self._collect_debounce_window_extra_image_urls(
                 recent_dialogue, event, current_message_id
@@ -2421,6 +2586,13 @@ class FrontDesk:
         if not self._is_valid_final_prompt(final_prompt_str):
             logger.warning(
                 f"AngelHeart[{chat_id}]: 重建后的当前提示词为空，本次仅重建上文，保留原始 req.prompt。"
+            )
+
+        if quote_map:
+            self._publish_quote_target_state(event, quote_map, quote_threshold, chat_id)
+            logger.debug(
+                f"AngelHeart[{chat_id}]: 引用目标协议已启用，编号 {len(quote_map)} 个，"
+                f"阈值 {quote_threshold}"
             )
 
         logger.debug(

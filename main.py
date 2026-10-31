@@ -22,10 +22,17 @@ from astrbot.core.star.filter.command import CommandFilter
 from astrbot.core.star.filter.command_group import CommandGroupFilter
 
 from astrbot.api import logger
-from astrbot.core.message.components import Plain, At, AtAll, Reply, Poke
+from astrbot.core.message.components import Plain, At, AtAll, Reply, Poke, Image
 
 from .core.config_manager import ConfigManager
 from .core.config_migration import run_migration
+from .core.quote_target import (
+    classify_missing_target,
+    count_gap_messages,
+    parse_prefix_marker,
+    strip_markers_from_content,
+    strip_quote_markers,
+)
 from .roles.front_desk import FrontDesk
 from .roles.secretary import Secretary
 from .core.utils import strip_markdown, strip_period_before_newline
@@ -68,6 +75,8 @@ class AngelHeartPlugin(Star):
         self.context = context
         self._whitelist_cache = self._prepare_whitelist()
         self._runtime_tasks = RuntimeTaskTracker()
+        # 引用目标：插件接管与宿主全局引用的冲突提示去重
+        self._quote_conflict_warned: set[str] = set()
 
         # -- 获取插件数据目录 --
         plugin_data_dir = StarTools.get_data_dir("astrbot_plugin_angel_heart")
@@ -110,6 +119,9 @@ class AngelHeartPlugin(Star):
 
         # 建立必要的相互引用
         self.front_desk.secretary = self.secretary
+
+        # 启动时按默认宿主配置检查引用冲突（只提示，不改宿主配置）
+        self._check_quote_target_conflict("")
 
         # -- 注册 WebUI API 路由（群聊独立配置管理页）--
         try:
@@ -192,6 +204,9 @@ class AngelHeartPlugin(Star):
         """将 Prompt 重写任务委托给 FrontDesk 处理"""
         chat_id = event.unified_msg_origin
 
+        # 新请求开始：清理上一轮引用目标状态，避免旧映射残留
+        self._clear_quote_target_extras(event)
+
         # 白名单检查：如果启用了白名单，非白名单会话不接管上下文
         if self.config_manager.whitelist_enabled:
             plain_chat_id = self._get_plain_chat_id(chat_id)
@@ -210,8 +225,15 @@ class AngelHeartPlugin(Star):
                     f"AngelHeart[{chat_id}]: 群聊上下文接管未启用，跳过请求体重写。"
                 )
                 return
+            # 会话级有效宿主配置的冲突提示（覆盖配置档案差异）
+            self._check_quote_target_conflict(chat_id)
 
-        await self.front_desk.rewrite_prompt_for_llm(chat_id, event, req)
+        await self.front_desk.rewrite_prompt_for_llm(
+            chat_id,
+            event,
+            req,
+            allow_quote_target=not self._is_upstream_command_event(event),
+        )
 
     @register_on_agent_done()
     @track_runtime_handler
@@ -227,6 +249,13 @@ class AngelHeartPlugin(Star):
             )
             if not completed_messages:
                 return
+
+            # 本轮启用了引用协议：入账前清理 assistant 正文中的标记副本，
+            # 避免协议标记进入插件历史。原始 run_context.messages 不改。
+            quote_state = None
+            if hasattr(event, "get_extra"):
+                quote_state = event.get_extra("angelheart_quote_state", None)
+            clean_quote_markers = isinstance(quote_state, dict)
 
             # 时间口径（有意设计，不是遗漏）：
             # 1. 整条工具链以「事件完结瞬间」为基准时间，不回填中途真实发生时刻。
@@ -250,6 +279,11 @@ class AngelHeartPlugin(Star):
                 )
                 if ledger_message is None:
                     continue
+                if clean_quote_markers and ledger_message.get("role") == "assistant":
+                    # 只清理正文文本；tool_calls 参数、tool 结果与推理字段保持原样
+                    ledger_message["content"] = strip_markers_from_content(
+                        ledger_message.get("content")
+                    )
                 ledger_messages.append(ledger_message)
 
             if not ledger_messages:
@@ -278,6 +312,9 @@ class AngelHeartPlugin(Star):
         """
         self.secretary.llm_analyzer.reload_config(self.config_manager)
         self._whitelist_cache = self._prepare_whitelist()
+        # 保存后重新检查引用冲突（开关状态可能刚变化）
+        self._quote_conflict_warned.clear()
+        self._check_quote_target_conflict("")
         logger.info(
             f"AngelHeart: 配置已保存并即时生效。助理休息: {self.config_manager.waiting_time}秒"
         )
@@ -296,6 +333,10 @@ class AngelHeartPlugin(Star):
         # 重新加载LLM分析器的配置
         self.secretary.llm_analyzer.reload_config(self.config_manager)
         self._whitelist_cache = self._prepare_whitelist()
+
+        # 配置重载后按默认宿主配置重新检查引用冲突（允许再次提示）
+        self._quote_conflict_warned.clear()
+        self._check_quote_target_conflict("")
 
         logger.info(
             f"AngelHeart: 配置已更新。助理休息: {self.config_manager.waiting_time}秒，"
@@ -500,7 +541,16 @@ class AngelHeartPlugin(Star):
                     result.chain = []  # 清空消息链
                 return
 
-            # 2. 遍历消息链中的每个元素，进行 Markdown 清洗
+            # 2. 引用目标：解析标记、按间隔判断是否插入 Reply
+            # 顺序固定在 Markdown 清洗与字数扣能之前，标记不会计入回复字数。
+            try:
+                self._apply_quote_target(event, chat_id, message_chain)
+            except Exception as e:
+                logger.warning(
+                    f"AngelHeart[{chat_id}]: 引用目标处理失败，继续原有输出清理: {e}"
+                )
+
+            # 3. 遍历消息链中的每个元素，进行 Markdown 清洗
             # 只处理 Plain 文本组件，保持其他组件不变
             if self.config_manager.strip_markdown_enabled:
                 for i, component in enumerate(message_chain):
@@ -529,7 +579,7 @@ class AngelHeartPlugin(Star):
             else:
                 logger.debug(f"AngelHeart[{chat_id}]: Markdown清洗已禁用，跳过清洗步骤。")
 
-            # 3. 句末句号清理：换行符之前的中文句号清理掉
+            # 4. 句末句号清理：换行符之前的中文句号清理掉
             if self.config_manager.strip_period_before_newline:
                 for i, component in enumerate(message_chain):
                     if isinstance(component, Plain):
@@ -549,6 +599,357 @@ class AngelHeartPlugin(Star):
         except Exception as e:
             logger.error(f"AngelHeart[{chat_id}]: strip_markdown_on_decorating_result 处理异常: {e}", exc_info=True)
             # 不重新抛出异常，避免影响消息发送流程
+
+    # --- 引用目标（本轮编号 + 发送前引用判断）---
+
+    _STREAMING_RESULT_TYPES = ("STREAMING_RESULT", "STREAMING_FINISH")
+
+    def _clear_quote_target_extras(self, event: AstrMessageEvent) -> None:
+        """新请求开始或上游指令时清除上一轮的引用目标状态。"""
+        if not hasattr(event, "set_extra"):
+            return
+        try:
+            event.set_extra("angelheart_quote_map", None)
+            event.set_extra("angelheart_quote_state", None)
+        except Exception:
+            pass
+
+    def _host_platform_setting(self, chat_id: str, key: str):
+        """读取宿主会话级 platform_settings 项；不可用时返回 None。"""
+        try:
+            host_config = self.context.get_config(chat_id or None)
+        except Exception:
+            return None
+        try:
+            settings = host_config.get("platform_settings", {}) if host_config is not None else {}
+        except Exception:
+            return None
+        if not isinstance(settings, dict):
+            return None
+        return settings.get(key)
+
+    def _check_quote_target_conflict(self, chat_id: str) -> None:
+        """插件引用接管与宿主全局引用同时开启时提示；不改宿主配置。
+
+        warning 按配置档案去重，解除冲突后允许下次再提示。
+        """
+        key = chat_id or "__default__"
+        try:
+            manager = (
+                self.config_manager.for_chat(chat_id)
+                if chat_id
+                else self.config_manager
+            )
+            enabled = bool(manager.quote_target_enabled)
+        except Exception:
+            return
+        if not enabled:
+            self._quote_conflict_warned.discard(key)
+            return
+        if self._host_platform_setting(chat_id, "reply_with_quote") is True:
+            if key not in self._quote_conflict_warned:
+                self._quote_conflict_warned.add(key)
+                logger.warning(
+                    f"AngelHeart[{chat_id or '默认配置'}]: 插件引用目标已开启，宿主 "
+                    "platform_settings.reply_with_quote 也开启；插件未插入 Reply 的结果"
+                    "仍可能被宿主引用到边界消息。请关闭宿主全局引用。"
+                )
+        else:
+            self._quote_conflict_warned.discard(key)
+
+    def _result_is_streaming(self, event: AstrMessageEvent) -> bool:
+        """实际结果为流式输出时跳过引用处理。"""
+        try:
+            result = event.get_result()
+        except Exception:
+            return False
+        content_type = getattr(result, "result_content_type", None)
+        if content_type is None:
+            return False
+        name = getattr(content_type, "name", None) or str(content_type)
+        return name in self._STREAMING_RESULT_TYPES
+
+    def _quote_threshold(self, state: dict, chat_id: str) -> int:
+        """优先使用请求阶段冻结的阈值；缺失时回退当前配置。"""
+        raw = state.get("threshold")
+        if isinstance(raw, int) and not isinstance(raw, bool) and raw >= 0:
+            return raw
+        try:
+            return int(self.config_manager.for_chat(chat_id).quote_min_gap_messages)
+        except Exception:
+            return 3
+
+    def _strip_quote_prefix(self, message_chain) -> tuple[int | None, bool]:
+        """解析第一段实际文本开头的前缀标记并删除。
+
+        返回 (编号或 None, 是否存在前缀)。前缀跨相邻 Plain 时合并处理，
+        不跨越图片、语音等组件边界拼接。
+        """
+        first_text_index = None
+        for index, component in enumerate(message_chain):
+            if isinstance(component, Plain) and str(getattr(component, "text", "") or ""):
+                first_text_index = index
+                break
+        if first_text_index is None:
+            return None, False
+
+        run = []
+        index = first_text_index
+        while index < len(message_chain) and isinstance(message_chain[index], Plain):
+            run.append(index)
+            index += 1
+
+        merged = "".join(str(message_chain[i].text or "") for i in run)
+        number, rest = parse_prefix_marker(merged)
+        if rest == merged:
+            return None, False
+
+        consumed = len(merged) - len(rest)
+        remaining = consumed
+        for i in run:
+            if remaining <= 0:
+                break
+            text = str(message_chain[i].text or "")
+            take = min(len(text), remaining)
+            message_chain[i].text = text[take:]
+            remaining -= take
+        return number, True
+
+    def _strip_quote_markers_in_chain(self, message_chain) -> None:
+        """兜底清理正文中残留的引用标记（含非法编号）。"""
+        for component in message_chain:
+            if not isinstance(component, Plain):
+                continue
+            text = str(getattr(component, "text", "") or "")
+            if not text:
+                continue
+            cleaned = strip_quote_markers(text)
+            if cleaned != text:
+                component.text = cleaned
+
+    def _drop_empty_plain(self, message_chain) -> None:
+        """删除清理后变空的 Plain 组件。"""
+        for index in range(len(message_chain) - 1, -1, -1):
+            component = message_chain[index]
+            if isinstance(component, Plain) and not str(
+                getattr(component, "text", "") or ""
+            ).strip():
+                del message_chain[index]
+
+    def _chain_has_sendable_content(self, message_chain) -> bool:
+        """判断清理后是否仍有可发送内容。
+
+        除空 Plain 与 Reply 之外的组件（图片、文件、语音、合并转发、At 等）
+        都算可发送内容：引用只跳过注入，不能因此丢弃原结果。
+        """
+        for component in message_chain:
+            if isinstance(component, Reply):
+                continue
+            if isinstance(component, Plain):
+                if str(getattr(component, "text", "") or "").strip():
+                    return True
+                continue
+            return True
+        return False
+
+    def _t2i_would_trigger(
+        self, event: AstrMessageEvent, message_chain, chat_id: str
+    ) -> bool:
+        """宿主文本转图是否会在本条结果上触发。
+
+        宿主 ResultDecorateStage 只收集链首连续的 Plain，遇到首个非文本组件
+        就停止；在链首插入 Reply 会得到空 plain_str，使长回复退回纯文本。
+        命中时放弃插入引用，保留宿主原有转图行为。
+
+        判定按宿主同源配置：会话绑定的配置档案（宿主管线每个 profile 一份），
+        而不是默认配置；长度口径包含宿主随后添加的回复前缀与推理文本。
+        """
+        try:
+            result = event.get_result()
+        except Exception:
+            result = None
+        use_t2i = getattr(result, "use_t2i_", None)
+        if use_t2i is False:
+            return False
+        try:
+            host_config = self.context.get_config(chat_id)
+        except Exception:
+            return False
+        try:
+            if use_t2i is None and not host_config.get("t2i"):
+                return False
+            threshold = max(int(host_config.get("t2i_word_threshold", 150)), 50)
+        except (AttributeError, TypeError, ValueError):
+            return False
+
+        texts = []
+        for component in message_chain:
+            if isinstance(component, Plain):
+                texts.append(str(getattr(component, "text", "") or ""))
+            else:
+                break
+        if not texts:
+            return False
+
+        # 宿主在转图之前先给首个 Plain 加 platform_settings.reply_prefix
+        try:
+            platform_settings = host_config.get("platform_settings") or {}
+            reply_prefix = platform_settings.get("reply_prefix", "")
+        except (AttributeError, TypeError):
+            reply_prefix = ""
+        if isinstance(reply_prefix, str) and reply_prefix:
+            texts[0] = f"{reply_prefix}{texts[0]}"
+
+        # 宿主还会把推理文本插到链首（display_reasoning_text 开启时）
+        try:
+            reasoning_enabled = bool(
+                (host_config.get("provider_settings") or {}).get(
+                    "display_reasoning_text"
+                )
+            )
+        except (AttributeError, TypeError):
+            reasoning_enabled = False
+        if reasoning_enabled:
+            try:
+                reasoning_content = event.get_extra("_llm_reasoning_content")
+            except Exception:
+                reasoning_content = None
+            if reasoning_content:
+                texts.insert(0, f"🤔 思考: {reasoning_content}\n\n────\n")
+
+        plain_str = "".join("\n\n" + text for text in texts)
+        return len(plain_str) > threshold
+
+    def _is_friend_message(self, event: AstrMessageEvent) -> bool:
+        try:
+            message_type = event.get_message_type()
+        except Exception:
+            message_type = None
+        name = getattr(message_type, "name", None)
+        if name:
+            return name == "FRIEND_MESSAGE"
+        try:
+            return ":FriendMessage:" in str(event.unified_msg_origin)
+        except Exception:
+            return False
+
+    def _insert_quote_reply(
+        self, event: AstrMessageEvent, chat_id: str, message_chain, target: str
+    ) -> None:
+        """按宿主原有行为补 At，再插入 Reply（顺序 Reply → At → 原链）。"""
+        if (
+            self._host_platform_setting(chat_id, "reply_with_mention") is True
+            and not self._is_friend_message(event)
+        ):
+            try:
+                qq = event.get_sender_id()
+                name = event.get_sender_name()
+            except Exception:
+                qq, name = "", ""
+            message_chain.insert(0, At(qq=qq, name=name))
+            if len(message_chain) > 1 and isinstance(message_chain[1], Plain):
+                message_chain[1].text = "\n" + str(message_chain[1].text or "")
+        message_chain.insert(0, Reply(id=target))
+
+    def _apply_quote_target(
+        self, event: AstrMessageEvent, chat_id: str, message_chain
+    ) -> None:
+        """发送装饰入口的引用处理：冻结间隔、解析目标、按需插入 Reply。"""
+        if not hasattr(event, "get_extra"):
+            return
+        state = event.get_extra("angelheart_quote_state", None)
+        if not isinstance(state, dict):
+            return
+        # 幂等以「单个结果」为范围：工具链会为同一事件产生多条结果，
+        # 前一段（工具说明）不能把后一段（真正的回答）挡掉。
+        try:
+            result = event.get_result()
+        except Exception:
+            result = None
+        if result is not None:
+            if getattr(result, "_angelheart_quote_done", False):
+                return
+        elif state.get("processed"):
+            return
+        if self._result_is_streaming(event):
+            return
+
+        # 本条结果首次装饰即冻结；引用索引不随正文整理丢失目标或间隔消息。
+        frozen_at = time.time()
+        try:
+            snapshot = self.angel_context.conversation_ledger.get_quote_messages(chat_id)
+        except Exception:
+            snapshot = []
+
+        mapping = event.get_extra("angelheart_quote_map", {}) or {}
+        threshold = self._quote_threshold(state, chat_id)
+
+        number, had_prefix = self._strip_quote_prefix(message_chain)
+        self._strip_quote_markers_in_chain(message_chain)
+        self._drop_empty_plain(message_chain)
+
+        target = ""
+        if isinstance(mapping, dict) and number is not None:
+            target = str(mapping.get(number, "") or "")
+
+        gap = None
+        injected = False
+        if not target:
+            reason = "unknown_number" if had_prefix else "no_marker"
+        elif any(isinstance(component, Reply) for component in message_chain):
+            reason = "reply_present"
+        elif not all(
+            isinstance(component, (Plain, Image)) for component in message_chain
+        ):
+            reason = "unsupported_components"
+        elif not self._chain_has_sendable_content(message_chain):
+            reason = "empty_after_cleanup"
+        elif self._t2i_would_trigger(event, message_chain, chat_id):
+            # 链首插入 Reply 会让宿主文本转图拿到空正文，放弃引用保留转图
+            reason = "t2i_pending"
+        else:
+            gap = count_gap_messages(snapshot, target, frozen_at)
+            if gap is None:
+                # 索引容量淘汰或目标没有引用记录时，保留原有不引用兜底。
+                reason = classify_missing_target(state.get("known_ids"), target)
+            elif gap <= threshold:
+                reason = "gap_below_threshold"
+            else:
+                self._insert_quote_reply(event, chat_id, message_chain, target)
+                injected = True
+                reason = "quoted"
+
+        if not self._chain_has_sendable_content(message_chain):
+            # 清理后没有可发送内容：清空链，不留下仅含引用的结果
+            message_chain.clear()
+
+        if result is not None:
+            try:
+                result._angelheart_quote_done = True
+            except Exception:
+                pass
+
+        new_state = dict(state)
+        new_state.update(
+            {
+                "threshold": threshold,
+                "t0": frozen_at,
+                "target": target,
+                "gap": gap,
+                "reason": reason,
+                "processed": True,
+                "injected": injected,
+            }
+        )
+        try:
+            event.set_extra("angelheart_quote_state", new_state)
+        except Exception:
+            pass
+
+        logger.debug(
+            f"AngelHeart[{chat_id}]: 引用目标: 编号={number} 目标={target} "
+            f"gap={gap} 阈值={threshold} 原因={reason}"
+        )
 
     @filter.after_message_sent(priority=100)
     @track_runtime_handler

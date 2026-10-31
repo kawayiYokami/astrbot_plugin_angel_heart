@@ -333,6 +333,18 @@
         "description": "清理句末句号",
         "hint": "启用后，会清理换行符之前的中文句号（。），例如「你好。\\n明天见。」变为「你好\\n明天见」。",
         "default": false
+      },
+      "quote_target_enabled": {
+        "type": "bool",
+        "description": "启用引用目标",
+        "hint": "启用后，会给本轮群友消息编号，模型可用 [引用:n] 指定要引用的消息；只有目标之后的群友消息严格超过「引用最小间隔」时才真正引用。仅支持 aiocqhttp 群聊、非流式输出，且需要关闭宿主 platform_settings.reply_with_quote。",
+        "default": false
+      },
+      "quote_min_gap_messages": {
+        "type": "int",
+        "description": "引用最小间隔（条）",
+        "hint": "目标消息之后需要出现的真实群友消息条数，严格大于该值才插入引用。例如设为 3 时，目标后恰有 3 条群友消息不引用，有 4 条才引用。只接受非负整数，无效值回退 3。",
+        "default": 3
       }
     }
   }
