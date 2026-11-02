@@ -57,13 +57,11 @@ class LLMAnalyzer:
 
     def __init__(
         self,
-        analyzer_model_name: str,
         context,
         config_manager=None,
     ):
-        self.analyzer_model_name = analyzer_model_name
         self.context = context  # 存储 context 对象，用于动态获取 provider
-        self.config_manager = config_manager  # 存储 config_manager 对象，用于访问配置
+        self.config_manager = config_manager  # 唯一配置来源，不在本地留副本
         self.is_ready = False  # 默认认为分析器未就绪
 
         # 初始化提示词模块加载器
@@ -72,15 +70,47 @@ class LLMAnalyzer:
         # 初始化JSON解析器
         self.json_parser = JsonParser()
 
-        # 加载固定的输出契约
+        # 派生状态：输出契约随配置版本变化重建
+        self.output_contract = ""
+        self._derived_token = None
+        self._ensure_derived()
+
+    @property
+    def analyzer_model_name(self) -> str:
+        """当前秘书模型名：始终读配置，不做快照。"""
+        if not self.config_manager:
+            return ""
+        return self.config_manager.analyzer_model
+
+    def _derived_token_now(self):
+        """派生状态的配置身份：实例 + 版本，任一变化都需重建。"""
+        manager = self.config_manager
+        if manager is None:
+            return None
+        return (id(manager), getattr(manager, "revision", 0))
+
+    def _ensure_derived(self) -> None:
+        """按配置版本重建派生状态（输出契约），热保存后下一轮自动生效。"""
+        token = self._derived_token_now()
+        if token is not None and token == self._derived_token:
+            return
+        self._derived_token = token
         try:
-            is_reasoning_model = config_manager.is_reasoning_model if config_manager else False
-            self.output_contract = self.prompt_loader.build_output_contract(is_reasoning_model)
+            is_reasoning_model = (
+                bool(self.config_manager.is_reasoning_model)
+                if self.config_manager
+                else False
+            )
+            self.output_contract = self.prompt_loader.build_output_contract(
+                is_reasoning_model
+            )
 
             if self.output_contract:
                 self.is_ready = True
                 output_type = "推理模型" if is_reasoning_model else "常规模型"
-                logger.info(f"AngelHeart分析器: 输出契约加载成功，分析模型为{output_type}。")
+                logger.info(
+                    f"AngelHeart分析器: 输出契约已加载，分析模型为{output_type}。"
+                )
             else:
                 self.is_ready = False
                 logger.critical("AngelHeart分析器: 输出契约加载失败，分析器将无法工作。")
@@ -92,24 +122,12 @@ class LLMAnalyzer:
             logger.warning("AngelHeart的分析模型未配置，功能将受限。")
 
     def reload_config(self, new_config_manager):
-        """重新加载配置"""
+        """重新加载配置来源；派生状态按版本号在下一轮自动重建。"""
         self.config_manager = new_config_manager
-
-        # 重新加载提示词文档
-        try:
-            self.prompt_loader.reload_modules()
-            is_reasoning_model = new_config_manager.is_reasoning_model if new_config_manager else False
-            self.output_contract = self.prompt_loader.build_output_contract(is_reasoning_model)
-
-            if self.output_contract:
-                self.is_ready = True
-                logger.info("AngelHeart分析器: 输出契约重新加载成功。")
-            else:
-                self.is_ready = False
-                logger.warning("AngelHeart分析器: 输出契约重新加载失败，分析器未就绪。")
-        except Exception as e:
-            self.is_ready = False
-            logger.error(f"AngelHeart分析器: 输出契约重新加载时发生错误: {e}")
+        self.prompt_loader.reload_modules()
+        # 换实例时强制重建，不依赖 id 可能复用后的比较
+        self._derived_token = None
+        self._ensure_derived()
 
     def _parse_response(self, response_text: str, alias: str, chat_id: str = "") -> SecretaryDecision:
         """
@@ -235,6 +253,9 @@ class LLMAnalyzer:
         Returns:
             tuple[str, str]: (规则文本, 对话记录文本)
         """
+        # 每轮按配置版本核对派生状态，热保存后输出契约随之更新
+        self._ensure_derived()
+
         # 分别格式化历史上下文和最近对话，并添加 XML 包裹
         historical_body = self._format_conversation_history(historical_context, chat_id)
         recent_body = self._format_conversation_history(recent_dialogue, chat_id)

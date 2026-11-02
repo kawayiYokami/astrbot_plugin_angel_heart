@@ -66,7 +66,9 @@ class AngelHeartPlugin(Star):
         self.config = config if isinstance(config, dict) else {}
         self.config_manager = ConfigManager(self.config)
         self.context = context
-        self._whitelist_cache = self._prepare_whitelist()
+        # 白名单派生集合：按配置版本懒重建，热保存后下一轮自动跟上
+        self._whitelist_cache: set = set()
+        self._whitelist_token = None
         self._runtime_tasks = RuntimeTaskTracker()
 
         # -- 获取插件数据目录 --
@@ -195,7 +197,7 @@ class AngelHeartPlugin(Star):
         # 白名单检查：如果启用了白名单，非白名单会话不接管上下文
         if self.config_manager.whitelist_enabled:
             plain_chat_id = self._get_plain_chat_id(chat_id)
-            if plain_chat_id not in self._whitelist_cache:
+            if plain_chat_id not in self._ensure_whitelist():
                 return
 
         if self._is_private_chat(chat_id):
@@ -273,29 +275,27 @@ class AngelHeartPlugin(Star):
     def on_config_saved(self):
         """WebUI 保存全局配置后的热生效钩子。
 
-        ConfigManager 持有 config dict 引用，其余组件动态读取自动生效；
-        此处只刷新显式缓存：prompt 模板（依赖 is_reasoning_model）与白名单。
+        配置值一律动态读取，热保存即生效；这里只递增配置版本，让按版本懒
+        重建的派生状态（分析器输出契约、白名单集合）在下一轮自动刷新。
         """
+        self.config_manager.mark_changed()
         self.secretary.llm_analyzer.reload_config(self.config_manager)
-        self._whitelist_cache = self._prepare_whitelist()
         logger.info(
             f"AngelHeart: 配置已保存并即时生效。助理休息: {self.config_manager.waiting_time}秒"
         )
 
     def reload_config(self, new_config: dict):
-        """重新加载配置"""
-        self.config_manager = ConfigManager(new_config or {})
-        # 群聊独立配置模板存储保持同一实例，重新挂载
-        self.config_manager.attach_profile_store(self.profile_store)
-        # 更新角色与调度器的配置管理器
-        self.secretary.config_manager = self.config_manager
-        self.front_desk.config_manager = self.config_manager
-        self.front_desk.status_checker.config_manager = self.config_manager
-        self.angel_context.config_manager = self.config_manager
-        self.angel_context.debounce_manager.config_manager = self.config_manager
-        # 重新加载LLM分析器的配置
-        self.secretary.llm_analyzer.reload_config(self.config_manager)
-        self._whitelist_cache = self._prepare_whitelist()
+        """重新加载配置：原地更新共享配置对象，不新造配置管理器。
+
+        各组件（媒体缓存、钓鱼回复、工作账本等）持有的都是同一个
+        ConfigManager 引用，换实例会让没逐个改引用的组件继续读旧配置。
+        原地更新键值后，所有读取点下一轮就吃到新值。
+        """
+        data = new_config if isinstance(new_config, dict) else {}
+        if data is not self.config:
+            self.config.clear()
+            self.config.update(data)
+        self.on_config_saved()
 
         logger.info(
             f"AngelHeart: 配置已更新。助理休息: {self.config_manager.waiting_time}秒，"
@@ -444,7 +444,7 @@ class AngelHeartPlugin(Star):
             # 3. (可选) 检查白名单
             if self.config_manager.whitelist_enabled:
                 plain_chat_id = self._get_plain_chat_id(chat_id)
-                if plain_chat_id not in self._whitelist_cache:
+                if plain_chat_id not in self._ensure_whitelist():
                     logger.debug(f"AngelHeart[{chat_id}]: 会话未在白名单中, 已忽略")
                     return False
 
@@ -704,6 +704,14 @@ class AngelHeartPlugin(Star):
     def _prepare_whitelist(self) -> set:
         """预处理白名单，将其转换为 set 以获得 O(1) 的查找性能。"""
         return {str(cid) for cid in self.config_manager.chat_ids}
+
+    def _ensure_whitelist(self) -> set:
+        """按配置版本懒重建白名单集合，配置热保存后自动跟上。"""
+        token = (id(self.config_manager), getattr(self.config_manager, "revision", 0))
+        if token != self._whitelist_token:
+            self._whitelist_cache = self._prepare_whitelist()
+            self._whitelist_token = token
+        return self._whitelist_cache
 
     def _extract_sent_message_content(self, event: AstrMessageEvent) -> str:
         """从事件中提取发送的消息内容"""
