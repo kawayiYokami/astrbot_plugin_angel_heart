@@ -98,7 +98,8 @@ class AngelHeartContext:
         self.current_states.clear()
         self.status_transition_manager.status_start_times.clear()
         self.work_ledger.clear()
-        self.conversation_ledger.close()
+        # 媒体执行域收尾会等待进行中的文件任务，放到线程里做，不卡事件循环
+        await asyncio.to_thread(self.conversation_ledger.close)
 
     # ========== 时序控制 ==========
 

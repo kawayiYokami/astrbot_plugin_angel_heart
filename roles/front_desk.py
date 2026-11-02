@@ -229,7 +229,7 @@ class FrontDesk:
             return None
 
         image_cache = self.context.conversation_ledger.image_cache
-        dhash = image_cache.put(chat_id, raw_bytes)
+        dhash = await image_cache.put(chat_id, raw_bytes)
         if dhash:
             cache_path = str(image_cache.get_cached_path(chat_id, dhash))
             return {
@@ -288,7 +288,7 @@ class FrontDesk:
             logger.debug(f"AngelHeart[{chat_id}]: 文本文件过大({size}bytes)，已跳过: {name}")
             return {"type": "text", "text": f"[文件过大，不支持: {name}]"}
 
-        cached_path = self.context.conversation_ledger.image_cache.put_text_file(
+        cached_path = await self.context.conversation_ledger.image_cache.put_text_file(
             chat_id,
             local_path,
             name,
