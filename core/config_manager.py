@@ -338,6 +338,14 @@ class ConfigManager:
     def strip_period_before_newline(self) -> bool:
         return self._get_grouped("output_rewrite", "strip_period_before_newline", False)
 
+    @property
+    def long_text_image_enabled(self) -> bool:
+        return self._get_grouped("output_rewrite", "long_text_image_enabled", True)
+
+    @property
+    def long_text_image_threshold(self) -> int:
+        return self._get_grouped("output_rewrite", "long_text_image_threshold", 800)
+
     # ========== 工具方法 ==========
 
     def get_config_summary(self) -> dict:

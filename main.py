@@ -8,6 +8,7 @@ AngelHeart插件 - 天使心智能群聊/私聊交互插件
 - 私聊：只缓存，主框架队列（无法向运行中子代理注入消息）
 """
 
+import asyncio
 import time
 import json
 import os
@@ -22,7 +23,7 @@ from astrbot.core.star.filter.command import CommandFilter
 from astrbot.core.star.filter.command_group import CommandGroupFilter
 
 from astrbot.api import logger
-from astrbot.core.message.components import Plain, At, AtAll, Reply, Poke
+from astrbot.core.message.components import Plain, At, AtAll, Reply, Poke, Image
 
 from .core.config_manager import ConfigManager
 from .core.config_migration import run_migration
@@ -37,6 +38,8 @@ from .core.angel_heart_context import AngelHeartContext
 from .core.chat_profile import ChatProfileStore
 from .core.runtime_task_tracker import RuntimeTaskTracker, track_runtime_handler
 from .tools.image_understanding import AngelDescribeImageTool
+from .core.long_image_render import render_long_text_image
+from .core.font_manager import ensure_fonts, shutdown_fonts
 
 # 在框架加载 schema 之前执行配置迁移
 run_migration()
@@ -543,13 +546,92 @@ class AngelHeartPlugin(Star):
                                     f"AngelHeart[{chat_id}]: 已清理句末句号: '{original_text[:50]}...' -> '{cleaned_text[:50]}...'"
                                 )
 
+            # 3. 先按原文结算能量：转图后消息链只剩图片，字符数会归零
             await self.angel_context.debounce_manager.charge_reply_energy(
                 event, message_chain
             )
+
+            # 4. 长回复整条转长图：文字换成图片，避免群里刷屏。
+            #    账本记录的是 run_context.messages 里的原文，这里只替换发送用的消息链。
+            await self._try_convert_long_reply(event, message_chain)
             logger.debug(f"AngelHeart[{chat_id}]: 消息链中的Markdown格式清洗完成。")
         except Exception as e:
             logger.error(f"AngelHeart[{chat_id}]: strip_markdown_on_decorating_result 处理异常: {e}", exc_info=True)
             # 不重新抛出异常，避免影响消息发送流程
+
+    def _long_image_brand(self) -> str:
+        """页眉左侧显示唤醒名，取 alias 里最长的那一个。"""
+        alias = (self.config_manager.alias or "").strip()
+        candidates = [part.strip() for part in alias.split("|") if part.strip()]
+        return max(candidates, key=len) if candidates else ""
+
+    async def _try_convert_long_reply(self, event: AstrMessageEvent, message_chain) -> bool:
+        """回复文本够长时整条排成长图，超过单页高度就分成多张。
+
+        判定放在 Markdown 清洗之前：清洗会把标题、列表压成纯文本，长图要的
+        正是这些结构。转换失败一律返回 False，让原文本照常发出。
+
+        只替换发送用的消息链；会话账本记的是 run_context.messages 里的原文，
+        图片不会流进历史上下文。
+        """
+        if not self.config_manager.long_text_image_enabled:
+            return False
+
+        # 只处理纯文本消息链：带 @、回复引用、已有图片的回复保持原样
+        if not message_chain or any(
+            not isinstance(component, Plain) for component in message_chain
+        ):
+            return False
+
+        text = "".join(
+            component.text or "" for component in message_chain if isinstance(component, Plain)
+        ).strip()
+        if len(text) < self.config_manager.long_text_image_threshold:
+            return False
+
+        # 字体是转图的前提：没就绪就不转，宁可发原文，也不要让容器里的系统字体
+        # 顶上把字形弄走样。首次未就绪会顺手触发后台下载，这一次不等它。
+        if not await ensure_fonts():
+            logger.debug(
+                f"AngelHeart[{event.unified_msg_origin}]: 字体未就绪，跳过转图"
+            )
+            return False
+
+        # 排版是重 CPU 活，同一时刻只跑一份，避免并发长回复把内存叠起来
+        lock = getattr(self, "_long_image_lock", None)
+        if lock is None:
+            lock = self._long_image_lock = asyncio.Lock()
+
+        try:
+            async with lock:
+                image_paths = await asyncio.to_thread(
+                    render_long_text_image,
+                    text,
+                    brand=self._long_image_brand(),
+                    footer_left=f"共 {len(text)} 字",
+                    footer_right=time.strftime("%Y-%m-%d"),
+                )
+        except Exception as e:
+            logger.error(
+                f"AngelHeart[{event.unified_msg_origin}]: 长回复转图失败，按原文本发送: {e}",
+                exc_info=True,
+            )
+            return False
+
+        if not image_paths:
+            logger.warning(
+                f"AngelHeart[{event.unified_msg_origin}]: 长回复转图没有产出图片，按原文本发送"
+            )
+            return False
+
+        message_chain.clear()
+        for path in image_paths:
+            message_chain.append(Image.fromFileSystem(path))
+        logger.info(
+            f"AngelHeart[{event.unified_msg_origin}]: 长回复已转长图"
+            f"（{len(text)} 字，{len(image_paths)} 张）"
+        )
+        return True
 
     @filter.after_message_sent(priority=100)
     @track_runtime_handler
@@ -782,4 +864,7 @@ class AngelHeartPlugin(Star):
         """插件被卸载/停用时调用"""
         await self._runtime_tasks.stop()
         await self._cleanup_all_waiting_resources()
+        # 字体后台下载不归 _runtime_tasks 收口（它不是 handler），单独取消，
+        # 否则插件目录被删后它还在往里面写 .part。
+        await shutdown_fonts()
         logger.info("💖 AngelHeart 插件已终止")

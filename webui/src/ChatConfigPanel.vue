@@ -143,6 +143,25 @@
         </div>
       </template>
 
+      <!-- 字体：插件级资源，独立视图 -->
+      <template v-else-if="viewMode === 'fonts'">
+        <div class="content-header">
+          <h2>字体</h2>
+          <span class="content-sub">字体下载好后，长文才会转成图</span>
+        </div>
+        <FontPanel
+          :dir="fontState.dir"
+          :ready="fontState.ready"
+          :downloading="fontState.downloading"
+          :cooldown-remaining="fontState.cooldown_remaining"
+          :weights="fontState.weights"
+          :fetching="fontFetching"
+          :busy-weight="fontBusyWeight"
+          @fetch="triggerFontFetch"
+          @upload="uploadFontWeight"
+        />
+      </template>
+
       <!-- 全局配置（可编辑）：schema 驱动分段卡片；有草稿变更时右下角浮出保存按钮 -->
       <template v-else-if="!selectedId">
         <div class="content-header">
@@ -353,13 +372,14 @@ import {
   type TemplateConfig,
 } from './fields'
 import { useBridge } from './composables/useBridge'
+import FontPanel, { type FontState } from './FontPanel.vue'
 import { themeKey } from './theme'
 import SchemaForm from './SchemaForm.vue'
 import VueJsonPretty from 'vue-json-pretty'
 import 'vue-json-pretty/lib/styles.css'
 import type { SchemaMeta } from './schema'
 
-const { apiGet, apiPost } = useBridge()
+const { apiGet, apiPost, upload } = useBridge()
 const message = useMessage()
 const { isDark, toggle: toggleTheme } = inject(themeKey)!
 
@@ -371,7 +391,7 @@ const requestItems = ref<RequestSnapshot[]>([])
 const requestLoading = ref(false)
 const statusItems = ref<ChatStatusItem[]>([])
 const kindFilter = ref<'all' | 'group' | 'private'>('all')
-const viewMode = ref<'config' | 'monitor'>('monitor')
+const viewMode = ref<'config' | 'monitor' | 'fonts'>('monitor')
 const selectedId = ref<string | null>(null)
 const sidebarCollapsed = ref(false)
 // naive-ui 的 n-layout-sider 没有 breakpoint 属性，用 matchMedia 实现窄屏自动收起
@@ -459,6 +479,7 @@ function renderTemplateLabel(tpl: TemplateDetail) {
 
 const sidebarMenuOptions = computed<MenuOption[]>(() => [
   { label: '联系人监控', key: 'monitor', icon: () => h(Icon, { icon: 'lucide:activity' }) },
+  { label: '字体', key: 'fonts', icon: () => h(Icon, { icon: 'lucide:type' }) },
   ...templates.value.map((tpl) => ({
     key: tpl.id,
     icon: () => h(Icon, { icon: 'lucide:file-text' }),
@@ -467,12 +488,20 @@ const sidebarMenuOptions = computed<MenuOption[]>(() => [
 ])
 
 function onSidebarMenu(key: string) {
-  if (key === 'monitor') viewMode.value = 'monitor'
-  else selectTemplate(key)
+  if (key === 'monitor') {
+    viewMode.value = 'monitor'
+  } else if (key === 'fonts') {
+    viewMode.value = 'fonts'
+    // 进入即加载一次，替代原来的手动刷新按钮
+    void loadFonts()
+  } else {
+    selectTemplate(key)
+  }
 }
 
 const sidebarMenuValue = computed(() => {
   if (viewMode.value === 'monitor') return 'monitor'
+  if (viewMode.value === 'fonts') return 'fonts'
   return selectedId.value
 })
 
@@ -553,6 +582,80 @@ async function savePromptSettings() {
     message.error(`保存失败: ${(e as Error).message}`)
   } finally {
     promptSaving.value = false
+  }
+}
+
+// ---------- 字体（插件级资源，放在全局配置里） ----------
+
+const fontState = ref<FontState>({
+  dir: '',
+  ready: false,
+  downloading: false,
+  cooldown_remaining: 0,
+  weights: [],
+})
+const fontLoading = ref(false)
+const fontFetching = ref(false)
+const fontBusyWeight = ref<string | null>(null)
+
+function fmtMB(size: number): string {
+  if (!size || size <= 0) return '0 MB'
+  return `${(size / 1024 / 1024).toFixed(1)} MB`
+}
+
+async function loadFonts() {
+  if (fontLoading.value) return
+  fontLoading.value = true
+  try {
+    const data = await apiGet<FontState>('fonts')
+    fontState.value = {
+      dir: String(data?.dir ?? ''),
+      ready: Boolean(data?.ready),
+      downloading: Boolean(data?.downloading),
+      cooldown_remaining: Math.ceil(Number(data?.cooldown_remaining ?? 0)),
+      weights: data?.weights || [],
+    }
+  } catch (e) {
+    message.error(`加载字体状态失败：${(e as Error).message}`)
+  } finally {
+    fontLoading.value = false
+  }
+}
+
+async function triggerFontFetch() {
+  fontFetching.value = true
+  try {
+    // 桥接只把 data 解出来，信封里的 message 取不到，所以按 started 判断结果
+    const data = await apiPost<{ started: boolean }>('fonts/fetch')
+    if (data?.started) message.success('已开始下载，完成后刷新可见')
+    else message.warning('冷却中，稍后再试')
+    await loadFonts()
+  } catch (e) {
+    message.error(`触发下载失败：${(e as Error).message}`)
+  } finally {
+    fontFetching.value = false
+  }
+}
+
+// 桥接的 endpoint 校验禁止出现 ?，weight 只能走路径参数
+async function uploadFontWeight(weight: string, file: File) {
+  if (!/\.ttf$/i.test(file.name)) {
+    message.error('只能上传 .ttf 字体文件')
+    return
+  }
+  fontBusyWeight.value = weight
+  try {
+    const data = await upload<{ key: string; size: number; ready: boolean }>(
+      `fonts/upload/${encodeURIComponent(weight)}`,
+      file,
+    )
+    const label = weight === 'regular' ? '常规体' : weight === 'medium' ? '中等体' : weight
+    message.success(`${label}已上传（${fmtMB(Number(data?.size ?? 0))}）`)
+    await loadFonts()
+  } catch (e) {
+    message.error(`上传失败：${(e as Error).message}`)
+  } finally {
+    fontBusyWeight.value = null
   }
 }
 

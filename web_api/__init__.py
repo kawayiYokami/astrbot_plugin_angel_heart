@@ -20,6 +20,17 @@ except ImportError:  # 兼容旧版 AstrBot（无 astrbot.api.web）
     HAS_WEB_API = False
 
 
+async def _get_upload(field: str = "file"):
+    """从 multipart 请求取上传文件；旧版 AstrBot 无此能力，返回 None。"""
+    if not HAS_WEB_API:
+        return None
+    try:
+        files = await request.files()
+    except Exception:
+        return None
+    return files.get(field)
+
+
 def _ok(data: Any = None, message: str = "") -> Any:
     if HAS_WEB_API:
         return json_response({"status": "ok", "message": message, "data": data})
@@ -48,9 +59,14 @@ async def _get_json() -> Dict:
 
 
 def _get_query(name: str, default: str = "") -> str:
-    """读取查询参数，兼容新版 astrbot.api.web 与 quart 两种形态。"""
+    """读取查询参数，兼容新版 astrbot.api.web 与 quart 两种形态。
+
+    新版 request 暴露的是 ``query``（PluginMultiDict），没有 quart 的 ``args``；
+    这里必须分开取，否则 AttributeError 会被吞成「参数不存在」。
+    """
     try:
-        value = request.args.get(name)
+        source = request.query if HAS_WEB_API else request.args
+        value = source.get(name)
     except Exception:
         return default
     if value is None:
@@ -396,6 +412,36 @@ def register_all_routes(
         ),
     ]
 
+    font_api = FontAPI()
+    routes.extend(
+        [
+            (
+                "/astrbot_plugin_angel_heart/fonts",
+                font_api.get_status,
+                ["GET"],
+                "长文转图字体：就绪状态与体积",
+            ),
+            (
+                "/astrbot_plugin_angel_heart/fonts/upload/<weight>",
+                font_api.upload,
+                ["POST"],
+                "上传字体文件（路径参数 weight，表单字段 file）",
+            ),
+            (
+                "/astrbot_plugin_angel_heart/fonts/upload",
+                font_api.upload,
+                ["POST"],
+                "上传字体文件（weight 从 query 或表单读取，兼容旧版）",
+            ),
+            (
+                "/astrbot_plugin_angel_heart/fonts/fetch",
+                font_api.fetch,
+                ["POST"],
+                "手动触发一次字体下载",
+            ),
+        ]
+    )
+
     if prompt_settings is not None:
         prompt_api = PromptSettingsAPI(prompt_settings)
         routes.append(
@@ -592,3 +638,58 @@ class PromptSettingsAPI:
             custom_prompt=payload.get("custom_prompt"),
         )
         return _ok(snapshot, "已保存")
+
+
+class FontAPI:
+    """长文转图字体的状态查询、上传与手动下载。
+
+    字体不随插件分发，默认从 GitHub release 拉取。部署环境连不上 GitHub 时，
+    这里提供一条本地上传通道，走的是同一套「体积 + 字形」校验。
+    """
+
+    async def get_status(self):
+        from ..core import font_manager as fm
+
+        return _ok(fm.status_snapshot())
+
+    async def upload(self, weight: str = ""):
+        from ..core import font_manager as fm
+
+        # 新版桥接禁止 endpoint 里出现 ?，所以 weight 走路径参数；
+        # 无参路由再从 query / 表单兜底，兼容旧版 /api/plug 直连。
+        key = (weight or _get_query("weight") or "").strip()
+        # 先校验字重再取文件：字重是廉价参数校验，且这样非法字重的报错
+        # 不会被「缺文件」掩盖（否则这两条分支在测试里分不开）。
+        if key and key not in fm.WEIGHT_FILES:
+            return _err("只能上传常规字体文件")
+
+        upload = await _get_upload("file")
+        if upload is None:
+            return _err("缺少上传文件（表单字段名必须是 file）")
+        if not key:
+            try:
+                form = await request.form()
+                key = str(form.get("weight") or "").strip()
+            except Exception:
+                key = ""
+        if key not in fm.WEIGHT_FILES:
+            return _err("只能上传常规字体文件")
+
+        try:
+            data = await fm.install_font(key, upload)
+        except ValueError as exc:
+            return _err(str(exc))
+        except Exception as exc:
+            logger.warning(f"AngelHeart: 字体上传失败: {exc}", exc_info=True)
+            return _err(f"字体保存失败: {exc}", 500)
+        return _ok(data, "字体已保存")
+
+    async def fetch(self):
+        from ..core import font_manager as fm
+
+        started = fm.start_download_now()
+        snapshot = fm.status_snapshot()
+        snapshot["started"] = started
+        if started:
+            return _ok(snapshot, "已开始下载")
+        return _ok(snapshot, "冷却中，请稍后再试")

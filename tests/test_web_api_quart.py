@@ -32,7 +32,7 @@ def api_app(tmp_path):
     ledger = type("Ledger", (), {"get_all_chat_ids": staticmethod(lambda: ["chat:g:1"])})()
     fake = FakeContext()
 
-    import web_api as web_api_module
+    import astrbot_plugin_angel_heart.web_api as web_api_module
     web_api_module.register_all_routes(fake, store, manager, ledger)
 
     app = Quart(__name__)
@@ -61,7 +61,7 @@ def make_app_with_chat_sources(tmp_path):
     sources.record("default:GroupMessage:830624502", "绝区零&一条龙开发社群", "group")
     fake = FakeContext()
 
-    import web_api as web_api_module
+    import astrbot_plugin_angel_heart.web_api as web_api_module
     web_api_module.register_all_routes(fake, store, manager, ledger, chat_sources=sources)
 
     app = Quart(__name__)
@@ -233,7 +233,7 @@ async def test_chat_status_merges_runtime_state(tmp_path):
             return 62.0
 
     fake = FakeContext()
-    import web_api as web_api_module
+    import astrbot_plugin_angel_heart.web_api as web_api_module
     web_api_module.register_all_routes(
         fake, store, manager, ledger,
         chat_sources=sources,
@@ -290,7 +290,7 @@ async def test_chat_status_observation_timeout_display(tmp_path):
             return None
 
     fake = FakeContext()
-    import web_api as web_api_module
+    import astrbot_plugin_angel_heart.web_api as web_api_module
     web_api_module.register_all_routes(
         fake, store, manager, ledger,
         chat_sources=sources,
@@ -353,3 +353,125 @@ async def test_chat_status_without_runtime_refs_falls_back(api_app):
     assert item["energy"] is None
     assert item["patrol"] == {"waiting": "", "remaining": 0.0, "total": 0.0}
     assert item["last_decision"] is None
+
+
+def test_get_query_reads_new_style_query(monkeypatch):
+    """新版 request 只有 query、没有 quart 的 args，读错就会静默拿到默认值。
+
+    这是真实链路上抓到的 bug：FastAPI 分支下所有查询参数都读成默认值，
+    上传接口因此永远认不出 weight。
+    """
+    import astrbot_plugin_angel_heart.web_api as web
+
+    class FakeQuery:
+        def get(self, name, default=None):
+            return "regular" if name == "weight" else default
+
+    class FakeRequest:
+        query = FakeQuery()
+
+    monkeypatch.setattr(web, "HAS_WEB_API", True)
+    monkeypatch.setattr(web, "request", FakeRequest())
+
+    assert web._get_query("weight") == "regular"
+    assert web._get_query("missing", "fallback") == "fallback"
+
+
+@pytest.mark.asyncio
+async def test_fonts_upload_accepts_path_param(api_app, monkeypatch, tmp_path):
+    """weight 走路径参数：新版桥接禁止 endpoint 里出现 ?，query 传不过去。
+
+    这里断言路由能被解析到（不是 404），否则前端那个 endpoint 必然失败。
+    """
+    from astrbot_plugin_angel_heart.core import font_manager as fm
+
+    monkeypatch.setattr(fm, "FONT_DIR", tmp_path)
+
+    client = api_app.test_client()
+    resp = await client.post(
+        "/api/plug/astrbot_plugin_angel_heart/fonts/upload/regular"
+    )
+    data = await resp.get_json()
+
+    assert resp.status_code != 404, "路径参数路由没注册上"
+    assert data["status"] == "error"
+    assert "file" in data["message"], "路由通了，只是缺上传文件"
+
+
+@pytest.mark.asyncio
+async def test_fonts_status_route(api_app, monkeypatch, tmp_path):
+    """字体状态接口：结构正确，前端靠它渲染就绪/体积/冷却。"""
+    from astrbot_plugin_angel_heart.core import font_manager as fm
+
+    monkeypatch.setattr(fm, "FONT_DIR", tmp_path)
+    fm._ready = False
+    fm._last_failure = 0.0
+
+    client = api_app.test_client()
+    resp = await client.get("/api/plug/astrbot_plugin_angel_heart/fonts")
+    data = await resp.get_json()
+
+    assert data["status"] == "ok"
+    payload = data["data"]
+    assert payload["ready"] is False
+    assert payload["downloading"] is False
+    assert payload["cooldown_remaining"] == 0
+    assert [w["key"] for w in payload["weights"]] == ["regular"]
+    assert all(w["ready"] is False and w["size"] == 0 for w in payload["weights"])
+
+
+@pytest.mark.asyncio
+async def test_fonts_upload_without_file_errors(api_app, monkeypatch, tmp_path):
+    """quart 回退分支没有 multipart 能力，必须明确报错而不是静默成功。"""
+    from astrbot_plugin_angel_heart.core import font_manager as fm
+
+    monkeypatch.setattr(fm, "FONT_DIR", tmp_path)
+
+    client = api_app.test_client()
+    resp = await client.post(
+        "/api/plug/astrbot_plugin_angel_heart/fonts/upload?weight=regular"
+    )
+    data = await resp.get_json()
+
+    assert data["status"] == "error"
+    assert "file" in data["message"]
+
+
+@pytest.mark.asyncio
+async def test_fonts_upload_rejects_bad_weight(api_app, monkeypatch, tmp_path):
+    from astrbot_plugin_angel_heart.core import font_manager as fm
+
+    monkeypatch.setattr(fm, "FONT_DIR", tmp_path)
+
+    client = api_app.test_client()
+    resp = await client.post(
+        "/api/plug/astrbot_plugin_angel_heart/fonts/upload?weight=bold"
+    )
+    data = await resp.get_json()
+
+    assert data["status"] == "error"
+
+
+@pytest.mark.asyncio
+async def test_fonts_fetch_route(api_app, monkeypatch, tmp_path):
+    """手动下载接口：冷却期外应当真的把任务起起来。"""
+    import asyncio
+
+    from astrbot_plugin_angel_heart.core import font_manager as fm
+
+    monkeypatch.setattr(fm, "FONT_DIR", tmp_path)
+    fm._last_failure = 0.0
+    release = asyncio.Event()
+
+    async def slow():
+        await release.wait()
+
+    monkeypatch.setattr(fm, "_download_all", slow)
+
+    client = api_app.test_client()
+    resp = await client.post("/api/plug/astrbot_plugin_angel_heart/fonts/fetch")
+    data = await resp.get_json()
+
+    assert data["status"] == "ok"
+    assert data["data"]["started"] is True
+    release.set()

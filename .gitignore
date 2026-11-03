@@ -25,3 +25,7 @@ webui/node_modules/
 
 # 运行时遗留数据（cmd_config.json / t2i_templates 等，非源码）
 data/
+
+# 字体不随插件分发，首次转图时按需下载到 fonts/
+fonts/*.ttf
+fonts/*.part
