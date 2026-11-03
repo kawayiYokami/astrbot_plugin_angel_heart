@@ -243,7 +243,6 @@
                 </n-tag>
                 <span class="req-time">{{ item.time }}</span>
                 <span class="req-chat" :title="item.chat_id">{{ shortChatId(item.chat_id) }}</span>
-                <span class="req-meta">{{ item.message_count }} 条 · {{ item.total_chars }} 字</span>
                 <n-tag
                   size="small"
                   :bordered="false"
@@ -252,30 +251,8 @@
                   {{ pairingLabel(item) }}
                 </n-tag>
               </div>
-              <div class="req-line">
-                <span class="req-label">模型</span>
-                <span class="req-value">{{ item.model || '未标注' }}</span>
-              </div>
-              <div class="req-line">
-                <span class="req-label">角色序列</span>
-                <span class="req-value">{{ roleSummary(item) }}</span>
-              </div>
-              <div class="req-messages">
-                <div v-for="(msg, idx) in item.messages" :key="idx" class="req-message">
-                  <div class="req-msg-head">
-                    <span class="req-role" :class="`role-${msg.role}`">{{ msg.role }}</span>
-                    <span v-if="msg.tool_call_id" class="req-call result">
-                      ↩ {{ shortId(msg.tool_call_id) }}
-                    </span>
-                    <span v-for="call in msg.tool_calls || []" :key="call.id" class="req-call">
-                      {{ toolCallName(call) }}({{ shortId(call.id) }})
-                    </span>
-                  </div>
-                  <pre v-if="messageText(msg)" class="req-text">{{ messageText(msg) }}</pre>
-                  <template v-for="call in msg.tool_calls || []" :key="`args-${call.id}`">
-                    <pre v-if="toolCallArgs(call)" class="req-args">{{ toolCallArgs(call) }}</pre>
-                  </template>
-                </div>
+              <div class="req-json-box">
+                <VueJsonPretty :data="item" :deep="5" :show-length="true" />
               </div>
             </div>
           </div>
@@ -370,7 +347,6 @@ import {
   GROUPS,
   type ChatItem,
   type ChatStatusItem,
-  type RequestMessage,
   type RequestRingResponse,
   type RequestSnapshot,
   type TemplateDetail,
@@ -379,6 +355,8 @@ import {
 import { useBridge } from './composables/useBridge'
 import { themeKey } from './theme'
 import SchemaForm from './SchemaForm.vue'
+import VueJsonPretty from 'vue-json-pretty'
+import 'vue-json-pretty/lib/styles.css'
 import type { SchemaMeta } from './schema'
 
 const { apiGet, apiPost } = useBridge()
@@ -827,51 +805,11 @@ async function loadRequestSnapshots() {
   }
 }
 
-// 留档时图片二进制已换成大小标记，这里只做拼接
-function messageText(message: RequestMessage): string {
-  const content = message.content
-  if (content == null) return ''
-  if (typeof content === 'string') return content
-  if (!Array.isArray(content)) return String(content)
-  return content
-    .map((part) => {
-      if (typeof part === 'string') return part
-      const p = part as Record<string, unknown>
-      const type = String(p?.type || '')
-      if (type === 'text' || type === 'input_text') return String(p.text || '')
-      if (type === 'image_url' || type === 'image' || type === 'input_image') {
-        const holder = (p.image_url || p.image) as Record<string, unknown> | undefined
-        return `[图片 ${String(holder?.url ?? '')}]`
-      }
-      return type ? `[${type}]` : ''
-    })
-    .join('')
-}
-
-function toolCallName(call: { function?: { name?: string } }): string {
-  return call.function?.name || 'call'
-}
-
-function toolCallArgs(call: { function?: { arguments?: string } }): string {
-  return call.function?.arguments || ''
-}
-
 // 全局队列里会话混在一起，列表里只显示会话尾号，标题保留全文
 function shortChatId(chatId: string): string {
   if (!chatId) return '未知会话'
   const segments = chatId.split(':').filter(Boolean)
   return segments[segments.length - 1] || chatId
-}
-
-// 角色序列压成一行：相邻同类合并计数，避免三十条拼成一条看不清
-function roleSummary(snapshot: RequestSnapshot): string {
-  const groups: { role: string; count: number }[] = []
-  for (const role of snapshot.role_sequence) {
-    const last = groups[groups.length - 1]
-    if (last && last.role === role) last.count += 1
-    else groups.push({ role, count: 1 })
-  }
-  return groups.map((g) => (g.count > 1 ? `${g.role}×${g.count}` : g.role)).join(' → ')
 }
 
 function pairingLabel(snapshot: RequestSnapshot): string {
@@ -885,12 +823,8 @@ function pairingLabel(snapshot: RequestSnapshot): string {
   return issues.join('、') || '配对异常'
 }
 
-function shortId(id: string): string {
-  if (!id) return '—'
-  return id.length > 12 ? `${id.slice(0, 8)}…` : id
-}
-
-async function loadAll() {  try {
+async function loadAll() {
+  try {
     const data = await apiGet<{
       templates: TemplateDetail[]
       bindings: Record<string, string>
@@ -1206,10 +1140,6 @@ onUnmounted(() => {
   font-variant-numeric: tabular-nums;
 }
 
-.req-meta {
-  color: var(--text-3);
-}
-
 .req-chat {
   color: var(--accent);
   font-family: Consolas, Courier New, monospace;
@@ -1233,94 +1163,36 @@ onUnmounted(() => {
   padding: 10px 12px;
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  min-width: 0;
-}
-
-.req-line {
-  display: flex;
-  gap: 10px;
-  font-size: 12px;
-}
-
-.req-label {
-  flex: 0 0 56px;
-  color: var(--text-3);
-}
-
-.req-value {
-  color: var(--text-1);
-  word-break: break-word;
-}
-
-.req-messages {
-  display: flex;
-  flex-direction: column;
   gap: 8px;
-  margin-top: 4px;
   min-width: 0;
 }
 
-.req-message {
-  border-left: 2px solid var(--glass-divider);
-  padding: 2px 0 2px 8px;
-  min-width: 0;
-}
-
-.req-msg-head {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-}
-
-.req-role {
-  font-weight: 600;
-  color: var(--text-1);
-}
-
-.req-role.role-tool {
-  color: var(--accent);
-}
-
-.req-role.role-system {
-  color: var(--text-3);
-}
-
-.req-call {
-  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
-  font-size: 11px;
-  color: var(--text-2);
-  background: var(--glass-thin-bg, rgba(127, 127, 127, 0.08));
-  border-radius: 4px;
-  padding: 0 4px;
-}
-
-.req-call.result {
-  color: var(--accent);
-}
-
-/* 请求正文按原文展示，超长时内部滚动，不撑破抽屉 */
-.req-text,
-.req-args {
-  margin: 4px 0 0;
-  font-family: inherit;
-  font-size: 12px;
-  line-height: 1.6;
-  color: var(--text-2);
-  white-space: pre-wrap;
-  word-break: break-word;
-  max-height: 180px;
+/* 快照原样交给 json 组件渲染，超长时内部滚动 */
+.req-json-box {
+  background: var(--glass-divider);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px 8px 4px;
+  max-height: 56vh;
   overflow: auto;
 }
 
-.req-args {
-  color: var(--text-3);
-  background: var(--glass-thin-bg, rgba(127, 127, 127, 0.06));
-  border-radius: 6px;
-  padding: 6px 8px;
-  max-height: 120px;
+.req-json-box .vjs-tree {
+  font-family: Consolas, Courier New, monospace;
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+/* 组件自带配色是亮色系的，暗色主题下换成能看清的一组 */
+:root[data-theme='dark'] .req-json-box .vjs-key {
+  color: #8ab4f8;
+}
+
+:root[data-theme='dark'] .req-json-box .vjs-value-string {
+  color: #7ee2a8;
+}
+
+:root[data-theme='dark'] .req-json-box .vjs-value-number {
+  color: #f0b775;
 }
 
 /* 悬浮保存按钮：右下角浮出，带玻璃阴影 */
