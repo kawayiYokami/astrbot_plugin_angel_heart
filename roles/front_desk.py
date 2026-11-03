@@ -28,7 +28,7 @@ from ..core.utils import partition_dialogue_raw, format_final_prompt
 from ..core.image_processor import ImageProcessor
 
 from ..core.fishing_direct_reply import FishingDirectReply
-from ..core.message_processor import MessageProcessor
+from ..core.message_processor import MessageProcessor, ensure_tool_call_pairing
 from ..core.utils.content_utils import convert_content_to_string
 from ..core.utils.message_hits import (
     build_message_metadata,
@@ -2121,6 +2121,23 @@ class FrontDesk:
 
         return new_contexts
 
+    def _ensure_tool_call_pairing(
+        self, chat_id: str, contexts: List[Dict]
+    ) -> List[Dict]:
+        """工具链收口，出请求前保证调用与回执一一配对。"""
+        try:
+            normalized = ensure_tool_call_pairing(contexts)
+        except Exception as e:
+            logger.error(
+                f"AngelHeart[{chat_id}]: 工具链收口失败，按原样下发: {e}", exc_info=True
+            )
+            return contexts
+        if len(normalized) != len(contexts):
+            logger.warning(
+                f"AngelHeart[{chat_id}]: 工具链收口调整上下文条数 {len(contexts)} -> {len(normalized)}"
+            )
+        return normalized
+
     def _collect_non_current_image_urls(
         self, recent_dialogue: List[Dict], current_message_id: str
     ) -> List[str]:
@@ -2405,6 +2422,9 @@ class FrontDesk:
 
         # 5.1 剔除本地文件已失效的图片块，避免本地路径透传给只认 base64/http 的上游
         new_contexts = self._strip_invalid_context_images(chat_id, new_contexts)
+
+        # 5.2 工具链收口：每个 function_call 必须恰好一条 function_call_output
+        new_contexts = self._ensure_tool_call_pairing(chat_id, new_contexts)
 
         # 6. 更新请求对象
         self._update_request(
