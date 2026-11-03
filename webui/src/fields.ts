@@ -136,3 +136,45 @@ export interface ChatStatusItem {
     summary: string
   } | null
 }
+
+/** 请求摘要里单条消息：只保留 role、字数、预览与 call_id */
+export interface RequestMessageDigest {
+  role: string
+  chars: number
+  preview: string
+  tool_calls: { id: string; name: string }[]
+  tool_call_id: string
+}
+
+/** 调用与回执的配对检查结果 */
+export interface RequestPairing {
+  ok: boolean
+  missing: string[]
+  orphan: string[]
+  duplicate_call: string[]
+  duplicate_result: string[]
+}
+
+/** 一次请求的摘要快照 */
+export interface RequestSnapshot {
+  seq: number
+  ts: number
+  time: string
+  chat_id: string
+  source: 'secretary' | 'assistant' | string
+  model: string
+  message_count: number
+  total_chars: number
+  role_sequence: string[]
+  tool_calls: number
+  tool_results: number
+  pairing: RequestPairing
+  messages: RequestMessageDigest[]
+}
+
+export interface RequestRingResponse {
+  available: boolean
+  chats: { chat_id: string; count: number }[]
+  chat_id?: string
+  items: RequestSnapshot[]
+}

@@ -1,5 +1,5 @@
 import asyncio
-from typing import List, Dict
+from typing import List, Dict, Optional
 import json
 import string
 
@@ -63,6 +63,8 @@ class LLMAnalyzer:
         self.context = context  # 存储 context 对象，用于动态获取 provider
         self.config_manager = config_manager  # 唯一配置来源，不在本地留副本
         self.is_ready = False  # 默认认为分析器未就绪
+        # 请求摘要环形队列，由秘书在组装时注入；为 None 时跳过记录
+        self.request_ring = None
 
         # 初始化提示词模块加载器
         self.prompt_loader = PromptModuleLoader()
@@ -204,6 +206,9 @@ class LLMAnalyzer:
         persona_prompt = await self._resolve_persona_prompt(chat_id)
         contexts = [{"role": "user", "content": rules_text}] if rules_text else None
 
+        # 记录秘书这次请求的摘要：system 人格 + 规则 + 待分析对话，重试不重复记
+        self._record_request_snapshot(chat_id, persona_prompt, contexts, prompt)
+
         # 重试机制：最多重试1次，间隔3秒
         max_retries = 1
         retry_delay = 3  # 秒
@@ -240,6 +245,35 @@ class LLMAnalyzer:
                         exc_info=True,
                     )
                     raise
+
+    def _record_request_snapshot(
+        self,
+        chat_id: str,
+        system_prompt: str,
+        contexts: Optional[List[Dict]],
+        prompt: str,
+    ) -> None:
+        """记录秘书这次请求的摘要快照，失败不影响分析。"""
+        ring = self.request_ring
+        if ring is None:
+            return
+        try:
+            messages: List[Dict] = []
+            if system_prompt:
+                messages.append({"role": "system", "content": system_prompt})
+            for item in contexts or []:
+                if isinstance(item, dict):
+                    messages.append(item)
+            if prompt:
+                messages.append({"role": "user", "content": prompt})
+            ring.record(
+                chat_id,
+                source="secretary",
+                messages=messages,
+                model=self.analyzer_model_name,
+            )
+        except Exception as e:
+            logger.debug(f"AngelHeart[{chat_id}]: 秘书请求快照记录失败: {e}")
 
     def _build_prompts(
         self,

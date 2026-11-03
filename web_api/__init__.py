@@ -47,6 +47,17 @@ async def _get_json() -> Dict:
     return data if isinstance(data, dict) else {}
 
 
+def _get_query(name: str, default: str = "") -> str:
+    """读取查询参数，兼容新版 astrbot.api.web 与 quart 两种形态。"""
+    try:
+        value = request.args.get(name)
+    except Exception:
+        return default
+    if value is None:
+        return default
+    return str(value)
+
+
 class ProfileAPI:
     """模板 CRUD 与群聊绑定 API。"""
 
@@ -59,6 +70,7 @@ class ProfileAPI:
         status_transition_manager=None,
         debounce_manager=None,
         last_decisions=None,
+        request_ring=None,
     ):
         self.profile_store = profile_store
         self.config_manager = config_manager
@@ -67,6 +79,7 @@ class ProfileAPI:
         self.status_transition_manager = status_transition_manager
         self.debounce_manager = debounce_manager
         self.last_decisions = last_decisions
+        self.request_snapshots = request_ring
 
     # ---------- 模板 ----------
 
@@ -312,6 +325,40 @@ class ProfileAPI:
             )
         return _ok(items)
 
+    # ---------- 请求摘要快照 ----------
+
+    async def request_ring(self):
+        """最近若干次请求的摘要快照。
+
+        不传 chat_id：返回有快照的会话列表与各自条数。
+        传 chat_id：按时间倒序返回该会话快照，limit 默认 10、上限 50。
+        秘书与助理共用一条队列，items 里的 source 区分二者。
+        """
+        ring = self.request_snapshots
+        if ring is None:
+            return _ok({"available": False, "chats": [], "items": []})
+        try:
+            chats = ring.chats()
+        except Exception as e:
+            return _err(f"读取请求快照失败: {e}")
+
+        chat_id = (_get_query("chat_id") or "").strip()
+        if not chat_id:
+            return _ok({"available": True, "chats": chats, "items": []})
+
+        raw_limit = (_get_query("limit") or "").strip()
+        try:
+            limit = int(raw_limit) if raw_limit else 10
+        except ValueError:
+            limit = 10
+        limit = max(1, min(limit, 50))
+
+        try:
+            items = ring.recent(chat_id, limit)
+        except Exception as e:
+            return _err(f"读取请求快照失败: {e}")
+        return _ok({"available": True, "chats": chats, "chat_id": chat_id, "items": items})
+
 
 def register_all_routes(
     context,
@@ -325,6 +372,7 @@ def register_all_routes(
     config=None,
     plugin=None,
     prompt_settings=None,
+    request_ring=None,
 ) -> None:
     """注册全部 WebUI API 路由。"""
     api = ProfileAPI(
@@ -335,6 +383,7 @@ def register_all_routes(
         status_transition_manager,
         debounce_manager,
         last_decisions,
+        request_ring,
     )
 
     routes = [
@@ -347,6 +396,12 @@ def register_all_routes(
         ("/astrbot_plugin_angel_heart/chats", api.list_chats, ["GET"], "已知群聊列表"),
         ("/astrbot_plugin_angel_heart/chat_sources", api.list_chat_sources, ["GET"], "来源登记列表"),
         ("/astrbot_plugin_angel_heart/chat_status", api.chat_status, ["GET"], "群聊状态仪表盘"),
+        (
+            "/astrbot_plugin_angel_heart/request_ring",
+            api.request_ring,
+            ["GET"],
+            "最近若干次请求的摘要快照（秘书+助理，只存内存）",
+        ),
     ]
 
     if prompt_settings is not None:

@@ -34,6 +34,8 @@ class Secretary:
         # -- 核心组件 --
         # 初始化 LLMAnalyzer：模型名由配置管理器统一提供，不在此处抄写
         self.llm_analyzer = LLMAnalyzer(context, self.config_manager)
+        # 秘书请求也记入同一条请求摘要队列，靠 source 与助理区分
+        self.llm_analyzer.request_ring = getattr(angel_context, "request_ring", None)
 
     async def handle_message_by_state(self, event: AstrMessageEvent) -> SecretaryDecision:
         """

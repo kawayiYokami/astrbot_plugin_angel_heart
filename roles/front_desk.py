@@ -2138,6 +2138,35 @@ class FrontDesk:
             )
         return normalized
 
+    def _record_request_snapshot(self, chat_id: str, req: Any) -> None:
+        """记录本次主模型请求体的摘要快照，失败不影响主流程。
+
+        记的是插件重建之后的请求体：system + contexts + 当前提示词。
+        框架之后还会做压缩、图片预处理与二次请求，那些拿不到。
+        """
+        ring = getattr(self.context, "request_ring", None)
+        if ring is None:
+            return
+        try:
+            messages: List[Dict] = []
+            system_prompt = getattr(req, "system_prompt", "") or ""
+            if system_prompt:
+                messages.append({"role": "system", "content": system_prompt})
+            for item in getattr(req, "contexts", None) or []:
+                if isinstance(item, dict):
+                    messages.append(item)
+            prompt = getattr(req, "prompt", "") or ""
+            if prompt:
+                messages.append({"role": "user", "content": prompt})
+            ring.record(
+                chat_id,
+                source="assistant",
+                messages=messages,
+                model=getattr(req, "model", "") or "",
+            )
+        except Exception as e:
+            logger.debug(f"AngelHeart[{chat_id}]: 请求快照记录失败: {e}")
+
     def _collect_non_current_image_urls(
         self, recent_dialogue: List[Dict], current_message_id: str
     ) -> List[str]:
@@ -2437,6 +2466,9 @@ class FrontDesk:
             current_image_urls=current_image_urls,
             extra_image_urls=extra_image_urls,
         )
+
+        # 6.1 记录本次请求摘要（只进内存环形队列，供 WebUI 排查请求体问题）
+        self._record_request_snapshot(chat_id, req)
 
         if not self._is_valid_final_prompt(final_prompt_str):
             logger.warning(

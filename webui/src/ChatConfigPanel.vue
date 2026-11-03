@@ -122,6 +122,12 @@
               </span>
               <span v-else class="status-value">暂无</span>
             </div>
+            <div class="status-actions">
+              <n-button size="tiny" tertiary @click="openRequestDrawer(item)">
+                <template #icon><Icon icon="lucide:scroll-text" /></template>
+                请求记录
+              </n-button>
+            </div>
             <div class="status-binding">
               <n-select
                 :value="item.template_id"
@@ -208,6 +214,83 @@
       </n-scrollbar>
     </n-layout-content>
 
+    <!-- 请求摘要快照抽屉：最近 10 次请求的 role / call_id 时间线 -->
+    <n-drawer
+      v-model:show="requestDrawerVisible"
+      placement="right"
+      width="min(620px, 100vw)"
+    >
+      <n-drawer-content :title="`请求记录 · ${requestChatName}`" closable>
+        <p class="req-tip">
+          秘书与助理共用一条队列，按时间倒序各列一条。记的是插件重建后的请求体摘要；
+          框架之后的上下文压缩、图片预处理与 skills_like 二次请求不在这里。
+        </p>
+        <n-spin :show="requestLoading">
+          <n-empty
+            v-if="!requestItems.length && !requestLoading"
+            description="暂无请求快照（插件重载后才会开始记录）"
+          />
+          <n-collapse v-else accordion>
+            <n-collapse-item
+              v-for="item in requestItems"
+              :key="item.seq"
+              :name="item.seq"
+            >
+              <template #header>
+                <div class="req-head">
+                  <n-tag
+                    size="small"
+                    :bordered="false"
+                    :type="item.source === 'assistant' ? 'success' : 'info'"
+                  >
+                    {{ item.source === 'assistant' ? '助理' : '秘书' }}
+                  </n-tag>
+                  <span class="req-time">{{ item.time }}</span>
+                  <span class="req-meta">{{ item.message_count }} 条 · {{ item.total_chars }} 字</span>
+                  <n-tag
+                    size="small"
+                    :bordered="false"
+                    :type="item.pairing.ok ? 'default' : 'error'"
+                  >
+                    {{ pairingLabel(item) }}
+                  </n-tag>
+                </div>
+              </template>
+              <div class="req-body">
+                <div class="req-line">
+                  <span class="req-label">模型</span>
+                  <span class="req-value">{{ item.model || '未标注' }}</span>
+                </div>
+                <div class="req-line">
+                  <span class="req-label">角色序列</span>
+                  <span class="req-value">{{ roleSummary(item) }}</span>
+                </div>
+                <div class="req-line">
+                  <span class="req-label">工具</span>
+                  <span class="req-value">
+                    调用 {{ item.tool_calls }} · 回执 {{ item.tool_results }}
+                  </span>
+                </div>
+                <ul class="req-messages">
+                  <li v-for="(msg, idx) in item.messages" :key="idx" class="req-message">
+                    <span class="req-role" :class="`role-${msg.role}`">{{ msg.role }}</span>
+                    <span class="req-chars">{{ msg.chars }} 字</span>
+                    <span v-for="call in msg.tool_calls" :key="call.id" class="req-call">
+                      {{ call.name || 'call' }}({{ shortId(call.id) }})
+                    </span>
+                    <span v-if="msg.tool_call_id" class="req-call result">
+                      ↩ {{ shortId(msg.tool_call_id) }}
+                    </span>
+                    <div v-if="msg.preview" class="req-preview">{{ msg.preview }}</div>
+                  </li>
+                </ul>
+              </div>
+            </n-collapse-item>
+          </n-collapse>
+        </n-spin>
+      </n-drawer-content>
+    </n-drawer>
+
     <!-- 新建模板弹窗 -->
     <n-modal
       v-model:show="createModalVisible"
@@ -265,6 +348,10 @@ import { computed, h, inject, onMounted, onUnmounted, reactive, ref } from 'vue'
 import {
   NButton,
   NCard,
+  NCollapse,
+  NCollapseItem,
+  NDrawer,
+  NDrawerContent,
   NEmpty,
   NForm,
   NFormItem,
@@ -280,9 +367,11 @@ import {
   NRadioGroup,
   NScrollbar,
   NSelect,
+  NSpin,
   NSwitch,
   NTabPane,
   NTabs,
+  NTag,
   useMessage,
 } from 'naive-ui'
 import type { MenuOption } from 'naive-ui'
@@ -291,6 +380,8 @@ import {
   GROUPS,
   type ChatItem,
   type ChatStatusItem,
+  type RequestRingResponse,
+  type RequestSnapshot,
   type TemplateDetail,
   type TemplateConfig,
 } from './fields'
@@ -306,6 +397,12 @@ const { isDark, toggle: toggleTheme } = inject(themeKey)!
 const templates = ref<TemplateDetail[]>([])
 const chats = ref<ChatItem[]>([])
 const statusItems = ref<ChatStatusItem[]>([])
+// ---------- 请求摘要快照抽屉 ----------
+const requestDrawerVisible = ref(false)
+const requestChatId = ref('')
+const requestChatName = ref('')
+const requestItems = ref<RequestSnapshot[]>([])
+const requestLoading = ref(false)
 const kindFilter = ref<'all' | 'group' | 'private'>('all')
 const viewMode = ref<'config' | 'monitor'>('monitor')
 const selectedId = ref<string | null>(null)
@@ -722,8 +819,60 @@ async function refreshStatus() {
   }
 }
 
-async function loadAll() {
+// ---------- 请求摘要快照：打开抽屉并拉取最近 10 次 ----------
+
+async function openRequestDrawer(item: ChatStatusItem) {
+  requestChatId.value = item.chat_id
+  requestChatName.value = item.display_name || item.chat_id
+  requestItems.value = []
+  requestDrawerVisible.value = true
+  await loadRequestSnapshots()
+}
+
+async function loadRequestSnapshots() {
+  if (!requestChatId.value) return
+  requestLoading.value = true
   try {
+    const data = await apiGet<RequestRingResponse>('request_ring', {
+      chat_id: requestChatId.value,
+      limit: 10,
+    })
+    requestItems.value = data.items || []
+  } catch (e) {
+    message.error('读取请求快照失败：' + String((e as Error)?.message || e))
+  } finally {
+    requestLoading.value = false
+  }
+}
+
+// 角色序列压成一行：相邻同类合并计数，避免三十条拼成一条看不清
+function roleSummary(snapshot: RequestSnapshot): string {
+  const groups: { role: string; count: number }[] = []
+  for (const role of snapshot.role_sequence) {
+    const last = groups[groups.length - 1]
+    if (last && last.role === role) last.count += 1
+    else groups.push({ role, count: 1 })
+  }
+  return groups.map((g) => (g.count > 1 ? `${g.role}×${g.count}` : g.role)).join(' → ')
+}
+
+function pairingLabel(snapshot: RequestSnapshot): string {
+  const p = snapshot.pairing
+  if (p.ok) return '配对正常'
+  const issues: string[] = []
+  if (p.duplicate_result.length) issues.push(`重复回执 ${p.duplicate_result.length}`)
+  if (p.missing.length) issues.push(`缺回执 ${p.missing.length}`)
+  if (p.orphan.length) issues.push(`无主回执 ${p.orphan.length}`)
+  if (p.duplicate_call.length) issues.push(`重复调用 ${p.duplicate_call.length}`)
+  return issues.join('、') || '配对异常'
+}
+
+function shortId(id: string): string {
+  if (!id) return '—'
+  return id.length > 12 ? `${id.slice(0, 8)}…` : id
+}
+
+async function loadAll() {  try {
     const data = await apiGet<{
       templates: TemplateDetail[]
       bindings: Record<string, string>
@@ -1015,6 +1164,116 @@ onUnmounted(() => {
 
 .status-binding {
   margin-top: 2px;
+}
+
+.status-actions {
+  margin-top: 2px;
+}
+
+/* ---------- 请求摘要快照抽屉 ---------- */
+
+.req-tip {
+  margin: 0 0 14px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-3);
+}
+
+.req-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 12px;
+}
+
+.req-time {
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.req-meta {
+  color: var(--text-3);
+}
+
+.req-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 2px 0 6px;
+}
+
+.req-line {
+  display: flex;
+  gap: 10px;
+  font-size: 12px;
+}
+
+.req-label {
+  flex: 0 0 56px;
+  color: var(--text-3);
+}
+
+.req-value {
+  color: var(--text-1);
+  word-break: break-word;
+}
+
+.req-messages {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.req-message {
+  border-left: 2px solid var(--glass-divider);
+  padding: 4px 0 4px 8px;
+  font-size: 12px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.req-role {
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+.req-role.role-tool {
+  color: var(--accent);
+}
+
+.req-role.role-system {
+  color: var(--text-3);
+}
+
+.req-chars {
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.req-call {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 11px;
+  color: var(--text-2);
+  background: var(--glass-thin-bg, rgba(127, 127, 127, 0.08));
+  border-radius: 4px;
+  padding: 0 4px;
+}
+
+.req-call.result {
+  color: var(--accent);
+}
+
+.req-preview {
+  flex: 1 0 100%;
+  color: var(--text-2);
+  line-height: 1.5;
+  word-break: break-word;
 }
 
 /* 悬浮保存按钮：右下角浮出，带玻璃阴影 */

@@ -15,6 +15,7 @@ from ..core.angel_heart_status import AngelHeartStatus, StatusTransitionManager
 from ..core.proactive_manager import ProactiveManager
 from ..core.debounce_manager import DebounceManager
 from ..core.work_ledger import WorkLedger
+from ..core.request_ring import RequestRing
 
 
 class AngelHeartContext:
@@ -59,6 +60,9 @@ class AngelHeartContext:
 
         # 助理工作账本：正在/已经处理哪一套活
         self.work_ledger = WorkLedger()
+
+        # 最近若干次请求的摘要快照：秘书与助理共用一条按会话的环形队列，只在内存
+        self.request_ring = RequestRing()
 
         # 群聊调度：助理防抖与巡检（旧单槽门锁已退役）
         self.debounce_manager = DebounceManager(config_manager, work_ledger=self.work_ledger)
