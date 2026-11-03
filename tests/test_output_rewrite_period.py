@@ -41,7 +41,7 @@ class TestHookStripsPeriodBeforeNewline:
         plugin = object.__new__(AngelHeartPlugin)
 
         class _FakeRuntimeTasks:
-            async def run(self, event, fn):
+            async def run(self, event, fn, *, owns_pipeline=False):
                 return await fn()
 
         plugin._runtime_tasks = _FakeRuntimeTasks()
@@ -71,7 +71,7 @@ class TestHookStripsPeriodBeforeNewline:
         plugin = object.__new__(AngelHeartPlugin)
 
         class _FakeRuntimeTasks:
-            async def run(self, event, fn):
+            async def run(self, event, fn, *, owns_pipeline=False):
                 return await fn()
 
         plugin._runtime_tasks = _FakeRuntimeTasks()
@@ -101,7 +101,7 @@ class TestHookStripsPeriodBeforeNewline:
         plugin = object.__new__(AngelHeartPlugin)
 
         class _FakeRuntimeTasks:
-            async def run(self, event, fn):
+            async def run(self, event, fn, *, owns_pipeline=False):
                 return await fn()
 
         plugin._runtime_tasks = _FakeRuntimeTasks()
@@ -134,7 +134,7 @@ class TestStreamingSendState:
         plugin = object.__new__(AngelHeartPlugin)
 
         class _FakeRuntimeTasks:
-            async def run(self, event, fn):
+            async def run(self, event, fn, *, owns_pipeline=False):
                 return await fn()
 
         plugin._runtime_tasks = _FakeRuntimeTasks()

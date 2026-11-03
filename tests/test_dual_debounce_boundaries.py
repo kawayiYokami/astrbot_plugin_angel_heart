@@ -2036,7 +2036,7 @@ class TestRuntimeCleanup:
                 self.released = asyncio.Event()
                 self.calls = 0
 
-            @track_runtime_handler
+            @track_runtime_handler(owns_pipeline=True)
             async def handler(self, _event):
                 self.calls += 1
                 self.started.set()
@@ -2082,8 +2082,12 @@ class TestRuntimeCleanup:
             def __init__(self):
                 self._runtime_tasks = RuntimeTaskTracker()
 
-            @track_runtime_handler
+            @track_runtime_handler(owns_pipeline=True)
             async def handler(self, _event):
+                return None
+
+            @track_runtime_handler
+            async def lifecycle_hook(self, _event):
                 return None
 
         owner = RuntimeOwner()
@@ -2093,6 +2097,7 @@ class TestRuntimeCleanup:
 
         async def pipeline():
             await owner.handler(event)
+            await owner.lifecycle_hook(event)
             provider_started.set()
             try:
                 await asyncio.Event().wait()
@@ -2122,7 +2127,7 @@ class TestRuntimeCleanup:
                 self._runtime_tasks = RuntimeTaskTracker()
                 self.calls = 0
 
-            @track_runtime_handler
+            @track_runtime_handler(owns_pipeline=True)
             async def handler(self, _event):
                 self.calls += 1
 
@@ -2149,7 +2154,7 @@ class TestRuntimeCleanup:
                 self.started = asyncio.Event()
                 self.cancelled = asyncio.Event()
 
-            @track_runtime_handler
+            @track_runtime_handler(owns_pipeline=True)
             async def handler(self, _event):
                 self.started.set()
                 try:
@@ -2170,3 +2175,128 @@ class TestRuntimeCleanup:
         assert pipeline_task.done()
         assert owner._runtime_tasks._children == {}
         assert owner._runtime_tasks._pipelines == {}
+
+    @pytest.mark.asyncio
+    async def test_completed_borrowed_hook_does_not_cancel_external_scheduler(self):
+        from astrbot_plugin_angel_heart.core.runtime_task_tracker import (
+            RuntimeTaskTracker,
+            track_runtime_handler,
+        )
+
+        class RuntimeOwner:
+            def __init__(self):
+                self._runtime_tasks = RuntimeTaskTracker()
+
+            @track_runtime_handler
+            async def lifecycle_hook(self, _event):
+                return None
+
+        owner = RuntimeOwner()
+        event = DummyEvent("external-scheduled-post")
+        hook_completed = asyncio.Event()
+        next_tick = asyncio.Event()
+        scheduler_continued = asyncio.Event()
+
+        async def external_scheduler():
+            await owner.lifecycle_hook(event)
+            hook_completed.set()
+            await next_tick.wait()
+            scheduler_continued.set()
+            await asyncio.Event().wait()
+
+        scheduler = asyncio.create_task(external_scheduler())
+        try:
+            await hook_completed.wait()
+            await owner._runtime_tasks.stop()
+            assert not scheduler.done()
+            assert not event.is_stopped()
+            next_tick.set()
+            await asyncio.wait_for(scheduler_continued.wait(), timeout=1)
+            assert owner._runtime_tasks._children == {}
+            assert owner._runtime_tasks._pipelines == {}
+        finally:
+            scheduler.cancel()
+            await asyncio.gather(scheduler, return_exceptions=True)
+
+    @pytest.mark.asyncio
+    async def test_active_borrowed_hook_stops_child_without_cancelling_scheduler(self):
+        from astrbot_plugin_angel_heart.core.runtime_task_tracker import (
+            RuntimeTaskTracker,
+            track_runtime_handler,
+        )
+
+        class RuntimeOwner:
+            def __init__(self):
+                self._runtime_tasks = RuntimeTaskTracker()
+                self.started = asyncio.Event()
+                self.released = asyncio.Event()
+
+            @track_runtime_handler
+            async def lifecycle_hook(self, _event):
+                self.started.set()
+                try:
+                    await asyncio.Event().wait()
+                finally:
+                    self.released.set()
+
+        owner = RuntimeOwner()
+        event = DummyEvent("external-active-post")
+        scheduler_continued = asyncio.Event()
+
+        async def external_scheduler():
+            await owner.lifecycle_hook(event)
+            scheduler_continued.set()
+            await asyncio.Event().wait()
+
+        scheduler = asyncio.create_task(external_scheduler())
+        try:
+            await owner.started.wait()
+            await owner._runtime_tasks.stop()
+            await asyncio.wait_for(scheduler_continued.wait(), timeout=1)
+            assert not scheduler.done()
+            assert owner.released.is_set()
+            assert event.is_stopped()
+            assert owner._runtime_tasks._children == {}
+            assert owner._runtime_tasks._pipelines == {}
+        finally:
+            scheduler.cancel()
+            await asyncio.gather(scheduler, return_exceptions=True)
+
+    @pytest.mark.asyncio
+    async def test_reentrant_entry_cannot_lease_owned_handler_child_as_pipeline(self):
+        from astrbot_plugin_angel_heart.core.runtime_task_tracker import (
+            RuntimeTaskTracker,
+            track_runtime_handler,
+        )
+
+        class RuntimeOwner:
+            def __init__(self):
+                self._runtime_tasks = RuntimeTaskTracker()
+                self.nested_returned = asyncio.Event()
+
+            @track_runtime_handler(owns_pipeline=True)
+            async def nested_entry(self, _event):
+                return None
+
+            @track_runtime_handler(owns_pipeline=True)
+            async def entry(self, event):
+                await self.nested_entry(event)
+                self.nested_returned.set()
+                await asyncio.Event().wait()
+
+        owner = RuntimeOwner()
+        event = DummyEvent("reentrant-owned-entry")
+        pipeline = asyncio.create_task(owner.entry(event))
+        try:
+            await owner.nested_returned.wait()
+            assert list(owner._runtime_tasks._pipelines) == [pipeline]
+            assert not (
+                owner._runtime_tasks._children.keys()
+                & owner._runtime_tasks._pipelines.keys()
+            )
+            await owner._runtime_tasks.stop()
+            assert event.is_stopped()
+            assert pipeline.done()
+        finally:
+            pipeline.cancel()
+            await asyncio.gather(pipeline, return_exceptions=True)
