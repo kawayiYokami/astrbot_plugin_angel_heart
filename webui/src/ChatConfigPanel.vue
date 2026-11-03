@@ -77,7 +77,13 @@
       <template v-if="viewMode === 'monitor'">
         <div class="content-header">
           <h2>联系人监控</h2>
-          <span class="content-sub">群聊与私聊的在场状态、巡检与最近决策，每 3 秒自动刷新</span>
+          <div class="content-header-side">
+            <span class="content-sub">群聊与私聊的在场状态、巡检与最近决策，每 3 秒自动刷新</span>
+            <n-button size="tiny" tertiary @click="openRequestDrawer">
+              <template #icon><Icon icon="lucide:scroll-text" /></template>
+              最近请求
+            </n-button>
+          </div>
         </div>
         <n-radio-group v-model:value="kindFilter" class="kind-filter">
           <n-radio-button value="all">全部</n-radio-button>
@@ -121,12 +127,6 @@
                 {{ item.last_decision.summary || '无说明' }}
               </span>
               <span v-else class="status-value">暂无</span>
-            </div>
-            <div class="status-actions">
-              <n-button size="tiny" tertiary @click="openRequestDrawer(item)">
-                <template #icon><Icon icon="lucide:scroll-text" /></template>
-                请求记录
-              </n-button>
             </div>
             <div class="status-binding">
               <n-select
@@ -214,79 +214,71 @@
       </n-scrollbar>
     </n-layout-content>
 
-    <!-- 请求摘要快照抽屉：最近 10 次请求的 role / call_id 时间线 -->
+    <!-- 请求快照抽屉：全局最近 10 次请求的原貌 -->
     <n-drawer
       v-model:show="requestDrawerVisible"
       placement="right"
-      width="min(620px, 100vw)"
+      width="min(760px, 100vw)"
     >
-      <n-drawer-content :title="`请求记录 · ${requestChatName}`" closable>
+      <n-drawer-content title="最近 10 次请求" closable>
         <p class="req-tip">
-          秘书与助理共用一条队列，按时间倒序各列一条。记的是插件重建后的请求体摘要；
+          全局只留 10 条，秘书与助理各占一条，实际能回看大约 5 轮。
+          记的是插件重建后的请求体原文，图片二进制换成大小标记，其余原样；
           框架之后的上下文压缩、图片预处理与 skills_like 二次请求不在这里。
         </p>
         <n-spin :show="requestLoading">
           <n-empty
             v-if="!requestItems.length && !requestLoading"
-            description="暂无请求快照（插件重载后才会开始记录）"
+            description="暂无请求（插件重载后才会开始记录）"
           />
-          <n-collapse v-else accordion>
-            <n-collapse-item
-              v-for="item in requestItems"
-              :key="item.seq"
-              :name="item.seq"
-            >
-              <template #header>
-                <div class="req-head">
-                  <n-tag
-                    size="small"
-                    :bordered="false"
-                    :type="item.source === 'assistant' ? 'success' : 'info'"
-                  >
-                    {{ item.source === 'assistant' ? '助理' : '秘书' }}
-                  </n-tag>
-                  <span class="req-time">{{ item.time }}</span>
-                  <span class="req-meta">{{ item.message_count }} 条 · {{ item.total_chars }} 字</span>
-                  <n-tag
-                    size="small"
-                    :bordered="false"
-                    :type="item.pairing.ok ? 'default' : 'error'"
-                  >
-                    {{ pairingLabel(item) }}
-                  </n-tag>
-                </div>
-              </template>
-              <div class="req-body">
-                <div class="req-line">
-                  <span class="req-label">模型</span>
-                  <span class="req-value">{{ item.model || '未标注' }}</span>
-                </div>
-                <div class="req-line">
-                  <span class="req-label">角色序列</span>
-                  <span class="req-value">{{ roleSummary(item) }}</span>
-                </div>
-                <div class="req-line">
-                  <span class="req-label">工具</span>
-                  <span class="req-value">
-                    调用 {{ item.tool_calls }} · 回执 {{ item.tool_results }}
-                  </span>
-                </div>
-                <ul class="req-messages">
-                  <li v-for="(msg, idx) in item.messages" :key="idx" class="req-message">
+          <div v-else class="req-list">
+            <div v-for="item in requestItems" :key="item.seq" class="req-card">
+              <div class="req-head">
+                <n-tag
+                  size="small"
+                  :bordered="false"
+                  :type="item.source === 'assistant' ? 'success' : 'info'"
+                >
+                  {{ item.source === 'assistant' ? '助理' : '秘书' }}
+                </n-tag>
+                <span class="req-time">{{ item.time }}</span>
+                <span class="req-chat" :title="item.chat_id">{{ shortChatId(item.chat_id) }}</span>
+                <span class="req-meta">{{ item.message_count }} 条 · {{ item.total_chars }} 字</span>
+                <n-tag
+                  size="small"
+                  :bordered="false"
+                  :type="item.pairing.ok ? 'default' : 'error'"
+                >
+                  {{ pairingLabel(item) }}
+                </n-tag>
+              </div>
+              <div class="req-line">
+                <span class="req-label">模型</span>
+                <span class="req-value">{{ item.model || '未标注' }}</span>
+              </div>
+              <div class="req-line">
+                <span class="req-label">角色序列</span>
+                <span class="req-value">{{ roleSummary(item) }}</span>
+              </div>
+              <div class="req-messages">
+                <div v-for="(msg, idx) in item.messages" :key="idx" class="req-message">
+                  <div class="req-msg-head">
                     <span class="req-role" :class="`role-${msg.role}`">{{ msg.role }}</span>
-                    <span class="req-chars">{{ msg.chars }} 字</span>
-                    <span v-for="call in msg.tool_calls" :key="call.id" class="req-call">
-                      {{ call.name || 'call' }}({{ shortId(call.id) }})
-                    </span>
                     <span v-if="msg.tool_call_id" class="req-call result">
                       ↩ {{ shortId(msg.tool_call_id) }}
                     </span>
-                    <div v-if="msg.preview" class="req-preview">{{ msg.preview }}</div>
-                  </li>
-                </ul>
+                    <span v-for="call in msg.tool_calls || []" :key="call.id" class="req-call">
+                      {{ toolCallName(call) }}({{ shortId(call.id) }})
+                    </span>
+                  </div>
+                  <pre v-if="messageText(msg)" class="req-text">{{ messageText(msg) }}</pre>
+                  <template v-for="call in msg.tool_calls || []" :key="`args-${call.id}`">
+                    <pre v-if="toolCallArgs(call)" class="req-args">{{ toolCallArgs(call) }}</pre>
+                  </template>
+                </div>
               </div>
-            </n-collapse-item>
-          </n-collapse>
+            </div>
+          </div>
         </n-spin>
       </n-drawer-content>
     </n-drawer>
@@ -348,8 +340,6 @@ import { computed, h, inject, onMounted, onUnmounted, reactive, ref } from 'vue'
 import {
   NButton,
   NCard,
-  NCollapse,
-  NCollapseItem,
   NDrawer,
   NDrawerContent,
   NEmpty,
@@ -380,6 +370,7 @@ import {
   GROUPS,
   type ChatItem,
   type ChatStatusItem,
+  type RequestMessage,
   type RequestRingResponse,
   type RequestSnapshot,
   type TemplateDetail,
@@ -396,13 +387,11 @@ const { isDark, toggle: toggleTheme } = inject(themeKey)!
 
 const templates = ref<TemplateDetail[]>([])
 const chats = ref<ChatItem[]>([])
-const statusItems = ref<ChatStatusItem[]>([])
-// ---------- 请求摘要快照抽屉 ----------
+// ---------- 请求快照抽屉：全局最近 10 次 ----------
 const requestDrawerVisible = ref(false)
-const requestChatId = ref('')
-const requestChatName = ref('')
 const requestItems = ref<RequestSnapshot[]>([])
 const requestLoading = ref(false)
+const statusItems = ref<ChatStatusItem[]>([])
 const kindFilter = ref<'all' | 'group' | 'private'>('all')
 const viewMode = ref<'config' | 'monitor'>('monitor')
 const selectedId = ref<string | null>(null)
@@ -819,30 +808,59 @@ async function refreshStatus() {
   }
 }
 
-// ---------- 请求摘要快照：打开抽屉并拉取最近 10 次 ----------
+// ---------- 请求快照：全局最近 10 次 ----------
 
-async function openRequestDrawer(item: ChatStatusItem) {
-  requestChatId.value = item.chat_id
-  requestChatName.value = item.display_name || item.chat_id
-  requestItems.value = []
+async function openRequestDrawer() {
   requestDrawerVisible.value = true
   await loadRequestSnapshots()
 }
 
 async function loadRequestSnapshots() {
-  if (!requestChatId.value) return
   requestLoading.value = true
   try {
-    const data = await apiGet<RequestRingResponse>('request_ring', {
-      chat_id: requestChatId.value,
-      limit: 10,
-    })
+    const data = await apiGet<RequestRingResponse>('request_ring')
     requestItems.value = data.items || []
   } catch (e) {
     message.error('读取请求快照失败：' + String((e as Error)?.message || e))
   } finally {
     requestLoading.value = false
   }
+}
+
+// 留档时图片二进制已换成大小标记，这里只做拼接
+function messageText(message: RequestMessage): string {
+  const content = message.content
+  if (content == null) return ''
+  if (typeof content === 'string') return content
+  if (!Array.isArray(content)) return String(content)
+  return content
+    .map((part) => {
+      if (typeof part === 'string') return part
+      const p = part as Record<string, unknown>
+      const type = String(p?.type || '')
+      if (type === 'text' || type === 'input_text') return String(p.text || '')
+      if (type === 'image_url' || type === 'image' || type === 'input_image') {
+        const holder = (p.image_url || p.image) as Record<string, unknown> | undefined
+        return `[图片 ${String(holder?.url ?? '')}]`
+      }
+      return type ? `[${type}]` : ''
+    })
+    .join('')
+}
+
+function toolCallName(call: { function?: { name?: string } }): string {
+  return call.function?.name || 'call'
+}
+
+function toolCallArgs(call: { function?: { arguments?: string } }): string {
+  return call.function?.arguments || ''
+}
+
+// 全局队列里会话混在一起，列表里只显示会话尾号，标题保留全文
+function shortChatId(chatId: string): string {
+  if (!chatId) return '未知会话'
+  const segments = chatId.split(':').filter(Boolean)
+  return segments[segments.length - 1] || chatId
 }
 
 // 角色序列压成一行：相邻同类合并计数，避免三十条拼成一条看不清
@@ -1166,11 +1184,7 @@ onUnmounted(() => {
   margin-top: 2px;
 }
 
-.status-actions {
-  margin-top: 2px;
-}
-
-/* ---------- 请求摘要快照抽屉 ---------- */
+/* ---------- 请求快照抽屉 ---------- */
 
 .req-tip {
   margin: 0 0 14px;
@@ -1196,11 +1210,31 @@ onUnmounted(() => {
   color: var(--text-3);
 }
 
-.req-body {
+.req-chat {
+  color: var(--accent);
+  font-family: Consolas, Courier New, monospace;
+}
+
+.content-header-side {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.req-list {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 2px 0 6px;
+  gap: 12px;
+}
+
+.req-card {
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
 }
 
 .req-line {
@@ -1220,22 +1254,25 @@ onUnmounted(() => {
 }
 
 .req-messages {
-  list-style: none;
-  margin: 4px 0 0;
-  padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
+  margin-top: 4px;
+  min-width: 0;
 }
 
 .req-message {
   border-left: 2px solid var(--glass-divider);
-  padding: 4px 0 4px 8px;
-  font-size: 12px;
+  padding: 2px 0 2px 8px;
+  min-width: 0;
+}
+
+.req-msg-head {
   display: flex;
   flex-wrap: wrap;
-  align-items: baseline;
+  align-items: center;
   gap: 6px;
+  font-size: 12px;
 }
 
 .req-role {
@@ -1251,11 +1288,6 @@ onUnmounted(() => {
   color: var(--text-3);
 }
 
-.req-chars {
-  color: var(--text-3);
-  font-variant-numeric: tabular-nums;
-}
-
 .req-call {
   font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
   font-size: 11px;
@@ -1269,11 +1301,26 @@ onUnmounted(() => {
   color: var(--accent);
 }
 
-.req-preview {
-  flex: 1 0 100%;
+/* 请求正文按原文展示，超长时内部滚动，不撑破抽屉 */
+.req-text,
+.req-args {
+  margin: 4px 0 0;
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.6;
   color: var(--text-2);
-  line-height: 1.5;
+  white-space: pre-wrap;
   word-break: break-word;
+  max-height: 180px;
+  overflow: auto;
+}
+
+.req-args {
+  color: var(--text-3);
+  background: var(--glass-thin-bg, rgba(127, 127, 127, 0.06));
+  border-radius: 6px;
+  padding: 6px 8px;
+  max-height: 120px;
 }
 
 /* 悬浮保存按钮：右下角浮出，带玻璃阴影 */

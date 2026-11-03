@@ -137,13 +137,19 @@ export interface ChatStatusItem {
   } | null
 }
 
-/** 请求摘要里单条消息：只保留 role、字数、预览与 call_id */
-export interface RequestMessageDigest {
+/** 请求里的一次工具调用（原文形态） */
+export interface RequestToolCall {
+  id: string
+  type?: string
+  function?: { name?: string; arguments?: string }
+}
+
+/** 请求里的一条消息：原文保留，只有内联图片变成大小标记 */
+export interface RequestMessage {
   role: string
-  chars: number
-  preview: string
-  tool_calls: { id: string; name: string }[]
-  tool_call_id: string
+  content?: string | Array<Record<string, unknown>> | null
+  tool_calls?: RequestToolCall[]
+  tool_call_id?: string
 }
 
 /** 调用与回执的配对检查结果 */
@@ -155,7 +161,7 @@ export interface RequestPairing {
   duplicate_result: string[]
 }
 
-/** 一次请求的摘要快照 */
+/** 一次请求的快照 */
 export interface RequestSnapshot {
   seq: number
   ts: number
@@ -169,7 +175,7 @@ export interface RequestSnapshot {
   tool_calls: number
   tool_results: number
   pairing: RequestPairing
-  messages: RequestMessageDigest[]
+  messages: RequestMessage[]
 }
 
 export interface RequestRingResponse {

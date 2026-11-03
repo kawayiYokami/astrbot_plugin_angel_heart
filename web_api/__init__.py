@@ -328,33 +328,25 @@ class ProfileAPI:
     # ---------- 请求摘要快照 ----------
 
     async def request_ring(self):
-        """最近若干次请求的摘要快照。
+        """最近若干次请求的快照。
 
-        不传 chat_id：返回有快照的会话列表与各自条数。
-        传 chat_id：按时间倒序返回该会话快照，limit 默认 10、上限 50。
-        秘书与助理共用一条队列，items 里的 source 区分二者。
+        全局只留最近 10 次，秘书与助理共用一条队列，靠 source 区分。
+        可传 chat_id 只看该会话，limit 限制返回条数（默认全部）。
         """
         ring = self.request_snapshots
         if ring is None:
             return _ok({"available": False, "chats": [], "items": []})
-        try:
-            chats = ring.chats()
-        except Exception as e:
-            return _err(f"读取请求快照失败: {e}")
 
         chat_id = (_get_query("chat_id") or "").strip()
-        if not chat_id:
-            return _ok({"available": True, "chats": chats, "items": []})
-
         raw_limit = (_get_query("limit") or "").strip()
         try:
-            limit = int(raw_limit) if raw_limit else 10
+            limit = int(raw_limit) if raw_limit else 0
         except ValueError:
-            limit = 10
-        limit = max(1, min(limit, 50))
+            limit = 0
 
         try:
-            items = ring.recent(chat_id, limit)
+            items = ring.recent(chat_id or None, limit or None)
+            chats = ring.chats()
         except Exception as e:
             return _err(f"读取请求快照失败: {e}")
         return _ok({"available": True, "chats": chats, "chat_id": chat_id, "items": items})
@@ -400,7 +392,7 @@ def register_all_routes(
             "/astrbot_plugin_angel_heart/request_ring",
             api.request_ring,
             ["GET"],
-            "最近若干次请求的摘要快照（秘书+助理，只存内存）",
+            "最近 10 次请求的快照（全局，只存内存）",
         ),
     ]
 
