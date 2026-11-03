@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import List, Dict, Tuple, Optional
 from urllib.parse import unquote, urlparse
 from . import utils
+from .utils.message_utils import retain_complete_history_blocks
 
 # 条件导入：当缺少astrbot依赖时使用Mock
 from astrbot.api import logger
@@ -606,6 +607,7 @@ class ConversationLedger:
                 else:
                     break
             retained.reverse()
+            retained = retain_complete_history_blocks(formal, retained)
             retained_ids = {id(m) for m in retained}
             discarded = [m for m in formal if id(m) not in retained_ids]
 
@@ -742,6 +744,7 @@ class ConversationLedger:
                         else []
                     )
 
+            retained = retain_complete_history_blocks(messages, retained)
             retained_ids = {id(m) for m in retained}
             discarded = [m for m in messages if id(m) not in retained_ids]
 
@@ -821,6 +824,7 @@ class ConversationLedger:
                         break
                 retained.reverse()
 
+            retained = retain_complete_history_blocks(base_messages, retained)
             ts = retained[0].get("timestamp", time.time()) if retained else time.time()
             retained_ids = {id(m) for m in retained}
             summary_image_refs = self._collect_message_image_refs(
@@ -1014,7 +1018,9 @@ class ConversationLedger:
                                 # 保留这条消息
                                 new_messages.append(msg)
 
-                        ledger_data["messages"] = new_messages
+                        ledger_data["messages"] = retain_complete_history_blocks(
+                            original_messages, new_messages
+                        )
                         affected_chat_ids.append(chat_id)
 
         for chat_id in affected_chat_ids:

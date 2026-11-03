@@ -37,7 +37,11 @@ from ..core.utils.message_hits import (
     parse_pipe_phrases,
     parse_space_phrases,
 )
-from ..core.utils.message_utils import serialize_content_parts
+from ..core.utils.message_utils import (
+    normalize_history_tool_pairs,
+    retain_complete_history_blocks,
+    serialize_content_parts,
+)
 
 # 导入状态枚举
 from ..core.angel_heart_status import AngelHeartStatus, StatusChecker
@@ -1276,34 +1280,34 @@ class FrontDesk:
         self, history_records: List[Dict], needed_count: int
     ) -> List[Dict]:
         """将 AstrBot 官方 conversation history 转为 AngelHeart 内部消息格式。"""
+        normalized_records = []
+        for record in history_records:
+            if not isinstance(record, dict):
+                continue
+            normalized_record = self._convert_astrbot_history_record(record)
+            if normalized_record is not None:
+                normalized_records.append(normalized_record)
+
         selected_records = []
         used_tokens = 0
         message_limit = min(needed_count, self.ASTRBOT_HISTORY_MESSAGE_LIMIT)
 
-        for record in reversed(history_records):
-            if not isinstance(record, dict):
-                continue
-
-            role = record.get("role")
-            if role not in ("user", "assistant", "tool"):
-                continue
-
+        for record in reversed(normalized_records):
             content = self._extract_text_from_astrbot_history_record(record)
             content_tokens = self._estimate_text_tokens(content)
             if used_tokens + content_tokens > self.ASTRBOT_HISTORY_TEXT_TOKEN_LIMIT:
                 break
 
-            normalized_record = self._convert_astrbot_history_record(record)
-            if normalized_record is None:
-                continue
-
-            selected_records.append(normalized_record)
+            selected_records.append(record)
             used_tokens += content_tokens
 
             if len(selected_records) >= message_limit:
                 break
 
         selected_records.reverse()
+        selected_records = retain_complete_history_blocks(
+            normalized_records, selected_records
+        )
 
         base_timestamp = time.time() - max(len(selected_records), 1)
         for index, message in enumerate(selected_records):
@@ -2288,7 +2292,7 @@ class FrontDesk:
     ):
         """更新请求对象"""
         # 完全覆盖原有的 contexts
-        req.contexts = contexts
+        req.contexts = normalize_history_tool_pairs(contexts)
 
         # 只在当前提示词有效时覆盖 req.prompt；否则保留原始当前轮输入。
         if self._is_valid_final_prompt(final_prompt):
