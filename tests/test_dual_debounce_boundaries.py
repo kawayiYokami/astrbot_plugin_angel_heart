@@ -2263,6 +2263,32 @@ class TestRuntimeCleanup:
             await asyncio.gather(scheduler, return_exceptions=True)
 
     @pytest.mark.asyncio
+    async def test_stopped_borrowed_hook_rejects_call_and_stops_event(self):
+        from astrbot_plugin_angel_heart.core.runtime_task_tracker import (
+            RuntimeTaskTracker,
+            track_runtime_handler,
+        )
+
+        class RuntimeOwner:
+            def __init__(self):
+                self._runtime_tasks = RuntimeTaskTracker()
+                self.calls = 0
+
+            @track_runtime_handler
+            async def lifecycle_hook(self, _event):
+                self.calls += 1
+
+        owner = RuntimeOwner()
+        await owner._runtime_tasks.stop()
+        event = DummyEvent("stopped-borrowed-hook")
+
+        assert await owner.lifecycle_hook(event) is None
+        assert event.is_stopped()
+        assert owner.calls == 0
+        assert owner._runtime_tasks._children == {}
+        assert owner._runtime_tasks._pipelines == {}
+
+    @pytest.mark.asyncio
     async def test_reentrant_entry_cannot_lease_owned_handler_child_as_pipeline(self):
         from astrbot_plugin_angel_heart.core.runtime_task_tracker import (
             RuntimeTaskTracker,
