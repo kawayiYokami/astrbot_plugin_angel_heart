@@ -223,7 +223,7 @@ class AngelHeartContext:
 
     def start_leave_reply_cooldown(self, chat_id: str) -> None:
         """离场应答成功发送后，启动下一次离场应答的冷却。"""
-        cooldown_duration = self.config_manager.leave_reply_cooldown_duration
+        cooldown_duration = self.config_manager.for_chat(chat_id).leave_reply_cooldown_duration
         self.leave_reply_cooldown_until[chat_id] = time.time() + cooldown_duration
         logger.info(
             f"AngelHeart[{chat_id}]: 离场应答进入冷却期，冷却时间 {cooldown_duration} 秒"
