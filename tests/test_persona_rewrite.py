@@ -108,6 +108,25 @@ def test_rewrite_keeps_framework_selected_examples_without_reusing_old_prefix(
     )
 
 
+def test_rewrite_marks_unflagged_examples_without_mutating_persona():
+    fd, event, req, resolver = _scenario()
+    examples = [
+        {"role": "user", "content": "示例提问"},
+        {"role": "assistant", "content": "示例回答"},
+    ]
+    snapshot = copy.deepcopy(examples)
+    resolver.return_value = (
+        "selected", {"_begin_dialogs_processed": examples}, None, False
+    )
+
+    asyncio.run(fd.rewrite_prompt_for_llm(event.unified_msg_origin, event, req))
+
+    assert req.contexts[:2] == [{**message, "_no_save": True} for message in snapshot]
+    assert examples == snapshot
+    assert all("_no_save" not in message for message in examples)
+    assert all(copy is not original for copy, original in zip(req.contexts, examples))
+
+
 def test_persona_change_uses_new_examples_on_the_next_rewrite():
     fd, event, req, resolver = _scenario()
     resolver.side_effect = [
