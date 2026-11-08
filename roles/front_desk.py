@@ -30,6 +30,7 @@ from ..core.image_processor import ImageProcessor
 from ..core.fishing_direct_reply import FishingDirectReply
 from ..core.message_processor import MessageProcessor
 from ..core.utils.content_utils import convert_content_to_string
+from ..core.utils.reply_metadata import normalize_reply_targets
 from ..core.utils.message_hits import (
     build_message_metadata,
     extract_plain_body_from_components,
@@ -442,6 +443,14 @@ class FrontDesk:
                 else time.time()
             ),
         }
+        # 只保存上游显式引用的 ID；引用链/图片按需读取，避免重复下载和历史递归展开。
+        reply_targets = normalize_reply_targets([
+            getattr(component, "id", None)
+            for component in message_chain
+            if isinstance(component, Reply)
+        ])
+        if reply_targets:
+            new_message["reply_to_message_ids"] = reply_targets
         # 6. 将消息添加到 Ledger。上下文清理由压缩策略统一控制，不再因离场状态触发。
         self.context.conversation_ledger.add_message(chat_id, new_message)
 

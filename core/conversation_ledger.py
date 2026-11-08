@@ -11,6 +11,7 @@ from typing import List, Dict, Tuple, Optional
 from urllib.parse import unquote, urlparse
 from . import utils
 from .utils.message_utils import retain_complete_history_blocks
+from .utils.reply_metadata import collect_reply_relations, format_reply_metadata
 
 # 条件导入：当缺少astrbot依赖时使用Mock
 from astrbot.api import logger
@@ -327,7 +328,11 @@ class ConversationLedger:
         return summary
 
     def _make_summary_message(
-        self, summary: str, timestamp: float, image_refs: List[str] | None = None
+        self,
+        summary: str,
+        timestamp: float,
+        image_refs: List[str] | None = None,
+        reply_relations: List[Dict] | None = None,
     ) -> Dict:
         message = {
             "role": "user",
@@ -339,6 +344,8 @@ class ConversationLedger:
         }
         if image_refs:
             message["image_refs"] = list(dict.fromkeys(image_refs))
+        if reply_relations:
+            message["reply_relations"] = collect_reply_relations(reply_relations)
         return message
 
     def _collect_message_image_refs(self, messages: List[Dict] | None) -> List[str]:
@@ -484,6 +491,7 @@ class ConversationLedger:
             return messages
         ts = messages[0].get("timestamp", time.time()) if messages else time.time()
         summary_refs: List[str] = []
+        summary_reply_relations: List[Dict] = []
         for msg in messages:
             if msg.get("kind") in (
                 "context_summary",
@@ -491,8 +499,12 @@ class ConversationLedger:
                 "context_compaction",
             ):
                 summary_refs = self._collect_message_image_refs([msg])
+                summary_reply_relations = collect_reply_relations([msg])
                 break
-        return [self._make_summary_message(summary, ts, summary_refs)] + messages
+        summary_message = self._make_summary_message(
+            summary, ts, summary_refs, summary_reply_relations
+        )
+        return [summary_message] + messages
 
     def organize_context(
         self,
@@ -663,7 +675,11 @@ class ConversationLedger:
             if not text and self._is_tool_message(msg):
                 text = "[tool]"
             if text:
-                lines.append(f"- {name}: {text[:300]}")
+                reference_text = format_reply_metadata(msg)
+                if reference_text:
+                    lines.append(f"- {name}: {reference_text}\n{text[:300]}")
+                else:
+                    lines.append(f"- {name}: {text[:300]}")
         body = "\n".join(lines)
         return (
             "你正在为私聊会话生成上下文交接摘要。\n"
@@ -764,7 +780,9 @@ class ConversationLedger:
                 ts = retained[0].get("timestamp", time.time()) if retained else time.time()
                 summary_image_refs = self._collect_message_image_refs(discarded)
                 retained = [
-                    self._make_summary_message(summary, ts, summary_image_refs)
+                    self._make_summary_message(
+                        summary, ts, summary_image_refs, collect_reply_relations(discarded)
+                    )
                 ] + retained
             original = len(messages)
             ledger["messages"] = retained
@@ -827,12 +845,13 @@ class ConversationLedger:
             retained = retain_complete_history_blocks(base_messages, retained)
             ts = retained[0].get("timestamp", time.time()) if retained else time.time()
             retained_ids = {id(m) for m in retained}
-            summary_image_refs = self._collect_message_image_refs(
-                [m for m in messages if id(m) not in retained_ids]
-            )
+            discarded = [m for m in messages if id(m) not in retained_ids]
+            summary_image_refs = self._collect_message_image_refs(discarded)
             ledger["current_summary"] = summary_text
             ledger["messages"] = [
-                self._make_summary_message(summary_text, ts, summary_image_refs)
+                self._make_summary_message(
+                    summary_text, ts, summary_image_refs, collect_reply_relations(discarded)
+                )
             ] + retained
             self._last_compression_time[chat_id] = time.time()
             logger.info(
