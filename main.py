@@ -8,6 +8,7 @@ AngelHeart插件 - 天使心智能群聊/私聊交互插件
 - 私聊：只缓存，主框架队列（无法向运行中子代理注入消息）
 """
 
+import asyncio
 import time
 import json
 import os
@@ -22,7 +23,7 @@ from astrbot.core.star.filter.command import CommandFilter
 from astrbot.core.star.filter.command_group import CommandGroupFilter
 
 from astrbot.api import logger
-from astrbot.core.message.components import Plain, At, AtAll, Reply, Poke
+from astrbot.core.message.components import Plain, At, AtAll, Reply, Poke, Image
 
 from .core.config_manager import ConfigManager
 from .core.config_migration import run_migration
@@ -37,6 +38,8 @@ from .core.angel_heart_context import AngelHeartContext
 from .core.chat_profile import ChatProfileStore
 from .core.runtime_task_tracker import RuntimeTaskTracker, track_runtime_handler
 from .tools.image_understanding import AngelDescribeImageTool
+from .core.long_image_render import render_long_text_image
+from .core.font_manager import ensure_fonts, shutdown_fonts
 
 # 在框架加载 schema 之前执行配置迁移
 run_migration()
@@ -66,7 +69,9 @@ class AngelHeartPlugin(Star):
         self.config = config if isinstance(config, dict) else {}
         self.config_manager = ConfigManager(self.config)
         self.context = context
-        self._whitelist_cache = self._prepare_whitelist()
+        # 白名单派生集合：按配置版本懒重建，热保存后下一轮自动跟上
+        self._whitelist_cache: set = set()
+        self._whitelist_token = None
         self._runtime_tasks = RuntimeTaskTracker()
 
         # -- 获取插件数据目录 --
@@ -126,6 +131,7 @@ class AngelHeartPlugin(Star):
                 config=self.config,
                 plugin=self,
                 prompt_settings=self.prompt_settings,
+                request_ring=self.angel_context.request_ring,
             )
             logger.info("AngelHeart: 已注册群聊配置 WebUI API 路由")
         except Exception as e:  # pragma: no cover - 兼容旧版 AstrBot
@@ -195,7 +201,7 @@ class AngelHeartPlugin(Star):
         # 白名单检查：如果启用了白名单，非白名单会话不接管上下文
         if self.config_manager.whitelist_enabled:
             plain_chat_id = self._get_plain_chat_id(chat_id)
-            if plain_chat_id not in self._whitelist_cache:
+            if plain_chat_id not in self._ensure_whitelist():
                 return
 
         if self._is_private_chat(chat_id):
@@ -273,29 +279,27 @@ class AngelHeartPlugin(Star):
     def on_config_saved(self):
         """WebUI 保存全局配置后的热生效钩子。
 
-        ConfigManager 持有 config dict 引用，其余组件动态读取自动生效；
-        此处只刷新显式缓存：prompt 模板（依赖 is_reasoning_model）与白名单。
+        配置值一律动态读取，热保存即生效；这里只递增配置版本，让按版本懒
+        重建的派生状态（分析器输出契约、白名单集合）在下一轮自动刷新。
         """
+        self.config_manager.mark_changed()
         self.secretary.llm_analyzer.reload_config(self.config_manager)
-        self._whitelist_cache = self._prepare_whitelist()
         logger.info(
             f"AngelHeart: 配置已保存并即时生效。助理休息: {self.config_manager.waiting_time}秒"
         )
 
     def reload_config(self, new_config: dict):
-        """重新加载配置"""
-        self.config_manager = ConfigManager(new_config or {})
-        # 群聊独立配置模板存储保持同一实例，重新挂载
-        self.config_manager.attach_profile_store(self.profile_store)
-        # 更新角色与调度器的配置管理器
-        self.secretary.config_manager = self.config_manager
-        self.front_desk.config_manager = self.config_manager
-        self.front_desk.status_checker.config_manager = self.config_manager
-        self.angel_context.config_manager = self.config_manager
-        self.angel_context.debounce_manager.config_manager = self.config_manager
-        # 重新加载LLM分析器的配置
-        self.secretary.llm_analyzer.reload_config(self.config_manager)
-        self._whitelist_cache = self._prepare_whitelist()
+        """重新加载配置：原地更新共享配置对象，不新造配置管理器。
+
+        各组件（媒体缓存、钓鱼回复、工作账本等）持有的都是同一个
+        ConfigManager 引用，换实例会让没逐个改引用的组件继续读旧配置。
+        原地更新键值后，所有读取点下一轮就吃到新值。
+        """
+        data = new_config if isinstance(new_config, dict) else {}
+        if data is not self.config:
+            self.config.clear()
+            self.config.update(data)
+        self.on_config_saved()
 
         logger.info(
             f"AngelHeart: 配置已更新。助理休息: {self.config_manager.waiting_time}秒，"
@@ -444,7 +448,7 @@ class AngelHeartPlugin(Star):
             # 3. (可选) 检查白名单
             if self.config_manager.whitelist_enabled:
                 plain_chat_id = self._get_plain_chat_id(chat_id)
-                if plain_chat_id not in self._whitelist_cache:
+                if plain_chat_id not in self._ensure_whitelist():
                     logger.debug(f"AngelHeart[{chat_id}]: 会话未在白名单中, 已忽略")
                     return False
 
@@ -542,13 +546,92 @@ class AngelHeartPlugin(Star):
                                     f"AngelHeart[{chat_id}]: 已清理句末句号: '{original_text[:50]}...' -> '{cleaned_text[:50]}...'"
                                 )
 
+            # 3. 先按原文结算能量：转图后消息链只剩图片，字符数会归零
             await self.angel_context.debounce_manager.charge_reply_energy(
                 event, message_chain
             )
+
+            # 4. 长回复整条转长图：文字换成图片，避免群里刷屏。
+            #    账本记录的是 run_context.messages 里的原文，这里只替换发送用的消息链。
+            await self._try_convert_long_reply(event, message_chain)
             logger.debug(f"AngelHeart[{chat_id}]: 消息链中的Markdown格式清洗完成。")
         except Exception as e:
             logger.error(f"AngelHeart[{chat_id}]: strip_markdown_on_decorating_result 处理异常: {e}", exc_info=True)
             # 不重新抛出异常，避免影响消息发送流程
+
+    def _long_image_brand(self) -> str:
+        """页眉左侧显示唤醒名，取 alias 里最长的那一个。"""
+        alias = (self.config_manager.alias or "").strip()
+        candidates = [part.strip() for part in alias.split("|") if part.strip()]
+        return max(candidates, key=len) if candidates else ""
+
+    async def _try_convert_long_reply(self, event: AstrMessageEvent, message_chain) -> bool:
+        """回复文本够长时整条排成长图，超过单页高度就分成多张。
+
+        判定放在 Markdown 清洗之前：清洗会把标题、列表压成纯文本，长图要的
+        正是这些结构。转换失败一律返回 False，让原文本照常发出。
+
+        只替换发送用的消息链；会话账本记的是 run_context.messages 里的原文，
+        图片不会流进历史上下文。
+        """
+        if not self.config_manager.long_text_image_enabled:
+            return False
+
+        # 只处理纯文本消息链：带 @、回复引用、已有图片的回复保持原样
+        if not message_chain or any(
+            not isinstance(component, Plain) for component in message_chain
+        ):
+            return False
+
+        text = "".join(
+            component.text or "" for component in message_chain if isinstance(component, Plain)
+        ).strip()
+        if len(text) < self.config_manager.long_text_image_threshold:
+            return False
+
+        # 字体是转图的前提：没就绪就不转，宁可发原文，也不要让容器里的系统字体
+        # 顶上把字形弄走样。首次未就绪会顺手触发后台下载，这一次不等它。
+        if not await ensure_fonts():
+            logger.debug(
+                f"AngelHeart[{event.unified_msg_origin}]: 字体未就绪，跳过转图"
+            )
+            return False
+
+        # 排版是重 CPU 活，同一时刻只跑一份，避免并发长回复把内存叠起来
+        lock = getattr(self, "_long_image_lock", None)
+        if lock is None:
+            lock = self._long_image_lock = asyncio.Lock()
+
+        try:
+            async with lock:
+                image_paths = await asyncio.to_thread(
+                    render_long_text_image,
+                    text,
+                    brand=self._long_image_brand(),
+                    footer_left=f"共 {len(text)} 字",
+                    footer_right=time.strftime("%Y-%m-%d"),
+                )
+        except Exception as e:
+            logger.error(
+                f"AngelHeart[{event.unified_msg_origin}]: 长回复转图失败，按原文本发送: {e}",
+                exc_info=True,
+            )
+            return False
+
+        if not image_paths:
+            logger.warning(
+                f"AngelHeart[{event.unified_msg_origin}]: 长回复转图没有产出图片，按原文本发送"
+            )
+            return False
+
+        message_chain.clear()
+        for path in image_paths:
+            message_chain.append(Image.fromFileSystem(path))
+        logger.info(
+            f"AngelHeart[{event.unified_msg_origin}]: 长回复已转长图"
+            f"（{len(text)} 字，{len(image_paths)} 张）"
+        )
+        return True
 
     @filter.after_message_sent(priority=100)
     @track_runtime_handler
@@ -705,6 +788,14 @@ class AngelHeartPlugin(Star):
         """预处理白名单，将其转换为 set 以获得 O(1) 的查找性能。"""
         return {str(cid) for cid in self.config_manager.chat_ids}
 
+    def _ensure_whitelist(self) -> set:
+        """按配置版本懒重建白名单集合，配置热保存后自动跟上。"""
+        token = (id(self.config_manager), getattr(self.config_manager, "revision", 0))
+        if token != self._whitelist_token:
+            self._whitelist_cache = self._prepare_whitelist()
+            self._whitelist_token = token
+        return self._whitelist_cache
+
     def _extract_sent_message_content(self, event: AstrMessageEvent) -> str:
         """从事件中提取发送的消息内容"""
         try:
@@ -773,4 +864,7 @@ class AngelHeartPlugin(Star):
         """插件被卸载/停用时调用"""
         await self._runtime_tasks.stop()
         await self._cleanup_all_waiting_resources()
+        # 字体后台下载不归 _runtime_tasks 收口（它不是 handler），单独取消，
+        # 否则插件目录被删后它还在往里面写 .part。
+        await shutdown_fonts()
         logger.info("💖 AngelHeart 插件已终止")

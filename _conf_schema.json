@@ -333,6 +333,18 @@
         "description": "清理句末句号",
         "hint": "启用后，会清理换行符之前的中文句号（。），例如「你好。\\n明天见。」变为「你好\\n明天见」。",
         "default": false
+      },
+      "long_text_image_enabled": {
+        "type": "bool",
+        "description": "长回复转长图",
+        "hint": "启用后，超过阈值的纯文本回复会先排版成竖版长图再发送，避免群里刷屏。带艾特、引用或图片的回复保持原样。",
+        "default": true
+      },
+      "long_text_image_threshold": {
+        "type": "int",
+        "description": "转图字数阈值",
+        "hint": "回复字数达到该值才转长图。低于此值直接发文字，因为两句话排成图反而更费劲。",
+        "default": 800
       }
     }
   }

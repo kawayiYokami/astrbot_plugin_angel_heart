@@ -843,12 +843,7 @@ class ConversationLedger:
         self._cleanup_unreferenced_media_cache(chat_id)
 
     def _normalize_managed_cache_path(self, path: str | Path) -> str:
-        try:
-            if self.image_cache.is_managed_path(path):
-                return str(Path(path).resolve(strict=False))
-        except Exception:
-            pass
-        return ""
+        return self.image_cache.normalize_managed_path(path)
 
     def _extract_managed_cache_paths_from_message(self, msg: dict) -> set[str]:
         paths: set[str] = set()
@@ -916,7 +911,7 @@ class ConversationLedger:
             return False
 
     def _cleanup_unreferenced_media_cache(self, chat_id: str = ""):
-        """扫描插件媒体缓存，删除不在当前账本引用集合里的文件。
+        """登记媒体缓存清理：引用集合在主线程算，删除交执行域。
 
         会话仍在调度中时只登记待清理，不删文件：运行中的请求与工具续轮
         持有的是请求发出那一刻的图片路径，账本此时折叠消息并不代表文件没人用。
@@ -927,11 +922,9 @@ class ConversationLedger:
                 f"AngelHeart[{chat_id}]: 会话调度中，媒体缓存清理延后"
             )
             return
-        referenced_paths = self._collect_referenced_cache_paths(chat_id)
-        for path in self.image_cache.iter_managed_files(chat_id):
-            normalized = self._normalize_managed_cache_path(path)
-            if normalized and normalized not in referenced_paths:
-                self.image_cache.remove_managed_path(path)
+        self.image_cache.schedule_cleanup(
+            chat_id, self._collect_referenced_cache_paths(chat_id)
+        )
         self._pending_cleanup.discard(chat_id)
 
     def flush_pending_cleanup(self, chat_id: str = "") -> None:
@@ -1686,6 +1679,9 @@ class ConversationLedger:
                     connection.close()
                 except sqlite3.Error:
                     pass
+
+        # 媒体执行域收尾：等已提交的删除任务做完，避免重载时丢任务或残留线程
+        self.image_cache.shutdown(wait=True)
 
     BROKEN_IMAGE_CAPTION = "图裂了，图片无法打开，可能是网络问题或者格式不支持"
     EXPIRED_IMAGE_CAPTION = "因为时间问题，图片缓存内容已经丢失"

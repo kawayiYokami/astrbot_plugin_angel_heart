@@ -59,6 +59,27 @@ def build_image_attachment_text(msg: dict) -> str:
     )
 
 
+def _sender_header(
+    sender_name: str,
+    sender_id: str,
+    role_label: str,
+    chat_id: str,
+    time_tag: str,
+    history: bool = False,
+) -> str:
+    """拼发言人抬头。群聊与私聊、正常消息与历史回退都从这里出，格式只有一套。
+
+    群聊身份统一写在最前面（群友 / 管理 / 群主），后面只跟 ID，不再在括号里
+    重复一次角色；私聊没有角色，只留昵称与 ID。
+    """
+    is_group = ":GroupMessage:" in chat_id
+    if history:
+        return f"[{role_label}(历史记录)]" if is_group else "[历史记录]"
+    if is_group:
+        return f"[{role_label}: {sender_name} (ID: {sender_id})]{time_tag}"
+    return f"[{sender_name} (ID: {sender_id})]{time_tag}"
+
+
 def format_message_to_text(
     msg: dict,
     alias: str = "AngelHeart",
@@ -90,7 +111,7 @@ def format_message_to_text(
 
     formatted_body = ""
 
-    # 1. User (群友) 消息处理
+    # 1. User 消息处理
     if role == "user":
         if msg.get("sender_name") == "tool_result":
             # 工具结果处理
@@ -110,19 +131,15 @@ def format_message_to_text(
                 time_tag = format_absolute_time(timestamp)
 
             chat_id = str(msg.get("chat_id", "") or "")
-            if ":GroupMessage:" in chat_id:
-                role_label = msg.get("sender_role") or "群友"
-                header = f"[群友: {sender_name} (ID: {sender_id}, {role_label})]{time_tag}"
-            else:
-                header = f"[{sender_name} (ID: {sender_id})]{time_tag}"
+            role_label = msg.get("sender_role") or "群友"
+            header = _sender_header(sender_name, sender_id, role_label, chat_id, time_tag)
             formatted_body = f"{header}: {text_content}"
         else:
-            # 历史记录回退
+            # 历史记录回退：拿不到发言人，身份统一写成「群友」
             chat_id = str(msg.get("chat_id", "") or "")
-            if ":GroupMessage:" in chat_id:
-                formatted_body = f"[群友(历史记录)]\n[内容: 文本]\n{text_content}"
-            else:
-                formatted_body = f"[历史记录]\n[内容: 文本]\n{text_content}"
+            role_label = "群友"
+            header = _sender_header("", "", role_label, chat_id, "", history=True)
+            formatted_body = f"{header}\n[内容: 文本]\n{text_content}"
 
     # 2. Assistant (助理) 消息处理
     elif role == "assistant":

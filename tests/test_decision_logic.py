@@ -89,7 +89,6 @@ class TestAnalyzerForwardCondition:
                 mock_loader.conversation_template = "{historical_context}\n{recent_dialogue}"
 
                 analyzer = LLMAnalyzer(
-                    analyzer_model_name="mock-model",
                     context=None,
                     config_manager=config,
                 )
