@@ -30,6 +30,7 @@ from ..core.image_processor import ImageProcessor
 from ..core.fishing_direct_reply import FishingDirectReply
 from ..core.message_processor import MessageProcessor, ensure_tool_call_pairing
 from ..core.utils.content_utils import convert_content_to_string
+from ..core.utils.reply_metadata import normalize_reply_targets
 from ..core.utils.message_hits import (
     build_message_metadata,
     extract_plain_body_from_components,
@@ -37,7 +38,11 @@ from ..core.utils.message_hits import (
     parse_pipe_phrases,
     parse_space_phrases,
 )
-from ..core.utils.message_utils import serialize_content_parts
+from ..core.utils.message_utils import (
+    normalize_history_tool_pairs,
+    retain_complete_history_blocks,
+    serialize_content_parts,
+)
 
 # 导入状态枚举
 from ..core.angel_heart_status import AngelHeartStatus, StatusChecker
@@ -438,6 +443,14 @@ class FrontDesk:
                 else time.time()
             ),
         }
+        # 只保存上游显式引用的 ID；引用链/图片按需读取，避免重复下载和历史递归展开。
+        reply_targets = normalize_reply_targets([
+            getattr(component, "id", None)
+            for component in message_chain
+            if isinstance(component, Reply)
+        ])
+        if reply_targets:
+            new_message["reply_to_message_ids"] = reply_targets
         # 6. 将消息添加到 Ledger。上下文清理由压缩策略统一控制，不再因离场状态触发。
         self.context.conversation_ledger.add_message(chat_id, new_message)
 
@@ -1276,34 +1289,34 @@ class FrontDesk:
         self, history_records: List[Dict], needed_count: int
     ) -> List[Dict]:
         """将 AstrBot 官方 conversation history 转为 AngelHeart 内部消息格式。"""
+        normalized_records = []
+        for record in history_records:
+            if not isinstance(record, dict):
+                continue
+            normalized_record = self._convert_astrbot_history_record(record)
+            if normalized_record is not None:
+                normalized_records.append(normalized_record)
+
         selected_records = []
         used_tokens = 0
         message_limit = min(needed_count, self.ASTRBOT_HISTORY_MESSAGE_LIMIT)
 
-        for record in reversed(history_records):
-            if not isinstance(record, dict):
-                continue
-
-            role = record.get("role")
-            if role not in ("user", "assistant", "tool"):
-                continue
-
+        for record in reversed(normalized_records):
             content = self._extract_text_from_astrbot_history_record(record)
             content_tokens = self._estimate_text_tokens(content)
             if used_tokens + content_tokens > self.ASTRBOT_HISTORY_TEXT_TOKEN_LIMIT:
                 break
 
-            normalized_record = self._convert_astrbot_history_record(record)
-            if normalized_record is None:
-                continue
-
-            selected_records.append(normalized_record)
+            selected_records.append(record)
             used_tokens += content_tokens
 
             if len(selected_records) >= message_limit:
                 break
 
         selected_records.reverse()
+        selected_records = retain_complete_history_blocks(
+            normalized_records, selected_records
+        )
 
         base_timestamp = time.time() - max(len(selected_records), 1)
         for index, message in enumerate(selected_records):
@@ -1561,7 +1574,7 @@ class FrontDesk:
             # 4. 获取时间戳
             timestamp = raw_msg.get("time", time.time())
 
-            return {
+            converted = {
                 "role": role,
                 "content": content,
                 "sender_id": sender_id,
@@ -1571,6 +1584,18 @@ class FrontDesk:
                 "timestamp": timestamp,
                 "source": "qq_api",
             }
+            chain = raw_msg.get("message")
+            if isinstance(chain, list):
+                targets = normalize_reply_targets([
+                    part["data"].get("id")
+                    for part in chain
+                    if isinstance(part, dict)
+                    and part.get("type") == "reply"
+                    and isinstance(part.get("data"), dict)
+                ])
+                if targets:
+                    converted["reply_to_message_ids"] = targets
+            return converted
 
         except Exception as e:
             logger.warning(f"转换QQ消息格式失败: {e}")
@@ -2126,7 +2151,7 @@ class FrontDesk:
     ) -> List[Dict]:
         """工具链收口，出请求前保证调用与回执一一配对。"""
         try:
-            normalized = ensure_tool_call_pairing(contexts)
+            normalized = ensure_tool_call_pairing(normalize_history_tool_pairs(contexts))
         except Exception as e:
             logger.error(
                 f"AngelHeart[{chat_id}]: 工具链收口失败，按原样下发: {e}", exc_info=True
@@ -2334,7 +2359,7 @@ class FrontDesk:
     ):
         """更新请求对象"""
         # 完全覆盖原有的 contexts
-        req.contexts = contexts
+        req.contexts = normalize_history_tool_pairs(contexts)
 
         # 只在当前提示词有效时覆盖 req.prompt；否则保留原始当前轮输入。
         if self._is_valid_final_prompt(final_prompt):
