@@ -112,7 +112,7 @@ def format_message_to_text(
             chat_id = str(msg.get("chat_id", "") or "")
             if ":GroupMessage:" in chat_id:
                 role_label = msg.get("sender_role") or "群友"
-                header = f"[群友: {sender_name} (ID: {sender_id}, {role_label})]{time_tag}"
+                header = f"[{role_label}: {sender_name} (ID: {sender_id})]{time_tag}"
             else:
                 header = f"[{sender_name} (ID: {sender_id})]{time_tag}"
             formatted_body = f"{header}: {text_content}"
