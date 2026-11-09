@@ -241,7 +241,14 @@ def test_assistant_reference_target_has_id_and_body_without_native_payload_chang
     source = {"role": "assistant", "source_message_id": "100", "content": "synthetic answer"}
     assert "[本消息 ID: 100]" in format_message_to_text(source)
     assert "synthetic answer" in format_message_to_text(source)
-    assert MessageProcessor("机器人").process_message(source) == {"role": "assistant", "content": "synthetic answer"}
+    result = MessageProcessor("机器人").process_message(source)
+    assert result["role"] == "assistant"
+    assert "[本消息 ID: 100]" in result["content"]
+    assert result["content"].endswith("synthetic answer")
+    parts = [{"type": "think", "think": "synthetic reasoning"}, {"type": "text", "text": "synthetic answer"}]
+    result = MessageProcessor("机器人").process_message({**source, "content": parts})
+    assert result["content"][1:] == parts
+    assert source["content"] == "synthetic answer"
 
 
 @pytest.mark.parametrize("parts, expected", [
