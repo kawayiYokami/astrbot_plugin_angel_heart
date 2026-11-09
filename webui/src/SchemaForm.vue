@@ -21,7 +21,7 @@
         <!-- 二级子分区（组内嵌套 object）：小标题软分段 -->
         <div v-if="row.kind === 'subsection'" class="subsection-title">{{ row.title }}</div>
 
-        <div v-else class="field-row" :class="{ 'is-block': row.block }">
+        <div v-else class="field-row" :class="{ 'is-block': row.block, 'is-disabled': isDisabled(row) }">
           <div class="field-main">
             <div class="field-label">{{ row.label }}</div>
             <div v-if="row.hint" class="field-hint">{{ row.hint }}</div>
@@ -32,6 +32,7 @@
               v-if="isProviderSelect(row.meta, row.path)"
               :value="asString(getIn(row.path))"
               :options="providerOptions(row.path)"
+              :disabled="isDisabled(row)"
               clearable
               placeholder="选择模型提供商"
               class="control-select"
@@ -41,6 +42,7 @@
               v-else-if="isKvMap(row.meta, row.path)"
               :value="kvRowsOf(row.path)"
               :on-create="kvCreate"
+              :disabled="isDisabled(row)"
               class="control-kv"
               @update:value="(rows: unknown[]) => kvWrite(row.path, rows)"
             >
@@ -64,12 +66,14 @@
             <n-switch
               v-else-if="row.meta.type === 'bool'"
               :value="!!getIn(row.path)"
+              :disabled="isDisabled(row)"
               @update:value="(v: unknown) => setIn(row.path, v)"
             />
             <n-input-number
               v-else-if="row.meta.type === 'int'"
               :value="asNumber(getIn(row.path))"
               :precision="0"
+              :disabled="isDisabled(row)"
               class="control-number"
               @update:value="(v: unknown) => setIn(row.path, v)"
             />
@@ -77,12 +81,14 @@
               v-else-if="row.meta.type === 'float'"
               :value="asNumber(getIn(row.path))"
               :step="0.1"
+              :disabled="isDisabled(row)"
               class="control-number"
               @update:value="(v: unknown) => setIn(row.path, v)"
             />
             <n-dynamic-tags
               v-else-if="row.meta.type === 'list'"
               :value="asList(getIn(row.path))"
+              :disabled="isDisabled(row)"
               @update:value="(v: unknown) => setIn(row.path, v)"
             />
             <n-input
@@ -90,11 +96,13 @@
               :value="asString(getIn(row.path))"
               type="textarea"
               :rows="3"
+              :disabled="isDisabled(row)"
               @update:value="(v: unknown) => setIn(row.path, v)"
             />
             <n-input
               v-else
               :value="asString(getIn(row.path))"
+              :disabled="isDisabled(row)"
               class="control-text"
               @update:value="(v: unknown) => setIn(row.path, v)"
             />
@@ -273,6 +281,17 @@ function asList(v: unknown): string[] {
   return Array.isArray(v) ? v.map(String) : []
 }
 
+// 从属字段：左侧开关关掉时，右侧控件只禁用、不清值，重新打开即恢复原设置
+const FIELD_DEPENDS: Record<string, { on: string; active: (v: unknown) => boolean }> = {
+  long_text_image_threshold: { on: 'long_text_image_enabled', active: (v) => v !== false },
+}
+
+function isDisabled(row: FieldRow): boolean {
+  const rule = FIELD_DEPENDS[row.path[row.path.length - 1]]
+  if (!rule) return false
+  return !rule.active(getIn([...row.path.slice(0, -1), rule.on]))
+}
+
 // ---------- JSON 映射字段：行式键值编辑器替代手写 JSON ----------
 interface KvRow {
   key: string
@@ -415,6 +434,16 @@ function providerOptions(path: string[]) {
   font-size: 12px;
   color: var(--sf-muted);
   line-height: 1.55;
+}
+
+/* 从属字段被上游开关关掉：整体压淡，但值仍留在配置里 */
+.field-row.is-disabled .field-label,
+.field-row.is-disabled .field-hint {
+  opacity: 0.45;
+}
+
+.field-row.is-disabled .field-control {
+  opacity: 0.55;
 }
 
 /* 控件列：不伸展、右贴；具体控件各自定宽 */

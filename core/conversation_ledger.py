@@ -607,7 +607,13 @@ class ConversationLedger:
                 return False
 
             # 保留最近正文预算，其余交给 LLM 摘要
-            content_budget = self.config_manager.context_content_retain_tokens
+            relation_budget = self._count_tokens_in_text(format_reply_metadata({
+                "kind": "context_summary",
+                "reply_relations": collect_reply_relations(formal),
+            }))
+            content_budget = max(
+                0, self.config_manager.context_content_retain_tokens - relation_budget
+            )
             retained = []
             used = 0
             for msg in reversed(formal):
@@ -706,7 +712,13 @@ class ConversationLedger:
             if not messages:
                 return False
 
-            content_budget = self.config_manager.context_content_retain_tokens
+            relation_budget = self._count_tokens_in_text(format_reply_metadata({
+                "kind": "context_summary",
+                "reply_relations": collect_reply_relations(messages),
+            }))
+            content_budget = max(
+                0, self.config_manager.context_content_retain_tokens - relation_budget
+            )
             tool_budget = self.config_manager.context_tool_retain_tokens if keep_tools else 0
 
             retained_content = []
@@ -763,6 +775,11 @@ class ConversationLedger:
             retained = retain_complete_history_blocks(messages, retained)
             retained_ids = {id(m) for m in retained}
             discarded = [m for m in messages if id(m) not in retained_ids]
+            summary_sources = [
+                m for m in messages
+                if id(m) not in retained_ids
+                or m.get("kind") in ("context_summary", "summary_context", "context_compaction")
+            ]
 
             if not discarded and not old_summary:
                 return False
@@ -778,10 +795,10 @@ class ConversationLedger:
             ]
             if summary:
                 ts = retained[0].get("timestamp", time.time()) if retained else time.time()
-                summary_image_refs = self._collect_message_image_refs(discarded)
+                summary_image_refs = self._collect_message_image_refs(summary_sources)
                 retained = [
                     self._make_summary_message(
-                        summary, ts, summary_image_refs, collect_reply_relations(discarded)
+                        summary, ts, summary_image_refs, collect_reply_relations(summary_sources)
                     )
                 ] + retained
             original = len(messages)
@@ -828,7 +845,13 @@ class ConversationLedger:
                     m for m in base_messages if m.get("timestamp", 0) >= keep_from_timestamp
                 ]
             else:
-                content_budget = self.config_manager.context_content_retain_tokens
+                relation_budget = self._count_tokens_in_text(format_reply_metadata({
+                    "kind": "context_summary",
+                    "reply_relations": collect_reply_relations(messages),
+                }))
+                content_budget = max(
+                    0, self.config_manager.context_content_retain_tokens - relation_budget
+                )
                 retained = []
                 used = 0
                 for msg in reversed(base_messages):
@@ -866,12 +889,7 @@ class ConversationLedger:
         self._cleanup_unreferenced_media_cache(chat_id)
 
     def _normalize_managed_cache_path(self, path: str | Path) -> str:
-        try:
-            if self.image_cache.is_managed_path(path):
-                return str(Path(path).resolve(strict=False))
-        except Exception:
-            pass
-        return ""
+        return self.image_cache.normalize_managed_path(path)
 
     def _extract_managed_cache_paths_from_message(self, msg: dict) -> set[str]:
         paths: set[str] = set()
@@ -939,7 +957,7 @@ class ConversationLedger:
             return False
 
     def _cleanup_unreferenced_media_cache(self, chat_id: str = ""):
-        """扫描插件媒体缓存，删除不在当前账本引用集合里的文件。
+        """登记媒体缓存清理：引用集合在主线程算，删除交执行域。
 
         会话仍在调度中时只登记待清理，不删文件：运行中的请求与工具续轮
         持有的是请求发出那一刻的图片路径，账本此时折叠消息并不代表文件没人用。
@@ -950,11 +968,9 @@ class ConversationLedger:
                 f"AngelHeart[{chat_id}]: 会话调度中，媒体缓存清理延后"
             )
             return
-        referenced_paths = self._collect_referenced_cache_paths(chat_id)
-        for path in self.image_cache.iter_managed_files(chat_id):
-            normalized = self._normalize_managed_cache_path(path)
-            if normalized and normalized not in referenced_paths:
-                self.image_cache.remove_managed_path(path)
+        self.image_cache.schedule_cleanup(
+            chat_id, self._collect_referenced_cache_paths(chat_id)
+        )
         self._pending_cleanup.discard(chat_id)
 
     def flush_pending_cleanup(self, chat_id: str = "") -> None:
@@ -1610,6 +1626,8 @@ class ConversationLedger:
             if key not in ["content", "timestamp", "is_processed"] and isinstance(value, str):
                 total += self._count_tokens_in_text(value)
 
+        total += self._count_tokens_in_text(format_reply_metadata(msg))
+
         return total
 
     def _estimate_tokens(self, chat_id: str) -> int:
@@ -1650,6 +1668,8 @@ class ConversationLedger:
                 for key, value in msg.items():
                     if key not in ["content", "timestamp", "is_processed"] and isinstance(value, str):
                         total_tokens += self._count_tokens_in_text(value)
+
+                total_tokens += self._count_tokens_in_text(format_reply_metadata(msg))
 
             logger.info(
                 f"AngelHeart[{chat_id}]: 上下文Token测算完成，"
@@ -1711,6 +1731,9 @@ class ConversationLedger:
                     connection.close()
                 except sqlite3.Error:
                     pass
+
+        # 媒体执行域收尾：等已提交的删除任务做完，避免重载时丢任务或残留线程
+        self.image_cache.shutdown(wait=True)
 
     BROKEN_IMAGE_CAPTION = "图裂了，图片无法打开，可能是网络问题或者格式不支持"
     EXPIRED_IMAGE_CAPTION = "因为时间问题，图片缓存内容已经丢失"

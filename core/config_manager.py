@@ -32,6 +32,17 @@ class ConfigManager:
         self._profile_store = None
         self._prompt_settings = None
         self._active_chat_id = ""
+        # 配置版本：热保存后递增，派生状态按它判断是否需要重建
+        self._revision = 0
+
+    @property
+    def revision(self) -> int:
+        """配置版本号。热保存后由 mark_changed() 递增。"""
+        return self._revision
+
+    def mark_changed(self) -> None:
+        """标记配置已变更，让持有派生状态的组件下一轮重建。"""
+        self._revision += 1
 
     def attach_profile_store(self, profile_store) -> None:
         """挂载群聊配置模板存储；重复挂载会替换旧引用。"""
@@ -56,6 +67,7 @@ class ConfigManager:
         view._profile_store = self._profile_store
         view._prompt_settings = self._prompt_settings
         view._active_chat_id = str(chat_id or "")
+        view._revision = self._revision
         return view
 
     def _get_grouped(self, group: str, key: str, default=None):
@@ -326,6 +338,14 @@ class ConfigManager:
     def strip_period_before_newline(self) -> bool:
         return self._get_grouped("output_rewrite", "strip_period_before_newline", False)
 
+    @property
+    def long_text_image_enabled(self) -> bool:
+        return self._get_grouped("output_rewrite", "long_text_image_enabled", True)
+
+    @property
+    def long_text_image_threshold(self) -> int:
+        return self._get_grouped("output_rewrite", "long_text_image_threshold", 800)
+
     # ========== 工具方法 ==========
 
     def get_config_summary(self) -> dict:
@@ -335,7 +355,6 @@ class ConfigManager:
                 "assistant_debounce_time": self.assistant_debounce_time,
                 "secretary_debounce_time": self.secretary_debounce_time,
                 "accelerate_debounce_time": self.accelerate_debounce_time,
-                "cache_expiry": self.cache_expiry,
                 "observation_timeout": self.observation_timeout,
             },
             "context_compression": {

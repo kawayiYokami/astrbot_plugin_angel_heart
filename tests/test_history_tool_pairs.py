@@ -229,3 +229,34 @@ def test_malformed_history_is_preserved_as_text_without_crashing(calls, result_i
     repaired = normalize_history_tool_pairs([call, _result(call_id=result_id)])
     assert not any(message.get("tool_calls") or message["role"] == "tool" for message in repaired)
     assert "synthetic result" in repaired[-1]["content"]
+
+
+def test_duplicate_original_fragment_is_not_repeated_after_merge():
+    source = [_call(), _result(text="synthetic A"), _result(3, text="synthetic B"), _result(4, text="synthetic B")]
+    result = normalize_history_tool_pairs(source)
+    assert len(result) == 2
+    assert result[1]["content"].count("synthetic A") == 1
+    assert result[1]["content"].count("synthetic B") == 1
+
+
+@pytest.mark.parametrize("field", ["name", "arguments"])
+def test_missing_function_field_is_preserved_as_history_text(field):
+    source = _call()
+    del source["tool_calls"][0]["function"][field]
+    result = normalize_history_tool_pairs([source, _result()])
+    assert not any(item.get("tool_calls") or item["role"] == "tool" for item in result)
+    assert "synthetic result" in result[-1]["content"]
+
+
+def test_upstream_pairing_boundary_preserves_incomplete_historical_facts():
+    front = FrontDesk.__new__(FrontDesk)
+    source = [_call(), _result(text="synthetic A"), _result(3, text="synthetic B"), _result(4, text="synthetic B")]
+    result = front._ensure_tool_call_pairing("synthetic", source)
+    assert len(result) == 2
+    assert result[1]["content"].count("synthetic B") == 1
+    orphan = front._ensure_tool_call_pairing("synthetic", [_result(text="synthetic orphan fact")])
+    assert "synthetic orphan fact" in orphan[0]["content"]
+    assert orphan[0]["role"] == "user"
+    missing = front._ensure_tool_call_pairing("synthetic", [_call()])
+    assert not any(item.get("tool_calls") or item["role"] == "tool" for item in missing)
+    assert "no reply" not in str(missing)

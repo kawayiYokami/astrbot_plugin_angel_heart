@@ -201,21 +201,31 @@ def normalize_history_tool_pairs(messages: list[dict]) -> list[dict]:
                 and not (set(call_ids) & seen_call_ids)
                 and all(isinstance(call_id, str) and call_id for call_id in result_ids)
                 and set(result_ids) == set(call_ids)
-                and all(isinstance(call.get("function"), dict) for call in calls)
+                and all(
+                    isinstance(call.get("function"), dict)
+                    and isinstance(call["function"].get("name"), str)
+                    and bool(call["function"]["name"])
+                    and isinstance(call["function"].get("arguments"), str)
+                    for call in calls
+                )
             )
             if valid:
                 seen_call_ids.update(call_ids)
                 repaired.append(head)
                 result_positions = {}
+                result_fragments = {}
                 for message in block[1:]:
                     call_id = message.get("tool_call_id")
+                    fragment = _history_result_text(message.get("content", ""))
                     if call_id not in result_positions:
                         result_positions[call_id] = len(repaired)
+                        result_fragments[call_id] = {fragment}
                         repaired.append(message)
                         continue
                     position = result_positions[call_id]
                     previous = repaired[position]
-                    if previous.get("content") != message.get("content"):
+                    if fragment not in result_fragments[call_id]:
+                        result_fragments[call_id].add(fragment)
                         merged = dict(previous)
                         merged["content"] = (
                             _history_result_text(previous.get("content", ""))
@@ -320,8 +330,13 @@ def extract_completed_agent_messages(
     completed_messages = []
     for message in all_messages[baseline_count:]:
         role = getattr(message, "role", None)
-        if role in ("assistant", "tool"):
-            completed_messages.append(message)
+        if role not in ("assistant", "tool"):
+            continue
+        if role == "tool" and not completed_messages:
+            # 切片起点落在工具链中间：这条回执的调用不在本次切片里，
+            # 记进账本就成了一条无主回执，上游会因调用与回执不配对拒绝请求。
+            continue
+        completed_messages.append(message)
     return completed_messages
 
 

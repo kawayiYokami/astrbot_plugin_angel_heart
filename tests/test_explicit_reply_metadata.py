@@ -203,3 +203,55 @@ def test_summary_link_collection_deduplicates_without_recursive_expansion():
     source = message()
     inherited = {"reply_relations": collect_reply_relations([source])}
     assert collect_reply_relations([source, inherited, source]) == collect_reply_relations([source])
+
+
+def test_rule_compaction_keeps_links_from_retained_old_summary(ledger):
+    source = message()
+    old = ledger._make_summary_message("earlier facts", 1, reply_relations=[source])
+    ledger.add_message(CHAT, old)
+    ledger.add_message(CHAT, message("201", None, timestamp=2))
+    ledger._get_or_create_ledger(CHAT)["current_summary"] = "earlier facts"
+    assert ledger.organize_context(CHAT)
+    assert ledger.get_formal_context(CHAT)[0]["reply_relations"] == collect_reply_relations([source])
+
+
+def test_rendered_reply_metadata_is_counted_by_both_estimators(ledger):
+    source = ledger._make_summary_message("earlier facts", 1, reply_relations=[message()])
+    without = {k: v for k, v in source.items() if k != "reply_relations"}
+    single_delta = ledger._count_message_tokens(source) - ledger._count_message_tokens(without)
+    assert single_delta > 0
+    ledger.set_messages(CHAT, [without])
+    before = ledger._estimate_tokens(CHAT)
+    ledger.set_messages(CHAT, [source])
+    assert ledger._estimate_tokens(CHAT) - before == single_delta
+
+
+def test_reply_summary_metadata_reserves_content_budget(ledger):
+    ledger.MIN_RETAIN_COUNT = 0
+    ledger.config_manager.context_content_retain_tokens = 10
+    ledger.add_message(CHAT, message())
+    ledger.add_message(CHAT, message("201", None, timestamp=2))
+    assert ledger.organize_context(CHAT)
+    assert len(ledger.get_all_messages(CHAT)) == 1
+    assert ledger.get_all_messages(CHAT)[0]["reply_relations"]
+
+
+def test_assistant_reference_target_has_id_and_body_without_native_payload_changes():
+    from astrbot_plugin_angel_heart.core.utils.xml_formatter import format_message_to_text
+    source = {"role": "assistant", "source_message_id": "100", "content": "synthetic answer"}
+    assert "[本消息 ID: 100]" in format_message_to_text(source)
+    assert "synthetic answer" in format_message_to_text(source)
+    assert MessageProcessor("机器人").process_message(source) == {"role": "assistant", "content": "synthetic answer"}
+
+
+@pytest.mark.parametrize("parts, expected", [
+    ([{"type": "reply", "data": {"id": "100"}}, {"type": "reply", "data": {"id": "100"}}], ["100"]),
+    ([{"type": "reply", "data": None}, {"type": "reply", "data": {"id": True}}], []),
+])
+def test_qq_history_preserves_valid_explicit_targets(parts, expected):
+    front = FrontDesk.__new__(FrontDesk)
+    raw = {"sender": {"user_id": "20001", "nickname": "synthetic member"}, "self_id": "30001",
+           "message_id": "200", "time": 1, "message": parts + [{"type": "text", "data": {"text": "synthetic body"}}]}
+    converted = front._convert_raw_qq_message_to_angelheart_format(raw)
+    assert converted["content"] == "synthetic body"
+    assert converted.get("reply_to_message_ids", []) == expected
