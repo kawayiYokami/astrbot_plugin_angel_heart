@@ -154,11 +154,13 @@
           :ready="fontState.ready"
           :downloading="fontState.downloading"
           :cooldown-remaining="fontState.cooldown_remaining"
-          :weights="fontState.weights"
+          :fonts="fontState.fonts"
           :fetching="fontFetching"
-          :busy-weight="fontBusyWeight"
+          :selecting-key="fontSelectingKey"
+          :uploading="fontUploading"
+          @select="selectFont"
           @fetch="triggerFontFetch"
-          @upload="uploadFontWeight"
+          @upload="uploadFont"
         />
       </template>
 
@@ -373,6 +375,7 @@ import {
 } from './fields'
 import { useBridge } from './composables/useBridge'
 import FontPanel, { type FontState } from './FontPanel.vue'
+import { formatMB } from './format'
 import { themeKey } from './theme'
 import SchemaForm from './SchemaForm.vue'
 import VueJsonPretty from 'vue-json-pretty'
@@ -488,6 +491,7 @@ const sidebarMenuOptions = computed<MenuOption[]>(() => [
 ])
 
 function onSidebarMenu(key: string) {
+  stopFontPoll()
   if (key === 'monitor') {
     viewMode.value = 'monitor'
   } else if (key === 'fonts') {
@@ -589,36 +593,81 @@ async function savePromptSettings() {
 
 const fontState = ref<FontState>({
   dir: '',
+  selected: '',
   ready: false,
   downloading: false,
   cooldown_remaining: 0,
-  weights: [],
+  fonts: [],
 })
 const fontLoading = ref(false)
 const fontFetching = ref(false)
-const fontBusyWeight = ref<string | null>(null)
+const fontSelectingKey = ref<string | null>(null)
+const fontUploading = ref(false)
 
-function fmtMB(size: number): string {
-  if (!size || size <= 0) return '0 MB'
-  return `${(size / 1024 / 1024).toFixed(1)} MB`
+// 切到未下载的字体时后端会起后台任务，这里轮询到下载结束
+let fontPollTimer: number | null = null
+
+function stopFontPoll() {
+  if (fontPollTimer !== null) {
+    clearInterval(fontPollTimer)
+    fontPollTimer = null
+  }
+}
+
+function watchFontDownload() {
+  stopFontPoll()
+  fontPollTimer = window.setInterval(() => {
+    void loadFonts().then(() => {
+      if (!fontState.value.downloading) stopFontPoll()
+    })
+  }, 2000)
+}
+
+function applyFontState(data?: Partial<FontState> | null) {
+  fontState.value = {
+    dir: String(data?.dir ?? ''),
+    selected: String(data?.selected ?? ''),
+    ready: Boolean(data?.ready),
+    downloading: Boolean(data?.downloading),
+    cooldown_remaining: Math.ceil(Number(data?.cooldown_remaining ?? 0)),
+    fonts: data?.fonts || [],
+  }
 }
 
 async function loadFonts() {
   if (fontLoading.value) return
   fontLoading.value = true
   try {
-    const data = await apiGet<FontState>('fonts')
-    fontState.value = {
-      dir: String(data?.dir ?? ''),
-      ready: Boolean(data?.ready),
-      downloading: Boolean(data?.downloading),
-      cooldown_remaining: Math.ceil(Number(data?.cooldown_remaining ?? 0)),
-      weights: data?.weights || [],
-    }
+    applyFontState(await apiGet<FontState>('fonts'))
+    // 下载可能是长回复触发的，进来时已经在跑；这时得把轮询接上，否则面板停在「正在下载」不再动
+    if (fontState.value.downloading && fontPollTimer === null) watchFontDownload()
   } catch (e) {
     message.error(`加载字体状态失败：${(e as Error).message}`)
   } finally {
     fontLoading.value = false
+  }
+}
+
+// 点一款字体：后端切选中项，未下载的话顺手起下载，这里接着轮询
+async function selectFont(key: string) {
+  if (fontSelectingKey.value) return
+  fontSelectingKey.value = key
+  try {
+    const data = await apiPost<FontState & { started: boolean }>(
+      `fonts/select/${encodeURIComponent(key)}`,
+      {},
+    )
+    applyFontState(data)
+    if (data?.started || fontState.value.downloading) {
+      message.info('正在后台下载，下完自动生效')
+      watchFontDownload()
+    } else if (!fontState.value.ready) {
+      message.warning('这款字体还没下好，可以点「重试下载」再试一次')
+    }
+  } catch (e) {
+    message.error(`切换字体失败：${(e as Error).message}`)
+  } finally {
+    fontSelectingKey.value = null
   }
 }
 
@@ -627,8 +676,12 @@ async function triggerFontFetch() {
   try {
     // 桥接只把 data 解出来，信封里的 message 取不到，所以按 started 判断结果
     const data = await apiPost<{ started: boolean }>('fonts/fetch')
-    if (data?.started) message.success('已开始下载，完成后刷新可见')
-    else message.warning('冷却中，稍后再试')
+    if (data?.started) {
+      message.success('已开始下载，下完自动生效')
+      watchFontDownload()
+    } else {
+      message.warning('冷却中，稍后再试')
+    }
     await loadFonts()
   } catch (e) {
     message.error(`触发下载失败：${(e as Error).message}`)
@@ -637,25 +690,25 @@ async function triggerFontFetch() {
   }
 }
 
-// 桥接的 endpoint 校验禁止出现 ?，weight 只能走路径参数
-async function uploadFontWeight(weight: string, file: File) {
+// 桥接的 endpoint 校验禁止出现 ?，key 只能走路径参数
+async function uploadFont(key: string, file: File) {
   if (!/\.ttf$/i.test(file.name)) {
     message.error('只能上传 .ttf 字体文件')
     return
   }
-  fontBusyWeight.value = weight
+  fontUploading.value = true
   try {
     const data = await upload<{ key: string; size: number; ready: boolean }>(
-      `fonts/upload/${encodeURIComponent(weight)}`,
+      `fonts/upload/${encodeURIComponent(key)}`,
       file,
     )
-    const label = weight === 'regular' ? '常规体' : weight === 'medium' ? '中等体' : weight
-    message.success(`${label}已上传（${fmtMB(Number(data?.size ?? 0))}）`)
+    message.success(`已上传（${formatMB(Number(data?.size ?? 0))}），已切换为这款字体`)
+    // 后端上传成功后会自动把选中项切到该 key，这里重新拉一次就够
     await loadFonts()
   } catch (e) {
     message.error(`上传失败：${(e as Error).message}`)
   } finally {
-    fontBusyWeight.value = null
+    fontUploading.value = false
   }
 }
 
@@ -715,6 +768,7 @@ function decisionTime(ts: number): string {
 }
 
 function selectTemplate(id: string | null) {
+  stopFontPoll()
   viewMode.value = 'config'
   selectedId.value = id
   if (!id) {
@@ -967,6 +1021,7 @@ onUnmounted(() => {
     clearInterval(statusTimer)
     statusTimer = null
   }
+  stopFontPoll()
 })
 </script>
 

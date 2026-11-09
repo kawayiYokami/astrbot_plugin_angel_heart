@@ -103,7 +103,7 @@ export function useBridge() {
   }
 
   // 宿主桥接的 upload 只接 (endpoint, file)，且 endpoint 校验禁止出现 ? # \ ://
-  // 需要额外参数时走路径参数，如 upload('fonts/upload/regular', file)
+  // 需要额外参数时走路径参数，如 upload('fonts/upload/custom', file)
   async function upload<T = unknown>(endpoint: string, file: File): Promise<T> {
     if (bridge) {
       return (await bridge.upload(endpoint, file)) as T

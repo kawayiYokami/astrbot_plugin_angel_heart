@@ -64,11 +64,8 @@ ACCENT2 = (232, 154, 130)      # #E89A82 浅橙红
 CODE_BG = (237, 233, 224)      # #EDE9E0 代码块底
 QUOTE_BG = (246, 242, 233)     # #F6F2E9 引用块底
 
-FONT_DIR = Path(__file__).resolve().parent.parent / "fonts"
-# 思源黑体 / Noto Sans SC（SIL OFL 1.1）：字形最接近手机端主流排版，且是可变字体，
-# Regular 与 Bold 都是字体自带的，标题不必靠描边假装粗体。
-FONT_BODY = str(FONT_DIR / "NotoSansSC-VF.ttf")
-FONT_BOLD = FONT_BODY
+# 正文字体由用户在 WebUI 里选（三款内置霞鹜 + 自定义上传），走 font_manager
+# 的当前选中项，不在这里写死文件名，也不在这里拼路径。
 FONT_MONO = "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"
 FONT_MONO_ASCII = "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"
 FONT_FALLBACK = "/usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc"
@@ -94,6 +91,13 @@ except ImportError:  # pragma: no cover - 缺 fonttools 时退化为 mask 判字
 
 
 # ---------- 字体 ----------
+
+def body_font_path() -> str:
+    """当前选中字体的路径。选中项由 font_manager 管，这里只读。"""
+    from .font_manager import current_font_path
+
+    return str(current_font_path())
+
 
 def find_sc_index(path: str) -> int:
     """在 ttc 里找简体中文那一份，避免落到日文字形上。"""
@@ -726,17 +730,18 @@ def _load_fonts(px):
                 return font
         return None
 
-    body = load(FONT_BODY, px(BODY_SIZE))
-    bold = load(FONT_BOLD, px(BODY_SIZE), "bold")
-    h1 = load(FONT_BOLD, px(H1_SIZE), "bold")
-    h2 = load(FONT_BOLD, px(H2_SIZE), "bold")
-    h3 = load(FONT_BOLD, px(H3_SIZE), "bold")
+    body_path = body_font_path()
+    body = load(body_path, px(BODY_SIZE))
+    bold = load(body_path, px(BODY_SIZE), "bold")
+    h1 = load(body_path, px(H1_SIZE), "bold")
+    h2 = load(body_path, px(H2_SIZE), "bold")
+    h3 = load(body_path, px(H3_SIZE), "bold")
     heading = h3
-    table = load(FONT_BODY, px(TABLE_SIZE))
-    table_bold = load(FONT_BOLD, px(TABLE_SIZE), "bold")
-    kicker_font = load(FONT_BODY, px(KICKER_SIZE))
-    header_font = load(FONT_BOLD, px(HEADER_SIZE), "bold")
-    foot = load(FONT_BODY, px(FOOT_SIZE))
+    table = load(body_path, px(TABLE_SIZE))
+    table_bold = load(body_path, px(TABLE_SIZE), "bold")
+    kicker_font = load(body_path, px(KICKER_SIZE))
+    header_font = load(body_path, px(HEADER_SIZE), "bold")
+    foot = load(body_path, px(FOOT_SIZE))
 
     # 等宽字体是锦上添花：容器里没有 Noto / DejaVu 时退正文，不能因此不出图
     mono = first_of((FONT_MONO, FONT_MONO_ASCII), px(CODE_SIZE)) or body

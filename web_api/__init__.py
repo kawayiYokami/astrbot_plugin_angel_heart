@@ -419,19 +419,25 @@ def register_all_routes(
                 "/astrbot_plugin_angel_heart/fonts",
                 font_api.get_status,
                 ["GET"],
-                "长文转图字体：就绪状态与体积",
+                "长文转图字体：可选字体清单、选中项与就绪状态",
             ),
             (
-                "/astrbot_plugin_angel_heart/fonts/upload/<weight>",
+                "/astrbot_plugin_angel_heart/fonts/select/<font>",
+                font_api.select,
+                ["POST"],
+                "切换长文转图字体，未就绪时自动开始下载（路径参数 font）",
+            ),
+            (
+                "/astrbot_plugin_angel_heart/fonts/upload/<font>",
                 font_api.upload,
                 ["POST"],
-                "上传字体文件（路径参数 weight，表单字段 file）",
+                "上传自定义字体文件（路径参数 font 传 custom，表单字段 file）",
             ),
             (
                 "/astrbot_plugin_angel_heart/fonts/upload",
                 font_api.upload,
                 ["POST"],
-                "上传字体文件（weight 从 query 或表单读取，兼容旧版）",
+                "上传自定义字体文件（字体名从 query 或表单读取，兼容旧版）",
             ),
             (
                 "/astrbot_plugin_angel_heart/fonts/fetch",
@@ -640,11 +646,20 @@ class PromptSettingsAPI:
         return _ok(snapshot, "已保存")
 
 
-class FontAPI:
-    """长文转图字体的状态查询、上传与手动下载。
+def _reject_unknown_font(key: str):
+    """字体名非法就返回错误信封，合法返回 None。上传两条路由共用同一句文案。"""
+    from ..core import font_manager as fm
 
-    字体不随插件分发，默认从 GitHub release 拉取。部署环境连不上 GitHub 时，
-    这里提供一条本地上传通道，走的是同一套「体积 + 字形」校验。
+    if key in fm.FONTS:
+        return None
+    return _err("没有这款字体，自定义字体请上传到自定义款")
+
+
+class FontAPI:
+    """长文转图字体的状态查询、切换、上传与手动下载。
+
+    字体不随插件分发：三款内置字体由 WebUI 选中后自动从 GitHub 下载，部署环境
+    连不上 GitHub 时，可以上传一份自己的字体文件（落 custom 款）。
     """
 
     async def get_status(self):
@@ -652,16 +667,35 @@ class FontAPI:
 
         return _ok(fm.status_snapshot())
 
-    async def upload(self, weight: str = ""):
+    async def select(self, font: str = ""):
         from ..core import font_manager as fm
 
-        # 新版桥接禁止 endpoint 里出现 ?，所以 weight 走路径参数；
-        # 无参路由再从 query / 表单兜底，兼容旧版 /api/plug 直连。
-        key = (weight or _get_query("weight") or "").strip()
-        # 先校验字重再取文件：字重是廉价参数校验，且这样非法字重的报错
-        # 不会被「缺文件」掩盖（否则这两条分支在测试里分不开）。
-        if key and key not in fm.WEIGHT_FILES:
-            return _err("只能上传常规字体文件")
+        # 新版桥接禁止 endpoint 里出现 ?，字体名只能走路径参数；没有无参路由，
+        # 所以这里不做 query 兜底。
+        key = (font or "").strip()
+        try:
+            snapshot = fm.select_font(key)
+        except ValueError as exc:
+            return _err(str(exc))
+        if snapshot.get("started"):
+            return _ok(snapshot, "已切换，正在下载")
+        spec = fm.FONTS.get(key, {})
+        if not spec.get("url") and not snapshot.get("ready"):
+            return _ok(snapshot, "已切换，上传字体文件后生效")
+        return _ok(snapshot, "已切换")
+
+    async def upload(self, font: str = ""):
+        from ..core import font_manager as fm
+
+        # 新版桥接禁止 endpoint 里出现 ?，字体名走路径参数；无参路由再从 query
+        # 与表单兜底，兼容旧版 /api/plug 直连。`weight` 是这块还叫「字重」时的
+        # 历史参数名，对外已是既成契约，改它会断掉旧调用，所以只留不推。
+        key = (font or _get_query("weight") or "").strip()
+        # 先校验字体名再取文件：参数校验廉价且必须排在取文件之前，非法字体名的
+        # 报错才不会被「缺文件」盖掉。
+        rejected = _reject_unknown_font(key)
+        if rejected is not None:
+            return rejected
 
         upload = await _get_upload("file")
         if upload is None:
@@ -672,8 +706,9 @@ class FontAPI:
                 key = str(form.get("weight") or "").strip()
             except Exception:
                 key = ""
-        if key not in fm.WEIGHT_FILES:
-            return _err("只能上传常规字体文件")
+        rejected = _reject_unknown_font(key)
+        if rejected is not None:
+            return rejected
 
         try:
             data = await fm.install_font(key, upload)
@@ -687,6 +722,8 @@ class FontAPI:
     async def fetch(self):
         from ..core import font_manager as fm
 
+        if not fm.FONTS[fm.selected_font()]["url"]:
+            return _ok(fm.status_snapshot(), "这一款只能上传，没法下载")
         started = fm.start_download_now()
         snapshot = fm.status_snapshot()
         snapshot["started"] = started

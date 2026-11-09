@@ -34,7 +34,36 @@ def _fonts_always_ready():
 
 # ---------- 渲染器 ----------
 
+def _existing_font_dir() -> Path | None:
+    """环境里现成的字体目录：优先插件数据目录，其次旧的插件内目录。
+
+    字体正式落点是 plugin_data（插件目录会被更新整目录替换掉），单测里框架桩
+    拿不到它，所以这里直接按路径找。
+    """
+    data_root = Path(__file__).resolve().parents[3]
+    candidates = (
+        data_root / "plugin_data" / "astrbot_plugin_angel_heart" / "fonts",
+        Path(__file__).resolve().parent.parent / "fonts",
+    )
+    for base in candidates:
+        if base.is_dir() and any(base.glob("*.ttf")):
+            return base
+    return None
+
+
 class TestRenderer:
+    @pytest.fixture(autouse=True)
+    def _real_font(self, monkeypatch):
+        """渲染用例要真字形，指到环境里现成的那份字体目录上。"""
+        base = _existing_font_dir()
+        if base is None:
+            pytest.skip("环境里没有可用字体，渲染用例无法验证字形")
+
+        from astrbot_plugin_angel_heart.core import font_manager as fm
+
+        monkeypatch.setattr(fm, "_FONT_DIR", base)
+        renderer.clear_font_cache()
+
     def test_parses_markdown_structures(self):
         kinds = [
             b["kind"]
@@ -85,7 +114,7 @@ class TestRenderer:
         lead_shift=False，引号的墨迹留在字框右半边，而步进只占半字宽，后一个字
         正好压在上面，出来只剩一条细竖线，看着像数字 1。
         """
-        font_path = Path(renderer.FONT_BODY)
+        font_path = Path(renderer.body_font_path())
         if not font_path.exists():
             pytest.skip("本环境没有可用的黑体字形，笔位与墨迹的比对需要真实字形")
 

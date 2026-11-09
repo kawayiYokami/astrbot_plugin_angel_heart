@@ -385,11 +385,11 @@ async def test_fonts_upload_accepts_path_param(api_app, monkeypatch, tmp_path):
     """
     from astrbot_plugin_angel_heart.core import font_manager as fm
 
-    monkeypatch.setattr(fm, "FONT_DIR", tmp_path)
+    monkeypatch.setattr(fm, "_FONT_DIR", tmp_path)
 
     client = api_app.test_client()
     resp = await client.post(
-        "/api/plug/astrbot_plugin_angel_heart/fonts/upload/regular"
+        "/api/plug/astrbot_plugin_angel_heart/fonts/upload/custom"
     )
     data = await resp.get_json()
 
@@ -399,12 +399,50 @@ async def test_fonts_upload_accepts_path_param(api_app, monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_fonts_select_route(api_app, monkeypatch, tmp_path):
+    """切换字体接口：路径参数能解析到，且真的改掉选中项。"""
+    from astrbot_plugin_angel_heart.core import font_manager as fm
+
+    monkeypatch.setattr(fm, "_FONT_DIR", tmp_path)
+    monkeypatch.setattr(fm, "_usable", lambda p: True)
+    monkeypatch.setattr(fm, "_clear_render_cache", lambda: None)
+    fm.reset_font_state()
+
+    client = api_app.test_client()
+    resp = await client.post(
+        "/api/plug/astrbot_plugin_angel_heart/fonts/select/wenkai"
+    )
+    data = await resp.get_json()
+
+    assert resp.status_code != 404, "路径参数路由没注册上"
+    assert data["status"] == "ok"
+    assert data["data"]["selected"] == "wenkai"
+    assert fm.selected_font() == "wenkai"
+
+
+@pytest.mark.asyncio
+async def test_fonts_select_rejects_unknown(api_app, monkeypatch, tmp_path):
+    from astrbot_plugin_angel_heart.core import font_manager as fm
+
+    monkeypatch.setattr(fm, "_FONT_DIR", tmp_path)
+    fm.reset_font_state()
+
+    client = api_app.test_client()
+    resp = await client.post(
+        "/api/plug/astrbot_plugin_angel_heart/fonts/select/bold"
+    )
+    data = await resp.get_json()
+
+    assert data["status"] == "error"
+
+
+@pytest.mark.asyncio
 async def test_fonts_status_route(api_app, monkeypatch, tmp_path):
     """字体状态接口：结构正确，前端靠它渲染就绪/体积/冷却。"""
     from astrbot_plugin_angel_heart.core import font_manager as fm
 
-    monkeypatch.setattr(fm, "FONT_DIR", tmp_path)
-    fm._ready = False
+    monkeypatch.setattr(fm, "_FONT_DIR", tmp_path)
+    fm.reset_font_state()
     fm._last_failure = 0.0
 
     client = api_app.test_client()
@@ -416,8 +454,9 @@ async def test_fonts_status_route(api_app, monkeypatch, tmp_path):
     assert payload["ready"] is False
     assert payload["downloading"] is False
     assert payload["cooldown_remaining"] == 0
-    assert [w["key"] for w in payload["weights"]] == ["regular"]
-    assert all(w["ready"] is False and w["size"] == 0 for w in payload["weights"])
+    assert payload["selected"] == fm.DEFAULT_FONT
+    assert [f["key"] for f in payload["fonts"]] == list(fm.FONTS)
+    assert all(f["ready"] is False and f["size"] == 0 for f in payload["fonts"])
 
 
 @pytest.mark.asyncio
@@ -425,11 +464,11 @@ async def test_fonts_upload_without_file_errors(api_app, monkeypatch, tmp_path):
     """quart 回退分支没有 multipart 能力，必须明确报错而不是静默成功。"""
     from astrbot_plugin_angel_heart.core import font_manager as fm
 
-    monkeypatch.setattr(fm, "FONT_DIR", tmp_path)
+    monkeypatch.setattr(fm, "_FONT_DIR", tmp_path)
 
     client = api_app.test_client()
     resp = await client.post(
-        "/api/plug/astrbot_plugin_angel_heart/fonts/upload?weight=regular"
+        "/api/plug/astrbot_plugin_angel_heart/fonts/upload?weight=custom"
     )
     data = await resp.get_json()
 
@@ -438,10 +477,10 @@ async def test_fonts_upload_without_file_errors(api_app, monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_fonts_upload_rejects_bad_weight(api_app, monkeypatch, tmp_path):
+async def test_fonts_upload_rejects_unknown_font(api_app, monkeypatch, tmp_path):
     from astrbot_plugin_angel_heart.core import font_manager as fm
 
-    monkeypatch.setattr(fm, "FONT_DIR", tmp_path)
+    monkeypatch.setattr(fm, "_FONT_DIR", tmp_path)
 
     client = api_app.test_client()
     resp = await client.post(
@@ -459,14 +498,14 @@ async def test_fonts_fetch_route(api_app, monkeypatch, tmp_path):
 
     from astrbot_plugin_angel_heart.core import font_manager as fm
 
-    monkeypatch.setattr(fm, "FONT_DIR", tmp_path)
+    monkeypatch.setattr(fm, "_FONT_DIR", tmp_path)
     fm._last_failure = 0.0
     release = asyncio.Event()
 
     async def slow():
         await release.wait()
 
-    monkeypatch.setattr(fm, "_download_all", slow)
+    monkeypatch.setattr(fm, "_download_selected", slow)
 
     client = api_app.test_client()
     resp = await client.post("/api/plug/astrbot_plugin_angel_heart/fonts/fetch")

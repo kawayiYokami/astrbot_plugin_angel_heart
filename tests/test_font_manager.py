@@ -21,39 +21,43 @@ from astrbot_plugin_angel_heart.core import font_manager as fm
 @pytest.fixture(autouse=True)
 def _reset_state():
     """每个用例前后清掉冷却、就绪缓存与后台任务句柄，避免相互串味。"""
-    fm._last_failure = 0.0
+    fm._last_failure_at = 0.0
     fm._download_task = None
-    fm._ready = False
+    fm._download_key = None
+    fm._selected = None
+    fm._probe_cache.clear()
     yield
     task = fm._download_task
     if task is not None and not task.done():
         task.cancel()
     fm._download_task = None
-    fm._last_failure = 0.0
-    fm._ready = False
+    fm._download_key = None
+    fm._last_failure_at = 0.0
+    fm._selected = None
+    fm._probe_cache.clear()
 
 
 class TestReadyCheck:
     def test_missing_fonts_are_not_ready(self, monkeypatch, tmp_path):
-        monkeypatch.setattr(fm, "FONT_DIR", tmp_path)
+        monkeypatch.setattr(fm, "_FONT_DIR", tmp_path)
 
-        assert fm.fonts_ready() is False
+        assert fm.selected_font_ready() is False
 
     def test_tiny_file_is_not_ready(self, monkeypatch, tmp_path):
         """体积明显不对的文件不能算就绪，避免半截下载蒙混过关。"""
-        monkeypatch.setattr(fm, "FONT_DIR", tmp_path)
-        for name in fm.FONT_FILES:
-            (tmp_path / name).write_bytes(b"0" * 10)
+        monkeypatch.setattr(fm, "_FONT_DIR", tmp_path)
+        (tmp_path / fm.FONTS[fm.DEFAULT_FONT]["file"]).write_bytes(b"0" * 10)
 
-        assert fm.fonts_ready() is False
+        assert fm.selected_font_ready() is False
 
     def test_unloadable_file_is_not_ready(self, monkeypatch, tmp_path):
         """体积够了但 Pillow 加载不了，同样不算就绪。"""
-        monkeypatch.setattr(fm, "FONT_DIR", tmp_path)
-        for name in fm.FONT_FILES:
-            (tmp_path / name).write_bytes(b"x" * (fm._MIN_BYTES + 1))
+        monkeypatch.setattr(fm, "_FONT_DIR", tmp_path)
+        (tmp_path / fm.FONTS[fm.DEFAULT_FONT]["file"]).write_bytes(
+            b"x" * (fm._MIN_BYTES + 1)
+        )
 
-        assert fm.fonts_ready() is False
+        assert fm.selected_font_ready() is False
 
 
 class TestEnsureIsNonBlocking:
@@ -61,7 +65,7 @@ class TestEnsureIsNonBlocking:
 
     @pytest.mark.asyncio
     async def test_ready_returns_true_without_download(self, monkeypatch):
-        monkeypatch.setattr(fm, "fonts_ready", lambda: True)
+        monkeypatch.setattr(fm, "selected_font_ready", lambda: True)
         started = []
         monkeypatch.setattr(fm, "_start_download", lambda: started.append(1))
 
@@ -70,7 +74,7 @@ class TestEnsureIsNonBlocking:
 
     @pytest.mark.asyncio
     async def test_not_ready_returns_false_and_starts_download(self, monkeypatch):
-        monkeypatch.setattr(fm, "fonts_ready", lambda: False)
+        monkeypatch.setattr(fm, "selected_font_ready", lambda: False)
         started = []
         monkeypatch.setattr(fm, "_start_download", lambda: started.append(1))
 
@@ -80,13 +84,13 @@ class TestEnsureIsNonBlocking:
     @pytest.mark.asyncio
     async def test_never_waits_for_download(self, monkeypatch):
         """下载哪怕永不结束，ensure_fonts 也必须立刻返回。"""
-        monkeypatch.setattr(fm, "fonts_ready", lambda: False)
+        monkeypatch.setattr(fm, "selected_font_ready", lambda: False)
         release = asyncio.Event()
 
         async def stuck():
             await release.wait()
 
-        monkeypatch.setattr(fm, "_download_all", stuck)
+        monkeypatch.setattr(fm, "_download_selected", stuck)
 
         result = await asyncio.wait_for(fm.ensure_fonts(), timeout=0.5)
         release.set()
@@ -104,7 +108,7 @@ class TestStartDownload:
             calls.append(1)
             await release.wait()
 
-        monkeypatch.setattr(fm, "_download_all", slow)
+        monkeypatch.setattr(fm, "_download_selected", slow)
 
         fm._start_download()
         fm._start_download()
@@ -117,13 +121,13 @@ class TestStartDownload:
     @pytest.mark.asyncio
     async def test_cooldown_creates_no_task(self, monkeypatch):
         """冷却期内连任务都不该建，否则每条长回复都会凭空多一个对象。"""
-        fm._last_failure = time.monotonic()
+        fm._last_failure_at = time.monotonic()
         started = []
 
         async def slow():
             started.append(1)
 
-        monkeypatch.setattr(fm, "_download_all", slow)
+        monkeypatch.setattr(fm, "_download_selected", slow)
 
         fm._start_download()
         await asyncio.sleep(0)
@@ -140,7 +144,7 @@ class TestStartDownload:
             calls.append(1)
             return True
 
-        monkeypatch.setattr(fm, "_download_all", quick)
+        monkeypatch.setattr(fm, "_download_selected", quick)
 
         fm._start_download()
         await asyncio.sleep(0.05)
@@ -156,7 +160,7 @@ class TestStartDownload:
         async def quick():
             return True
 
-        monkeypatch.setattr(fm, "_download_all", quick)
+        monkeypatch.setattr(fm, "_download_selected", quick)
 
         fm._start_download()
         await asyncio.sleep(0.05)
@@ -168,48 +172,82 @@ class TestStartDownload:
         """目录建不出来也必须记冷却，否则每条长回复都会建一个立刻失败的任务。"""
         blocker = tmp_path / "blocked"
         blocker.write_text("占位成文件，让下面的 mkdir 抛 OSError")
-        monkeypatch.setattr(fm, "FONT_DIR", blocker / "fonts")
-        fm._last_failure = 0.0
+        monkeypatch.setattr(fm, "_FONT_DIR", blocker / "fonts")
+        fm._last_failure_at = 0.0
 
-        assert await fm._download_all() is False
-        assert fm._last_failure > 0.0, "mkdir 失败同样要进冷却"
+        assert await fm._download_selected() is False
+        assert fm._last_failure_at > 0.0, "mkdir 失败同样要进冷却"
 
         started = []
 
         async def slow():
             started.append(1)
 
-        monkeypatch.setattr(fm, "_download_all", slow)
+        monkeypatch.setattr(fm, "_download_selected", slow)
         fm._start_download()
         await asyncio.sleep(0)
 
         assert started == [], "冷却期内不该再建任务"
 
 
+class TestFontDirLocation:
+    def test_font_dir_lives_in_plugin_data(self, monkeypatch, tmp_path):
+        """字体与选中项必须落在 plugin_data 下：插件更新是整目录替换，
+        放插件目录里会连字体带选中项一起被清掉。"""
+        base = tmp_path / "plugin_data" / "astrbot_plugin_angel_heart"
+        monkeypatch.setattr(fm, "_framework_data_dir", lambda: base)
+
+        assert fm._resolve_font_dir() == base / "fonts"
+
+    def test_fallback_only_when_framework_missing(self, monkeypatch):
+        """框架拿不到数据目录时退回插件目录，只为让裸脚本还能跑。"""
+        monkeypatch.setattr(fm, "_framework_data_dir", lambda: None)
+
+        assert fm._resolve_font_dir() == Path(fm.__file__).resolve().parent.parent / "fonts"
+
+
 class TestReadyCache:
-    def test_ready_is_cached(self, monkeypatch, tmp_path):
-        """就绪后不再重复解析字体，否则每条长回复白付一次同步 IO。"""
-        monkeypatch.setattr(fm, "FONT_DIR", tmp_path)
+    def test_probe_result_is_cached(self, monkeypatch, tmp_path):
+        """就绪后不再重复解析字体，否则每条长回复、每次面板轮询都白付一次同步 IO。"""
+        monkeypatch.setattr(fm, "_FONT_DIR", tmp_path)
+        target = tmp_path / fm.FONTS[fm.DEFAULT_FONT]["file"]
+        target.write_bytes(b"x" * (fm._MIN_BYTES + 1))
         calls = []
 
-        def fake_usable(path):
+        def fake_probe(path):
             calls.append(path)
             return True
 
-        monkeypatch.setattr(fm, "_usable", fake_usable)
+        monkeypatch.setattr(fm, "_probe_glyphs", fake_probe)
 
-        assert fm.fonts_ready() is True
-        assert fm.fonts_ready() is True
-        assert len(calls) == len(fm.FONT_FILES), "第二次必须直接命中缓存"
+        assert fm.selected_font_ready() is True
+        assert fm.selected_font_ready() is True
+        assert len(calls) == 1, "同一份文件只该探测一次"
 
-    def test_not_ready_is_not_cached(self, monkeypatch, tmp_path):
-        """不就绪不能缓存，否则补好字体也永远判不出来。"""
-        monkeypatch.setattr(fm, "FONT_DIR", tmp_path)
-        monkeypatch.setattr(fm, "_usable", lambda path: False)
+    def test_probe_cache_can_be_reset(self, monkeypatch, tmp_path):
+        """探测结论按文件指纹缓存，替换/重置后要能重判，不能把失败结论永久钉住。"""
+        monkeypatch.setattr(fm, "_FONT_DIR", tmp_path)
+        (tmp_path / fm.FONTS[fm.DEFAULT_FONT]["file"]).write_bytes(
+            b"x" * (fm._MIN_BYTES + 1)
+        )
+        monkeypatch.setattr(fm, "_probe_glyphs", lambda path: False)
 
-        assert fm.fonts_ready() is False
-        monkeypatch.setattr(fm, "_usable", lambda path: True)
-        assert fm.fonts_ready() is True
+        assert fm.selected_font_ready() is False
+        monkeypatch.setattr(fm, "_probe_glyphs", lambda path: True)
+        fm.reset_probe_cache()
+        assert fm.selected_font_ready() is True
+
+    def test_file_removed_after_ready_is_detected(self, monkeypatch, tmp_path):
+        """缓存不能盖掉「文件没了」：面板说就绪、其实删档是最坏的静默失效。"""
+        monkeypatch.setattr(fm, "_FONT_DIR", tmp_path)
+        target = tmp_path / fm.FONTS[fm.DEFAULT_FONT]["file"]
+        target.write_bytes(b"x" * (fm._MIN_BYTES + 1))
+        monkeypatch.setattr(fm, "_probe_glyphs", lambda path: True)
+
+        assert fm.selected_font_ready() is True
+        target.unlink()
+
+        assert fm.selected_font_ready() is False
 
 
 class TestDownloadAll:
@@ -224,33 +262,33 @@ class TestDownloadAll:
 
     @pytest.mark.asyncio
     async def test_success_marks_ready_and_clears_failure(self, monkeypatch, tmp_path):
-        monkeypatch.setattr(fm, "FONT_DIR", tmp_path)
-        fm._last_failure = 0.0
+        monkeypatch.setattr(fm, "_FONT_DIR", tmp_path)
+        fm._last_failure_at = 0.0
 
         async def fake_fetch(session, name, url):
             (tmp_path / name).write_bytes(b"x" * 200)
 
         monkeypatch.setattr(fm, "_fetch", fake_fetch)
 
-        assert await fm._download_all() is True
-        assert fm._last_failure == 0.0
+        assert await fm._download_selected() is True
+        assert fm._last_failure_at == 0.0
 
     @pytest.mark.asyncio
     async def test_failure_records_cooldown(self, monkeypatch, tmp_path):
-        monkeypatch.setattr(fm, "FONT_DIR", tmp_path)
+        monkeypatch.setattr(fm, "_FONT_DIR", tmp_path)
 
         async def boom(session, name, url):
             raise RuntimeError("network down")
 
         monkeypatch.setattr(fm, "_fetch", boom)
 
-        assert await fm._download_all() is False
-        assert fm._last_failure > 0.0, "失败必须留下冷却时间戳"
+        assert await fm._download_selected() is False
+        assert fm._last_failure_at > 0.0, "失败必须留下冷却时间戳"
 
     @pytest.mark.asyncio
     async def test_cooldown_blocks_retry(self, monkeypatch, tmp_path):
-        monkeypatch.setattr(fm, "FONT_DIR", tmp_path)
-        fm._last_failure = time.monotonic()
+        monkeypatch.setattr(fm, "_FONT_DIR", tmp_path)
+        fm._last_failure_at = time.monotonic()
         calls = []
 
         async def boom(session, name, url):
@@ -259,13 +297,13 @@ class TestDownloadAll:
 
         monkeypatch.setattr(fm, "_fetch", boom)
 
-        assert await fm._download_all() is False
+        assert await fm._download_selected() is False
         assert calls == [], "冷却期内一句网络都不该拉"
 
     @pytest.mark.asyncio
     async def test_cooldown_expires_and_retries(self, monkeypatch, tmp_path):
-        monkeypatch.setattr(fm, "FONT_DIR", tmp_path)
-        fm._last_failure = time.monotonic() - fm.RETRY_COOLDOWN - 1
+        monkeypatch.setattr(fm, "_FONT_DIR", tmp_path)
+        fm._last_failure_at = time.monotonic() - fm.RETRY_COOLDOWN - 1
         calls = []
 
         async def boom(session, name, url):
@@ -274,7 +312,7 @@ class TestDownloadAll:
 
         monkeypatch.setattr(fm, "_fetch", boom)
 
-        assert await fm._download_all() is False
+        assert await fm._download_selected() is False
         assert calls, "冷却过期后必须重新尝试"
 
 
@@ -282,7 +320,7 @@ class TestFetch:
     @pytest.mark.asyncio
     async def test_part_file_cleaned_on_failure(self, monkeypatch, tmp_path):
         """真实 _fetch：读到一半断连，必须把 .part 清掉、不碰正式路径。"""
-        monkeypatch.setattr(fm, "FONT_DIR", tmp_path)
+        monkeypatch.setattr(fm, "_FONT_DIR", tmp_path)
 
         class _DroppingContent:
             def __init__(self):
@@ -323,7 +361,7 @@ class TestShutdown:
     @pytest.mark.asyncio
     async def test_cancel_leaves_no_part_file(self, monkeypatch, tmp_path):
         """插件被卸载时取消下载，不能在半路留下 .part。"""
-        monkeypatch.setattr(fm, "FONT_DIR", tmp_path)
+        monkeypatch.setattr(fm, "_FONT_DIR", tmp_path)
         holding = asyncio.Event()
 
         class _HangingContent:
@@ -358,7 +396,7 @@ class TestShutdown:
             finally:
                 done.set()
 
-        monkeypatch.setattr(fm, "_download_all", stuck)
+        monkeypatch.setattr(fm, "_download_selected", stuck)
         fm._start_download()
         await asyncio.sleep(0.05)
 
@@ -380,19 +418,28 @@ class TestWebUIControl:
     """WebUI 用到的状态快照、手动下载与上传安装。"""
 
     def test_status_snapshot_shape(self, monkeypatch, tmp_path):
-        monkeypatch.setattr(fm, "FONT_DIR", tmp_path)
+        monkeypatch.setattr(fm, "_FONT_DIR", tmp_path)
         snap = fm.status_snapshot()
 
-        assert set(snap) >= {"dir", "ready", "downloading", "cooldown_remaining", "weights"}
+        assert set(snap) >= {
+            "dir",
+            "selected",
+            "ready",
+            "downloading",
+            "cooldown_remaining",
+            "fonts",
+        }
         assert snap["ready"] is False
         assert snap["downloading"] is False
         assert snap["cooldown_remaining"] == 0
-        assert [w["key"] for w in snap["weights"]] == ["regular"]
-        assert all(w["size"] == 0 for w in snap["weights"])
+        assert snap["selected"] == fm.DEFAULT_FONT
+        assert [f["key"] for f in snap["fonts"]] == list(fm.FONTS)
+        assert all(f["size"] == 0 for f in snap["fonts"])
+        assert [f["selected"] for f in snap["fonts"]].count(True) == 1, "选中项只能有一个"
 
     def test_status_reports_cooldown(self, monkeypatch, tmp_path):
-        monkeypatch.setattr(fm, "FONT_DIR", tmp_path)
-        fm._last_failure = time.monotonic()
+        monkeypatch.setattr(fm, "_FONT_DIR", tmp_path)
+        fm._last_failure_at = time.monotonic()
 
         snap = fm.status_snapshot()
 
@@ -400,18 +447,18 @@ class TestWebUIControl:
 
     def test_reports_real_sizes(self, monkeypatch, tmp_path):
         """有文件时必须报出真实体积，前端要拿它显示 MB。"""
-        monkeypatch.setattr(fm, "FONT_DIR", tmp_path)
+        monkeypatch.setattr(fm, "_FONT_DIR", tmp_path)
         monkeypatch.setattr(fm, "_usable", lambda p: False)
-        (tmp_path / fm.WEIGHT_FILES["regular"]).write_bytes(b"x" * 4321)
+        (tmp_path / fm.FONTS["neoxihei"]["file"]).write_bytes(b"x" * 4321)
 
         snap = fm.status_snapshot()
-        sizes = {w["key"]: w["size"] for w in snap["weights"]}
+        sizes = {f["key"]: f["size"] for f in snap["fonts"]}
 
-        assert sizes["regular"] == 4321
+        assert sizes["neoxihei"] == 4321
 
     @pytest.mark.asyncio
     async def test_manual_fetch_blocked_by_cooldown(self, monkeypatch):
-        fm._last_failure = time.monotonic()
+        fm._last_failure_at = time.monotonic()
         assert fm.start_download_now() is False
 
     @pytest.mark.asyncio
@@ -421,26 +468,200 @@ class TestWebUIControl:
         async def slow():
             await release.wait()
 
-        monkeypatch.setattr(fm, "_download_all", slow)
-        fm._last_failure = 0.0
+        monkeypatch.setattr(fm, "_download_selected", slow)
+        fm._last_failure_at = 0.0
 
         assert fm.start_download_now() is True
         assert fm._download_task is not None
         release.set()
 
-    def test_reset_ready_cache(self, monkeypatch, tmp_path):
-        monkeypatch.setattr(fm, "FONT_DIR", tmp_path)
+    def test_reset_probe_cache(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(fm, "_FONT_DIR", tmp_path)
+        monkeypatch.setattr(fm, "_probe_glyphs", lambda p: True)
+        target = tmp_path / fm.FONTS[fm.DEFAULT_FONT]["file"]
+        target.write_bytes(b"x" * (fm._MIN_BYTES + 1))
+        assert fm.selected_font_ready() is True
+        assert fm._probe_cache, "探测结论应当被缓存下来"
+
+        fm.reset_probe_cache()
+
+        assert not fm._probe_cache
+
+
+class TestSelection:
+    """选中哪一款就只认哪一款：落盘、回落、切换触发下载。"""
+
+    def test_default_selection_when_no_file(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(fm, "_FONT_DIR", tmp_path)
+
+        assert fm.selected_font() == fm.DEFAULT_FONT
+        assert fm.current_font_path() == tmp_path / fm.FONTS[fm.DEFAULT_FONT]["file"]
+
+    def test_selection_persists_across_reload(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(fm, "_FONT_DIR", tmp_path)
         monkeypatch.setattr(fm, "_usable", lambda p: True)
-        assert fm.fonts_ready() is True
-        assert fm._ready is True
+        monkeypatch.setattr(fm, "_clear_render_cache", lambda: None)
 
-        fm.reset_ready_cache()
+        fm.select_font("wenkai")
+        fm.reset_font_state()
 
-        assert fm._ready is False
+        assert fm.selected_font() == "wenkai"
+
+    def test_dirty_selection_falls_back_to_default(self, monkeypatch, tmp_path):
+        """文件里的值可能是手改的，绝不能拼进路径。"""
+        monkeypatch.setattr(fm, "_FONT_DIR", tmp_path)
+        (tmp_path / fm.SELECTION_FILE_NAME).write_text(
+            '{"font": "../../etc/passwd"}', "utf-8"
+        )
+        fm.reset_font_state()
+
+        assert fm.selected_font() == fm.DEFAULT_FONT
+        assert fm.current_font_path().parent == tmp_path
+
+    def test_unknown_select_rejected(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(fm, "_FONT_DIR", tmp_path)
+
+        with pytest.raises(ValueError, match="没有这款字体"):
+            fm.select_font("../../etc/passwd")
+
+    def test_readonly_dir_keeps_in_memory_selection(self, monkeypatch, tmp_path):
+        """插件目录只读时丢持久化，但点了必须当场生效。"""
+        monkeypatch.setattr(fm, "_FONT_DIR", tmp_path)
+        monkeypatch.setattr(fm, "_usable", lambda p: True)
+        monkeypatch.setattr(fm, "_clear_render_cache", lambda: None)
+
+        def boom(*args, **kwargs):
+            raise OSError("readonly")
+
+        monkeypatch.setattr(fm.os, "replace", boom)
+
+        fm.select_font("neozhisong")
+
+        assert fm.selected_font() == "neozhisong"
+
+    def test_ready_is_per_selection(self, monkeypatch, tmp_path):
+        """切换到另一款后，上一款的就绪结论不能套过来。"""
+        monkeypatch.setattr(fm, "_FONT_DIR", tmp_path)
+        monkeypatch.setattr(fm, "_usable", lambda p: p.name == "LXGWNeoXiHei.ttf")
+        monkeypatch.setattr(fm, "_clear_render_cache", lambda: None)
+
+        assert fm.selected_font_ready() is True
+        fm.select_font("wenkai")
+        assert fm.selected_font_ready() is False
+
+    @pytest.mark.asyncio
+    async def test_select_starts_download_for_missing_font(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(fm, "_FONT_DIR", tmp_path)
+        monkeypatch.setattr(fm, "_usable", lambda p: False)
+        monkeypatch.setattr(fm, "_clear_render_cache", lambda: None)
+        release = asyncio.Event()
+
+        async def slow():
+            await release.wait()
+
+        monkeypatch.setattr(fm, "_download_selected", slow)
+
+        snapshot = fm.select_font("neozhisong")
+
+        assert snapshot["selected"] == "neozhisong"
+        assert snapshot["started"] is True
+        assert fm._download_task is not None
+        release.set()
+
+    @pytest.mark.asyncio
+    async def test_select_ready_font_does_not_download(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(fm, "_FONT_DIR", tmp_path)
+        monkeypatch.setattr(fm, "_usable", lambda p: True)
+        monkeypatch.setattr(fm, "_clear_render_cache", lambda: None)
+
+        snapshot = fm.select_font("wenkai")
+
+        assert snapshot["started"] is False
+        assert fm._download_task is None
+
+    @pytest.mark.asyncio
+    async def test_switch_mid_download_restarts_for_new_font(self, monkeypatch, tmp_path):
+        """A 款下到一半切到 B：要改下 B，且不能给 B 记一个假冷却。
+
+        reviewer 实测过的现场：旧实现会把 A 的完成判到 B 头上，写成 600 秒冷却，
+        用户看到「正在下载」两秒后变「未下载 + 600 秒后可以再试」。
+        """
+        monkeypatch.setattr(fm, "_FONT_DIR", tmp_path)
+        monkeypatch.setattr(fm, "_clear_render_cache", lambda: None)
+        monkeypatch.setattr(fm, "_probe_glyphs", lambda p: True)
+
+        started = []
+        gate = asyncio.Event()
+
+        async def fake_fetch(session, name, url):
+            started.append(name)
+            await gate.wait()
+            (tmp_path / name).write_bytes(b"x" * (fm._MIN_BYTES + 1))
+
+        monkeypatch.setattr(fm, "_fetch", fake_fetch)
+
+        fm.select_font("neoxihei")
+        await asyncio.sleep(0.05)
+        assert started == ["LXGWNeoXiHei.ttf"]
+
+        fm.select_font("neozhisong")
+        await asyncio.sleep(0.05)
+
+        assert fm._download_key == "neozhisong", "在跑的任务必须换成新款"
+        gate.set()
+        for _ in range(50):
+            if fm._download_task is None or fm._download_task.done():
+                break
+            await asyncio.sleep(0.02)
+
+        assert (tmp_path / "LXGWNeoZhiSong.ttf").is_file()
+        assert fm.selected_font_ready() is True, "切到的新款下完了就该是就绪"
+        assert fm._last_failure_at == 0.0, "不能给新款记假冷却"
+
+    @pytest.mark.asyncio
+    async def test_custom_fetch_reports_not_started(self, monkeypatch, tmp_path):
+        """自定义款没有下载源，点重试不能报「已开始」。"""
+        monkeypatch.setattr(fm, "_FONT_DIR", tmp_path)
+        monkeypatch.setattr(fm, "_usable", lambda p: False)
+        monkeypatch.setattr(fm, "_clear_render_cache", lambda: None)
+
+        fm.select_font("custom")
+        snapshot = fm.select_font("custom")
+
+        assert snapshot["started"] is False
+        assert fm.start_download_now() is False
+        assert fm._download_task is None
+
+    @pytest.mark.asyncio
+    async def test_select_custom_never_downloads(self, monkeypatch, tmp_path):
+        """自定义款没有远端来源，切过去只能等上传。"""
+        monkeypatch.setattr(fm, "_FONT_DIR", tmp_path)
+        monkeypatch.setattr(fm, "_usable", lambda p: False)
+        monkeypatch.setattr(fm, "_clear_render_cache", lambda: None)
+
+        snapshot = fm.select_font("custom")
+
+        assert snapshot["started"] is False
+        assert fm._download_task is None
 
 
-_REAL_FONT = Path(__file__).resolve().parent.parent / "fonts" / fm.WEIGHT_FILES["regular"]
-_HAS_REAL_FONT = _REAL_FONT.is_file() and _REAL_FONT.stat().st_size > 4 * 1024 * 1024
+def _first_real_font() -> Path | None:
+    """现成可用的内置字体文件，测试真实链路时拿来当上传源。
+
+    先看字体正式目录，再看旧位置（插件目录下），避免刚迁目录的环境里整组用例被跳过。
+    """
+    roots = [fm.font_dir(), Path(__file__).resolve().parent.parent / "fonts"]
+    for root in roots:
+        for spec in fm.FONTS.values():
+            path = root / spec["file"]
+            if path.is_file() and path.stat().st_size > 4 * 1024 * 1024:
+                return path
+    return None
+
+
+_REAL_FONT = _first_real_font()
+_HAS_REAL_FONT = _REAL_FONT is not None
+_CUSTOM_FILE = fm.FONTS["custom"]["file"]
 
 
 class _FakeUpload:
@@ -458,79 +679,89 @@ class _FakeUpload:
 
 class TestInstallFont:
     @pytest.mark.asyncio
-    async def test_unknown_weight_rejected(self, monkeypatch, tmp_path):
-        monkeypatch.setattr(fm, "FONT_DIR", tmp_path)
+    async def test_unknown_font_rejected(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(fm, "_FONT_DIR", tmp_path)
 
-        with pytest.raises(ValueError, match="未知字重"):
+        with pytest.raises(ValueError, match="未知字体"):
             await fm.install_font("bold", _FakeUpload(b"x" * 200))
 
         assert list(tmp_path.iterdir()) == []
 
     @pytest.mark.asyncio
+    async def test_builtin_font_upload_rejected(self, monkeypatch, tmp_path):
+        """内置款只走下载：传错一次就没法自动纠正，不能让人上传覆盖。"""
+        monkeypatch.setattr(fm, "_FONT_DIR", tmp_path)
+
+        with pytest.raises(ValueError, match="自定义"):
+            await fm.install_font("neoxihei", _FakeUpload(b"x" * (2 * 1024 * 1024)))
+
+        assert list(tmp_path.iterdir()) == []
+
+    @pytest.mark.asyncio
     async def test_too_small_rejected(self, monkeypatch, tmp_path):
-        monkeypatch.setattr(fm, "FONT_DIR", tmp_path)
+        monkeypatch.setattr(fm, "_FONT_DIR", tmp_path)
 
         with pytest.raises(ValueError, match="不像是完整字体"):
-            await fm.install_font("regular", _FakeUpload(b"x" * 5000))
+            await fm.install_font("custom", _FakeUpload(b"x" * 5000))
 
         assert list(tmp_path.iterdir()) == [], "被拒的上传不能留任何残留"
 
     @pytest.mark.asyncio
     async def test_oversize_rejected(self, monkeypatch, tmp_path):
-        monkeypatch.setattr(fm, "FONT_DIR", tmp_path)
+        monkeypatch.setattr(fm, "_FONT_DIR", tmp_path)
         monkeypatch.setattr(fm, "MAX_UPLOAD_BYTES", 2048)
 
         with pytest.raises(ValueError, match="上限"):
-            await fm.install_font("regular", _FakeUpload(b"x" * 8192))
+            await fm.install_font("custom", _FakeUpload(b"x" * 8192))
 
         assert list(tmp_path.iterdir()) == []
 
     @pytest.mark.asyncio
     async def test_bad_glyphs_rejected(self, monkeypatch, tmp_path):
         """能落盘但画不出字形的文件必须拒，且不能污染已有正式文件。"""
-        monkeypatch.setattr(fm, "FONT_DIR", tmp_path)
-        existing = tmp_path / fm.WEIGHT_FILES["regular"]
+        monkeypatch.setattr(fm, "_FONT_DIR", tmp_path)
+        existing = tmp_path / _CUSTOM_FILE
         existing.write_bytes(b"original")
 
         with pytest.raises(ValueError, match="中文字形"):
-            await fm.install_font("regular", _FakeUpload(b"y" * (2 * 1024 * 1024)))
+            await fm.install_font("custom", _FakeUpload(b"y" * (2 * 1024 * 1024)))
 
         assert existing.read_bytes() == b"original", "校验失败不能动正式文件"
-        assert sorted(p.name for p in tmp_path.iterdir()) == [
-            fm.WEIGHT_FILES["regular"]
-        ]
+        assert sorted(p.name for p in tmp_path.iterdir()) == [_CUSTOM_FILE]
 
     @pytest.mark.asyncio
     async def test_success_writes_target(self, monkeypatch, tmp_path):
         """落盘、改名、缓存失效这三步是自查逻辑，不依赖真实字体。"""
-        monkeypatch.setattr(fm, "FONT_DIR", tmp_path)
+        monkeypatch.setattr(fm, "_FONT_DIR", tmp_path)
         monkeypatch.setattr(fm, "_probe_glyphs", lambda p: True)
         monkeypatch.setattr(fm, "_usable", lambda p: p.is_file())
-        fm._last_failure = 12345.0
-        fm._ready = True
+        fm._last_failure_at = 12345.0
+        fm._ready_for = "neoxihei"
 
-        result = await fm.install_font("regular", _FakeUpload(b"z" * (2 * 1024 * 1024)))
+        result = await fm.install_font("custom", _FakeUpload(b"z" * (2 * 1024 * 1024)))
 
-        target = tmp_path / fm.WEIGHT_FILES["regular"]
+        target = tmp_path / _CUSTOM_FILE
         assert target.is_file()
         assert target.stat().st_size == 2 * 1024 * 1024
-        assert result["key"] == "regular"
+        assert result["key"] == "custom"
         assert result["size"] == 2 * 1024 * 1024
-        assert fm._last_failure == 0.0, "上传成功要清掉旧的失败冷却"
+        assert fm._last_failure_at == 0.0, "上传成功要清掉旧的失败冷却"
+        assert fm.selected_font() == "custom", "上传完要自动切到自定义款"
         assert sorted(p.name for p in tmp_path.iterdir()) == [
-            fm.WEIGHT_FILES["regular"]
-        ], "只该留下正式文件，临时文件必须清掉"
+            _CUSTOM_FILE,
+            fm.SELECTION_FILE_NAME,
+        ], "只该留下正式文件与选中项，临时文件必须清掉"
 
     @pytest.mark.asyncio
     async def test_success_clears_render_cache(self, monkeypatch, tmp_path):
         """换字体后渲染器缓存必须失效，否则出图还是旧字形。"""
-        monkeypatch.setattr(fm, "FONT_DIR", tmp_path)
+        monkeypatch.setattr(fm, "_FONT_DIR", tmp_path)
         monkeypatch.setattr(fm, "_probe_glyphs", lambda p: True)
         monkeypatch.setattr(fm, "_usable", lambda p: p.is_file())
         cleared = []
         monkeypatch.setattr(fm, "_clear_render_cache", lambda: cleared.append(1))
 
-        await fm.install_font("regular", _FakeUpload(b"z" * (2 * 1024 * 1024)))
+        await fm.install_font("custom", _FakeUpload(b"z" * (2 * 1024 * 1024)))
 
         assert cleared == [1], "install 之后必须清渲染缓存"
 
@@ -551,15 +782,16 @@ class TestInstallFont:
     @pytest.mark.skipif(not _HAS_REAL_FONT, reason="容器内没有真实字体文件")
     @pytest.mark.asyncio
     async def test_real_font_roundtrip(self, monkeypatch, tmp_path):
-        """用真实字体走完整链路：上传 → 字形探测 → 就绪。"""
-        monkeypatch.setattr(fm, "FONT_DIR", tmp_path)
+        """用真实字体走完整链路：上传 → 字形探测 → 就绪 → 选中。"""
+        monkeypatch.setattr(fm, "_FONT_DIR", tmp_path)
         payload = _REAL_FONT.read_bytes()
 
-        result = await fm.install_font("regular", _FakeUpload(payload))
+        result = await fm.install_font("custom", _FakeUpload(payload))
 
         assert result["size"] == len(payload)
-        assert (tmp_path / fm.WEIGHT_FILES["regular"]).is_file()
-        assert fm.fonts_ready() is True, "单字重装好就是全部就绪"
+        assert (tmp_path / _CUSTOM_FILE).is_file()
+        assert fm.selected_font_ready() is True, "选中的那一款装好就是就绪"
+        assert fm.selected_font() == "custom"
 
     @pytest.mark.skipif(not _HAS_REAL_FONT, reason="容器内没有真实字体文件")
     def test_probe_accepts_real_font(self):
