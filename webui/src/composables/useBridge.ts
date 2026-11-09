@@ -102,5 +102,25 @@ export function useBridge() {
     return (json?.data ?? json) as T
   }
 
-  return { init, apiGet, apiPost }
+  // 宿主桥接的 upload 只接 (endpoint, file)，且 endpoint 校验禁止出现 ? # \ ://
+  // 需要额外参数时走路径参数，如 upload('fonts/upload/custom', file)
+  async function upload<T = unknown>(endpoint: string, file: File): Promise<T> {
+    if (bridge) {
+      return (await bridge.upload(endpoint, file)) as T
+    }
+    // 开发模式回退：与宿主一致，文件字段名固定为 file
+    const form = new FormData()
+    form.append('file', file)
+    const resp = await fetch(`/api/plug/${PLUGIN_NAME}/${endpoint}`, {
+      method: 'POST',
+      body: form,
+    })
+    const json = await resp.json()
+    if (json?.status === 'error') {
+      throw new Error(json.message || '上传失败')
+    }
+    return (json?.data ?? json) as T
+  }
+
+  return { init, apiGet, apiPost, upload }
 }

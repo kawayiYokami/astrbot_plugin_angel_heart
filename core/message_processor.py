@@ -15,6 +15,8 @@ MessageProcessor - 前台消息处理器
 import copy
 from typing import Any, List, Dict
 
+from astrbot.api import logger
+
 from .utils import format_message_to_text
 from .utils.message_utils import serialize_content_parts
 
@@ -189,3 +191,113 @@ class MessageProcessor:
 
         lines = [f"[Image Ref {idx}] {ref}" for idx, ref in enumerate(refs, start=1)]
         return "\n".join(lines)
+
+
+# 工具调用缺失回执时的占位内容。上游要求每个 function_call 恰好一条
+# function_call_output，缺一条就整次请求 400。
+TOOL_RESULT_PLACEHOLDER = "no reply"
+
+
+def _get_tool_call_id(tool_call: Any) -> str:
+    """兼容 dict 与 Pydantic 对象两种 tool_call 形态。"""
+    if isinstance(tool_call, dict):
+        call_id = tool_call.get("id")
+    else:
+        call_id = getattr(tool_call, "id", None)
+    return str(call_id) if call_id else ""
+
+
+def ensure_tool_call_pairing(contexts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """保证每个 function_call 恰好对应一条 function_call_output。
+
+    账本里的工具链来源不止一处：主链路完成点落账、子代理完成点落账、
+    冷启动从官方会话历史补种。任一来源错位，都可能让同一次调用出现两条
+    回执，或只有调用没有回执。上游对这两种情况都会直接拒绝请求：
+    Duplicate function_call_output / each function_call must have exactly
+    one matching function_call_output。
+
+    这里按出现顺序重排一遍，规则只有三条：
+    1. 同一次调用的重复回执、找不到对应调用的孤立回执，一律丢弃；
+    2. 同一次调用重复出现在多条 assistant 消息里，只认第一条；
+    3. 调用缺回执时补一条 no reply，保证闭合链完整。
+
+    顺序不做任何调整：补出来的回执紧跟在它所属的调用之后，不改变原有
+    对话次序，也不影响前缀缓存。
+    """
+    normalized: List[Dict[str, Any]] = []
+    pending: List[str] = []
+    answered: set[str] = set()
+    seen_calls: set[str] = set()
+    dropped_outputs = 0
+    dropped_calls = 0
+
+    def _flush_pending() -> None:
+        for call_id in pending:
+            if call_id in answered:
+                continue
+            normalized.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": call_id,
+                    "content": TOOL_RESULT_PLACEHOLDER,
+                }
+            )
+            answered.add(call_id)
+        pending.clear()
+
+    for item in contexts:
+        if not isinstance(item, dict):
+            normalized.append(item)
+            continue
+
+        role = item.get("role")
+
+        if role == "tool":
+            raw_call_id = item.get("tool_call_id")
+            call_id = str(raw_call_id) if raw_call_id else ""
+            if not call_id or call_id in answered or call_id not in pending:
+                dropped_outputs += 1
+                continue
+            normalized.append(item)
+            answered.add(call_id)
+            pending.remove(call_id)
+            continue
+
+        _flush_pending()
+
+        if role != "assistant" or not item.get("tool_calls"):
+            normalized.append(item)
+            continue
+
+        kept_calls = []
+        message_dropped_calls = 0
+        for tool_call in item["tool_calls"]:
+            call_id = _get_tool_call_id(tool_call)
+            if not call_id or call_id in seen_calls:
+                dropped_calls += 1
+                message_dropped_calls += 1
+                continue
+            seen_calls.add(call_id)
+            pending.append(call_id)
+            kept_calls.append(tool_call)
+
+        if message_dropped_calls and not kept_calls:
+            # 整条消息的调用全是重复的：去掉 tool_calls，保留文本内容；
+            # 连内容都没有就整条丢弃，避免下印发一条空的 assistant 消息。
+            stripped = {k: v for k, v in item.items() if k != "tool_calls"}
+            if stripped.get("content"):
+                normalized.append(stripped)
+            continue
+
+        if len(kept_calls) != len(item["tool_calls"]):
+            item = {**item, "tool_calls": kept_calls}
+        normalized.append(item)
+
+    _flush_pending()
+
+    if dropped_outputs or dropped_calls:
+        logger.debug(
+            f"工具链收口: 丢弃重复/孤立回执 {dropped_outputs} 条, 丢弃重复调用 {dropped_calls} 条"
+        )
+
+    return normalized

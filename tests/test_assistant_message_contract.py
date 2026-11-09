@@ -209,3 +209,28 @@ def test_extract_completed_agent_messages_only_keeps_new_assistant_tool_chain():
     assert extracted[0].tool_calls[0].model_dump() == {"id": "call_1"}
     assert extracted[1].tool_call_id == "call_1"
     assert extracted[2].content[0].model_dump() == {"type": "text", "text": "最终回答"}
+
+
+def test_extract_completed_agent_messages_drops_leading_orphan_tool_result():
+    """切片起点落在工具链中间时，无主回执不能进账本。"""
+    provider_request = SimpleNamespace(
+        contexts=[{"role": "user", "content": "更早的问题"}],
+        prompt="当前用户问题",
+        image_urls=[],
+        audio_urls=[],
+        extra_user_content_parts=[],
+        system_prompt="",
+    )
+    messages = [
+        DummyMessage(role="assistant", content="更早的回答"),
+        DummyMessage(role="assistant", tool_calls=[DummyPart({"id": "call_orphan"})], content=[]),
+        DummyMessage(role="tool", content="无主结果", tool_call_id="call_orphan"),
+        DummyMessage(role="assistant", content=[DummyPart({"type": "text", "text": "后一条回答"})]),
+    ]
+
+    extracted = extract_completed_agent_messages(messages, provider_request)
+
+    # 基线只覆盖 1 条历史 + 1 条 prompt，切片从 call_orphan 的回执开始，
+    # 这条回执的调用不在切片内，必须丢弃，否则账本里就是一条无主回执。
+    assert [message.role for message in extracted] == ["assistant"]
+    assert extracted[0].content[0].model_dump() == {"type": "text", "text": "后一条回答"}
