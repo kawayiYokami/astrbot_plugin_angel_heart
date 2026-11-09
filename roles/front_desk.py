@@ -28,7 +28,7 @@ from ..core.utils import partition_dialogue_raw, format_final_prompt
 from ..core.image_processor import ImageProcessor
 
 from ..core.fishing_direct_reply import FishingDirectReply
-from ..core.message_processor import MessageProcessor
+from ..core.message_processor import MessageProcessor, ensure_tool_call_pairing
 from ..core.utils.content_utils import convert_content_to_string
 from ..core.utils.message_hits import (
     build_message_metadata,
@@ -229,7 +229,7 @@ class FrontDesk:
             return None
 
         image_cache = self.context.conversation_ledger.image_cache
-        dhash = image_cache.put(chat_id, raw_bytes)
+        dhash = await image_cache.put(chat_id, raw_bytes)
         if dhash:
             cache_path = str(image_cache.get_cached_path(chat_id, dhash))
             return {
@@ -288,7 +288,7 @@ class FrontDesk:
             logger.debug(f"AngelHeart[{chat_id}]: 文本文件过大({size}bytes)，已跳过: {name}")
             return {"type": "text", "text": f"[文件过大，不支持: {name}]"}
 
-        cached_path = self.context.conversation_ledger.image_cache.put_text_file(
+        cached_path = await self.context.conversation_ledger.image_cache.put_text_file(
             chat_id,
             local_path,
             name,
@@ -2121,6 +2121,52 @@ class FrontDesk:
 
         return new_contexts
 
+    def _ensure_tool_call_pairing(
+        self, chat_id: str, contexts: List[Dict]
+    ) -> List[Dict]:
+        """工具链收口，出请求前保证调用与回执一一配对。"""
+        try:
+            normalized = ensure_tool_call_pairing(contexts)
+        except Exception as e:
+            logger.error(
+                f"AngelHeart[{chat_id}]: 工具链收口失败，按原样下发: {e}", exc_info=True
+            )
+            return contexts
+        if len(normalized) != len(contexts):
+            logger.warning(
+                f"AngelHeart[{chat_id}]: 工具链收口调整上下文条数 {len(contexts)} -> {len(normalized)}"
+            )
+        return normalized
+
+    def _record_request_snapshot(self, chat_id: str, req: Any) -> None:
+        """记录本次主模型请求体的摘要快照，失败不影响主流程。
+
+        记的是插件重建之后的请求体：system + contexts + 当前提示词。
+        框架之后还会做压缩、图片预处理与二次请求，那些拿不到。
+        """
+        ring = getattr(self.context, "request_ring", None)
+        if ring is None:
+            return
+        try:
+            messages: List[Dict] = []
+            system_prompt = getattr(req, "system_prompt", "") or ""
+            if system_prompt:
+                messages.append({"role": "system", "content": system_prompt})
+            for item in getattr(req, "contexts", None) or []:
+                if isinstance(item, dict):
+                    messages.append(item)
+            prompt = getattr(req, "prompt", "") or ""
+            if prompt:
+                messages.append({"role": "user", "content": prompt})
+            ring.record(
+                chat_id,
+                source="assistant",
+                messages=messages,
+                model=getattr(req, "model", "") or "",
+            )
+        except Exception as e:
+            logger.debug(f"AngelHeart[{chat_id}]: 请求快照记录失败: {e}")
+
     def _collect_non_current_image_urls(
         self, recent_dialogue: List[Dict], current_message_id: str
     ) -> List[str]:
@@ -2406,6 +2452,9 @@ class FrontDesk:
         # 5.1 剔除本地文件已失效的图片块，避免本地路径透传给只认 base64/http 的上游
         new_contexts = self._strip_invalid_context_images(chat_id, new_contexts)
 
+        # 5.2 工具链收口：每个 function_call 必须恰好一条 function_call_output
+        new_contexts = self._ensure_tool_call_pairing(chat_id, new_contexts)
+
         # 6. 更新请求对象
         self._update_request(
             req,
@@ -2417,6 +2466,9 @@ class FrontDesk:
             current_image_urls=current_image_urls,
             extra_image_urls=extra_image_urls,
         )
+
+        # 6.1 记录本次请求摘要（只进内存环形队列，供 WebUI 排查请求体问题）
+        self._record_request_snapshot(chat_id, req)
 
         if not self._is_valid_final_prompt(final_prompt_str):
             logger.warning(

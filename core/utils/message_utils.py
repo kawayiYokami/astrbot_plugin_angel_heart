@@ -175,8 +175,13 @@ def extract_completed_agent_messages(
     completed_messages = []
     for message in all_messages[baseline_count:]:
         role = getattr(message, "role", None)
-        if role in ("assistant", "tool"):
-            completed_messages.append(message)
+        if role not in ("assistant", "tool"):
+            continue
+        if role == "tool" and not completed_messages:
+            # 切片起点落在工具链中间：这条回执的调用不在本次切片里，
+            # 记进账本就成了一条无主回执，上游会因调用与回执不配对拒绝请求。
+            continue
+        completed_messages.append(message)
     return completed_messages
 
 

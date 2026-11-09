@@ -1,16 +1,22 @@
 """
-ImageCache - 插件自有图片缓存
+ImageCache - 插件自有媒体缓存
 
 将上游传入的图片统一转为 WebP quality=75 最长边 ≤1024，
 存入插件数据目录下的 media_cache/{chat_id}/{dhash}.webp，
 不依赖上游临时文件生命周期。
 
-清理时机由 ConversationLedger 在消息截断/压缩时联动调用。
+执行域：文件读写、目录遍历、图片编解码与删除全部在本模块专属的单线程执行器
+上串行执行。事件循环只提交任务，不参与阻塞操作——共享卷上的慢 IO 或删不掉的
+占用文件不会再把整个进程按住。
 """
 
+import asyncio
 import io
 import hashlib
+import os
 import re
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Optional
 
@@ -29,6 +35,18 @@ class ImageCache:
 
     def __init__(self, root: Path):
         self._root = root / "media_cache"
+        # 路径归属判定按文件高频调用，根路径只归一一次，避免逐文件 resolve
+        self._root_abs = os.path.abspath(str(self._root))
+        self._root_key = os.path.normcase(self._root_abs)
+
+        # 媒体执行域：本模块所有阻塞操作串行跑在这一条线程上
+        self._executor = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="angel-media"
+        )
+        self._cleanup_lock = threading.Lock()
+        self._cleanup_targets: dict[str, set[str]] = {}
+        self._cleanup_jobs: set[str] = set()
+        self._closed = False
 
     # ── 路径 ──────────────────────────────────────
 
@@ -43,16 +61,18 @@ class ImageCache:
             safe = f"{safe[:70]}_{digest}"
         return safe[:120]
 
-    def _chat_dir(self, chat_id: str) -> Path:
+    def _chat_dir(self, chat_id: str, create: bool = False) -> Path:
+        """会话缓存目录。默认只算路径，读路径不产生建目录副作用。"""
         p = self._root / self._safe_segment(chat_id, "chat")
-        p.mkdir(parents=True, exist_ok=True)
+        if create:
+            p.mkdir(parents=True, exist_ok=True)
         return p
 
     def _file_path(self, chat_id: str, dhash: str) -> Path:
         return self._chat_dir(chat_id) / f"{dhash}.webp"
 
     def _files_dir(self, chat_id: str) -> Path:
-        p = self._chat_dir(chat_id) / "files"
+        p = self._chat_dir(chat_id, create=True) / "files"
         p.mkdir(parents=True, exist_ok=True)
         return p
 
@@ -115,11 +135,41 @@ class ImageCache:
     # ── 读写 ──────────────────────────────────────
 
     def get_cached_path(self, chat_id: str, dhash: str) -> Path:
-        """返回缓存文件路径，不论文件是否存在。"""
+        """返回缓存文件路径，不论文件是否存在（纯路径计算，不触盘）。"""
         return self._file_path(chat_id, dhash)
 
-    def get_cached(self, chat_id: str, dhash: str) -> Optional[bytes]:
+    async def _run_blocking(self, fn, *args):
+        """把阻塞调用交给执行域，调用方立即让出事件循环。"""
+        if self._closed:
+            return None
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(self._executor, fn, *args)
+
+    async def get_cached(self, chat_id: str, dhash: str) -> Optional[bytes]:
         """读取已缓存的 WebP 字节，不存在返回 None。"""
+        return await self._run_blocking(self._get_cached_blocking, chat_id, dhash)
+
+    async def put(self, chat_id: str, image_data: bytes) -> Optional[str]:
+        """将图片字节缓存为 WebP q75 max1024，返回 dhash（也是文件名）。"""
+        return await self._run_blocking(self._put_blocking, chat_id, image_data)
+
+    async def put_text_file(
+        self,
+        chat_id: str,
+        source_path: str | Path,
+        display_name: str = "",
+        max_bytes: int = MAX_TEXT_FILE_BYTES,
+    ) -> Optional[Path]:
+        """把小文本附件复制到插件缓存目录，返回稳定路径。"""
+        return await self._run_blocking(
+            self._put_text_file_blocking,
+            chat_id,
+            source_path,
+            display_name,
+            max_bytes,
+        )
+
+    def _get_cached_blocking(self, chat_id: str, dhash: str) -> Optional[bytes]:
         path = self._file_path(chat_id, dhash)
         if path.exists():
             try:
@@ -128,8 +178,7 @@ class ImageCache:
                 logger.warning(f"读取缓存图片失败: {e}")
         return None
 
-    def put(self, chat_id: str, image_data: bytes) -> Optional[str]:
-        """将图片字节缓存为 WebP q75 max1024，返回 dhash（也是文件名）。"""
+    def _put_blocking(self, chat_id: str, image_data: bytes) -> Optional[str]:
         webp_bytes = self._convert_to_webp(image_data)
         if webp_bytes is None:
             return None
@@ -151,14 +200,13 @@ class ImageCache:
             logger.warning(f"写入缓存图片失败: {e}")
             return None
 
-    def put_text_file(
+    def _put_text_file_blocking(
         self,
         chat_id: str,
         source_path: str | Path,
-        display_name: str = "",
-        max_bytes: int = MAX_TEXT_FILE_BYTES,
+        display_name: str,
+        max_bytes: int,
     ) -> Optional[Path]:
-        """把小文本附件复制到插件缓存目录，返回稳定路径。"""
         try:
             src = Path(source_path)
             if not src.exists() or not src.is_file():
@@ -177,31 +225,24 @@ class ImageCache:
             logger.warning(f"写入缓存文件失败: {e}")
             return None
 
+    # ── 归属判定 ──────────────────────────────────
+
     def is_managed_path(self, path: str | Path) -> bool:
-        """判断路径是否位于插件媒体缓存目录内。"""
+        """判断路径是否位于插件媒体缓存目录内（纯字符串归一，不触盘）。"""
         try:
-            root = self._root.resolve(strict=False)
-            target = Path(path).resolve(strict=False)
-            target.relative_to(root)
-            return True
+            target_key = os.path.normcase(os.path.abspath(str(path)))
+            return os.path.commonpath([target_key, self._root_key]) == self._root_key
         except Exception:
             return False
 
-    def remove_managed_path(self, path: str | Path) -> bool:
-        """仅删除插件媒体缓存目录内的文件。"""
-        try:
-            target = Path(path)
-            if not self.is_managed_path(target):
-                return False
-            if target.exists() and target.is_file():
-                target.unlink()
-                return True
-        except Exception as e:
-            logger.debug(f"删除缓存文件失败: {e}")
-        return False
+    def normalize_managed_path(self, path: str | Path) -> str:
+        """归一化为引用集合比对用的键；不在缓存目录内返回空串。"""
+        if not self.is_managed_path(path):
+            return ""
+        return os.path.normcase(os.path.abspath(str(path)))
 
     def iter_managed_files(self, chat_id: str = "") -> list[Path]:
-        """列出插件媒体缓存中的文件。"""
+        """列出插件媒体缓存中的文件。仅允许在执行域内调用。"""
         target = self._chat_dir(chat_id) if chat_id else self._root
         if not target.exists():
             return []
@@ -211,7 +252,74 @@ class ImageCache:
             logger.debug(f"列出缓存文件失败: {e}")
             return []
 
+    def _unlink_managed(self, path: str | Path) -> bool:
+        """删除缓存目录内的单个文件。仅允许在执行域内调用。"""
+        try:
+            target = Path(path)
+            if target.is_file():
+                target.unlink()
+                return True
+        except Exception as e:
+            logger.debug(f"删除缓存文件失败: {e}")
+        return False
+
     # ── 清理 ──────────────────────────────────────
+
+    def schedule_cleanup(self, chat_id: str, referenced: set[str]) -> None:
+        """登记要删的未引用文件，删除在执行域串行执行，调用方立即返回。
+
+        同一会话已有排队任务时只更新待删集合，不重复入队；任务运行期间
+        再次登记会被下一轮消费，不会丢。
+        """
+        with self._cleanup_lock:
+            self._cleanup_targets[chat_id] = set(referenced)
+            if self._closed or chat_id in self._cleanup_jobs:
+                return
+            self._cleanup_jobs.add(chat_id)
+        try:
+            self._executor.submit(self._run_cleanup, chat_id)
+        except RuntimeError:
+            # 执行域已关闭，放弃本轮登记
+            with self._cleanup_lock:
+                self._cleanup_jobs.discard(chat_id)
+                self._cleanup_targets.pop(chat_id, None)
+
+    def _run_cleanup(self, chat_id: str) -> None:
+        """执行域内循环消费该会话的待删集合。"""
+        while True:
+            with self._cleanup_lock:
+                referenced = self._cleanup_targets.pop(chat_id, None)
+                if referenced is None:
+                    self._cleanup_jobs.discard(chat_id)
+                    return
+            try:
+                self._delete_unreferenced(chat_id, referenced)
+            except Exception as e:
+                logger.warning(f"AngelHeart: 清理会话 {chat_id} 媒体缓存失败: {e}")
+
+    def _delete_unreferenced(self, chat_id: str, referenced: set[str]) -> None:
+        for path in self.iter_managed_files(chat_id):
+            key = self.normalize_managed_path(path)
+            if key and key not in referenced:
+                self._unlink_managed(path)
+
+    def shutdown(self, wait: bool = True) -> None:
+        """关闭执行域。wait=True 时等已提交任务做完，不丢删除任务。"""
+        with self._cleanup_lock:
+            self._closed = True
+        self._executor.shutdown(wait=wait)
+
+    def drain(self, timeout: float | None = None) -> bool:
+        """等执行域把已提交的任务做完；单线程 FIFO，哨兵返回即此前任务已清空。"""
+        if self._closed:
+            return True
+        try:
+            self._executor.submit(lambda: None).result(timeout)
+            return True
+        except Exception:
+            return False
+
+    # ── 会话/全量管理 ─────────────────────────────
 
     def clean_chat(self, chat_id: str):
         """删除指定会话的全部缓存文件。"""

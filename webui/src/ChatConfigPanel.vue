@@ -77,7 +77,13 @@
       <template v-if="viewMode === 'monitor'">
         <div class="content-header">
           <h2>联系人监控</h2>
-          <span class="content-sub">群聊与私聊的在场状态、巡检与最近决策，每 3 秒自动刷新</span>
+          <div class="content-header-side">
+            <span class="content-sub">群聊与私聊的在场状态、巡检与最近决策，每 3 秒自动刷新</span>
+            <n-button size="tiny" tertiary @click="openRequestDrawer">
+              <template #icon><Icon icon="lucide:scroll-text" /></template>
+              最近请求
+            </n-button>
+          </div>
         </div>
         <n-radio-group v-model:value="kindFilter" class="kind-filter">
           <n-radio-button value="all">全部</n-radio-button>
@@ -135,6 +141,27 @@
             :description="kindFilter === 'all' ? '暂无联系人（产生消息后才会出现在这里）' : (kindFilter === 'group' ? '暂无群聊' : '暂无私聊')"
           />
         </div>
+      </template>
+
+      <!-- 字体：插件级资源，独立视图 -->
+      <template v-else-if="viewMode === 'fonts'">
+        <div class="content-header">
+          <h2>字体</h2>
+          <span class="content-sub">字体下载好后，长文才会转成图</span>
+        </div>
+        <FontPanel
+          :dir="fontState.dir"
+          :ready="fontState.ready"
+          :downloading="fontState.downloading"
+          :cooldown-remaining="fontState.cooldown_remaining"
+          :fonts="fontState.fonts"
+          :fetching="fontFetching"
+          :selecting-key="fontSelectingKey"
+          :uploading="fontUploading"
+          @select="selectFont"
+          @fetch="triggerFontFetch"
+          @upload="uploadFont"
+        />
       </template>
 
       <!-- 全局配置（可编辑）：schema 驱动分段卡片；有草稿变更时右下角浮出保存按钮 -->
@@ -208,6 +235,52 @@
       </n-scrollbar>
     </n-layout-content>
 
+    <!-- 请求快照抽屉：全局最近 10 次请求的原貌 -->
+    <n-drawer
+      v-model:show="requestDrawerVisible"
+      placement="right"
+      width="min(760px, 100vw)"
+    >
+      <n-drawer-content title="最近 10 次请求" closable>
+        <p class="req-tip">
+          全局只留 10 条，秘书与助理各占一条，实际能回看大约 5 轮。
+          记的是插件重建后的请求体原文，图片二进制换成大小标记，其余原样；
+          框架之后的上下文压缩、图片预处理与 skills_like 二次请求不在这里。
+        </p>
+        <n-spin :show="requestLoading">
+          <n-empty
+            v-if="!requestItems.length && !requestLoading"
+            description="暂无请求（插件重载后才会开始记录）"
+          />
+          <div v-else class="req-list">
+            <div v-for="item in requestItems" :key="item.seq" class="req-card">
+              <div class="req-head">
+                <n-tag
+                  size="small"
+                  :bordered="false"
+                  :type="item.source === 'assistant' ? 'success' : 'info'"
+                >
+                  {{ item.source === 'assistant' ? '助理' : '秘书' }}
+                </n-tag>
+                <span class="req-time">{{ item.time }}</span>
+                <span class="req-chat" :title="item.chat_id">{{ shortChatId(item.chat_id) }}</span>
+                <n-tag
+                  size="small"
+                  :bordered="false"
+                  :type="item.pairing.ok ? 'default' : 'error'"
+                >
+                  {{ pairingLabel(item) }}
+                </n-tag>
+              </div>
+              <div class="req-json-box">
+                <VueJsonPretty :data="item" :deep="5" :show-length="true" />
+              </div>
+            </div>
+          </div>
+        </n-spin>
+      </n-drawer-content>
+    </n-drawer>
+
     <!-- 新建模板弹窗 -->
     <n-modal
       v-model:show="createModalVisible"
@@ -265,6 +338,8 @@ import { computed, h, inject, onMounted, onUnmounted, reactive, ref } from 'vue'
 import {
   NButton,
   NCard,
+  NDrawer,
+  NDrawerContent,
   NEmpty,
   NForm,
   NFormItem,
@@ -280,9 +355,11 @@ import {
   NRadioGroup,
   NScrollbar,
   NSelect,
+  NSpin,
   NSwitch,
   NTabPane,
   NTabs,
+  NTag,
   useMessage,
 } from 'naive-ui'
 import type { MenuOption } from 'naive-ui'
@@ -291,23 +368,33 @@ import {
   GROUPS,
   type ChatItem,
   type ChatStatusItem,
+  type RequestRingResponse,
+  type RequestSnapshot,
   type TemplateDetail,
   type TemplateConfig,
 } from './fields'
 import { useBridge } from './composables/useBridge'
+import FontPanel, { type FontState } from './FontPanel.vue'
+import { formatMB } from './format'
 import { themeKey } from './theme'
 import SchemaForm from './SchemaForm.vue'
+import VueJsonPretty from 'vue-json-pretty'
+import 'vue-json-pretty/lib/styles.css'
 import type { SchemaMeta } from './schema'
 
-const { apiGet, apiPost } = useBridge()
+const { apiGet, apiPost, upload } = useBridge()
 const message = useMessage()
 const { isDark, toggle: toggleTheme } = inject(themeKey)!
 
 const templates = ref<TemplateDetail[]>([])
 const chats = ref<ChatItem[]>([])
+// ---------- 请求快照抽屉：全局最近 10 次 ----------
+const requestDrawerVisible = ref(false)
+const requestItems = ref<RequestSnapshot[]>([])
+const requestLoading = ref(false)
 const statusItems = ref<ChatStatusItem[]>([])
 const kindFilter = ref<'all' | 'group' | 'private'>('all')
-const viewMode = ref<'config' | 'monitor'>('monitor')
+const viewMode = ref<'config' | 'monitor' | 'fonts'>('monitor')
 const selectedId = ref<string | null>(null)
 const sidebarCollapsed = ref(false)
 // naive-ui 的 n-layout-sider 没有 breakpoint 属性，用 matchMedia 实现窄屏自动收起
@@ -395,6 +482,7 @@ function renderTemplateLabel(tpl: TemplateDetail) {
 
 const sidebarMenuOptions = computed<MenuOption[]>(() => [
   { label: '联系人监控', key: 'monitor', icon: () => h(Icon, { icon: 'lucide:activity' }) },
+  { label: '字体', key: 'fonts', icon: () => h(Icon, { icon: 'lucide:type' }) },
   ...templates.value.map((tpl) => ({
     key: tpl.id,
     icon: () => h(Icon, { icon: 'lucide:file-text' }),
@@ -403,12 +491,21 @@ const sidebarMenuOptions = computed<MenuOption[]>(() => [
 ])
 
 function onSidebarMenu(key: string) {
-  if (key === 'monitor') viewMode.value = 'monitor'
-  else selectTemplate(key)
+  stopFontPoll()
+  if (key === 'monitor') {
+    viewMode.value = 'monitor'
+  } else if (key === 'fonts') {
+    viewMode.value = 'fonts'
+    // 进入即加载一次，替代原来的手动刷新按钮
+    void loadFonts()
+  } else {
+    selectTemplate(key)
+  }
 }
 
 const sidebarMenuValue = computed(() => {
   if (viewMode.value === 'monitor') return 'monitor'
+  if (viewMode.value === 'fonts') return 'fonts'
   return selectedId.value
 })
 
@@ -492,6 +589,129 @@ async function savePromptSettings() {
   }
 }
 
+// ---------- 字体（插件级资源，放在全局配置里） ----------
+
+const fontState = ref<FontState>({
+  dir: '',
+  selected: '',
+  ready: false,
+  downloading: false,
+  cooldown_remaining: 0,
+  fonts: [],
+})
+const fontLoading = ref(false)
+const fontFetching = ref(false)
+const fontSelectingKey = ref<string | null>(null)
+const fontUploading = ref(false)
+
+// 切到未下载的字体时后端会起后台任务，这里轮询到下载结束
+let fontPollTimer: number | null = null
+
+function stopFontPoll() {
+  if (fontPollTimer !== null) {
+    clearInterval(fontPollTimer)
+    fontPollTimer = null
+  }
+}
+
+function watchFontDownload() {
+  stopFontPoll()
+  fontPollTimer = window.setInterval(() => {
+    void loadFonts().then(() => {
+      if (!fontState.value.downloading) stopFontPoll()
+    })
+  }, 2000)
+}
+
+function applyFontState(data?: Partial<FontState> | null) {
+  fontState.value = {
+    dir: String(data?.dir ?? ''),
+    selected: String(data?.selected ?? ''),
+    ready: Boolean(data?.ready),
+    downloading: Boolean(data?.downloading),
+    cooldown_remaining: Math.ceil(Number(data?.cooldown_remaining ?? 0)),
+    fonts: data?.fonts || [],
+  }
+}
+
+async function loadFonts() {
+  if (fontLoading.value) return
+  fontLoading.value = true
+  try {
+    applyFontState(await apiGet<FontState>('fonts'))
+    // 下载可能是长回复触发的，进来时已经在跑；这时得把轮询接上，否则面板停在「正在下载」不再动
+    if (fontState.value.downloading && fontPollTimer === null) watchFontDownload()
+  } catch (e) {
+    message.error(`加载字体状态失败：${(e as Error).message}`)
+  } finally {
+    fontLoading.value = false
+  }
+}
+
+// 点一款字体：后端切选中项，未下载的话顺手起下载，这里接着轮询
+async function selectFont(key: string) {
+  if (fontSelectingKey.value) return
+  fontSelectingKey.value = key
+  try {
+    const data = await apiPost<FontState & { started: boolean }>(
+      `fonts/select/${encodeURIComponent(key)}`,
+      {},
+    )
+    applyFontState(data)
+    if (data?.started || fontState.value.downloading) {
+      message.info('正在后台下载，下完自动生效')
+      watchFontDownload()
+    } else if (!fontState.value.ready) {
+      message.warning('这款字体还没下好，可以点「重试下载」再试一次')
+    }
+  } catch (e) {
+    message.error(`切换字体失败：${(e as Error).message}`)
+  } finally {
+    fontSelectingKey.value = null
+  }
+}
+
+async function triggerFontFetch() {
+  fontFetching.value = true
+  try {
+    // 桥接只把 data 解出来，信封里的 message 取不到，所以按 started 判断结果
+    const data = await apiPost<{ started: boolean }>('fonts/fetch')
+    if (data?.started) {
+      message.success('已开始下载，下完自动生效')
+      watchFontDownload()
+    } else {
+      message.warning('冷却中，稍后再试')
+    }
+    await loadFonts()
+  } catch (e) {
+    message.error(`触发下载失败：${(e as Error).message}`)
+  } finally {
+    fontFetching.value = false
+  }
+}
+
+// 桥接的 endpoint 校验禁止出现 ?，key 只能走路径参数
+async function uploadFont(key: string, file: File) {
+  if (!/\.ttf$/i.test(file.name)) {
+    message.error('只能上传 .ttf 字体文件')
+    return
+  }
+  fontUploading.value = true
+  try {
+    const data = await upload<{ key: string; size: number; ready: boolean }>(
+      `fonts/upload/${encodeURIComponent(key)}`,
+      file,
+    )
+    message.success(`已上传（${formatMB(Number(data?.size ?? 0))}），已切换为这款字体`)
+    // 后端上传成功后会自动把选中项切到该 key，这里重新拉一次就够
+    await loadFonts()
+  } catch (e) {
+    message.error(`上传失败：${(e as Error).message}`)
+  } finally {
+    fontUploading.value = false
+  }
+}
+
 // 全局配置可编辑：首次切到全局配置视图时加载 schema + 当前值
 function loadPluginConfig() {
   if (settingsLoaded.value) return
@@ -548,6 +768,7 @@ function decisionTime(ts: number): string {
 }
 
 function selectTemplate(id: string | null) {
+  stopFontPoll()
   viewMode.value = 'config'
   selectedId.value = id
   if (!id) {
@@ -722,6 +943,43 @@ async function refreshStatus() {
   }
 }
 
+// ---------- 请求快照：全局最近 10 次 ----------
+
+async function openRequestDrawer() {
+  requestDrawerVisible.value = true
+  await loadRequestSnapshots()
+}
+
+async function loadRequestSnapshots() {
+  requestLoading.value = true
+  try {
+    const data = await apiGet<RequestRingResponse>('request_ring')
+    requestItems.value = data.items || []
+  } catch (e) {
+    message.error('读取请求快照失败：' + String((e as Error)?.message || e))
+  } finally {
+    requestLoading.value = false
+  }
+}
+
+// 全局队列里会话混在一起，列表里只显示会话尾号，标题保留全文
+function shortChatId(chatId: string): string {
+  if (!chatId) return '未知会话'
+  const segments = chatId.split(':').filter(Boolean)
+  return segments[segments.length - 1] || chatId
+}
+
+function pairingLabel(snapshot: RequestSnapshot): string {
+  const p = snapshot.pairing
+  if (p.ok) return '配对正常'
+  const issues: string[] = []
+  if (p.duplicate_result.length) issues.push(`重复回执 ${p.duplicate_result.length}`)
+  if (p.missing.length) issues.push(`缺回执 ${p.missing.length}`)
+  if (p.orphan.length) issues.push(`无主回执 ${p.orphan.length}`)
+  if (p.duplicate_call.length) issues.push(`重复调用 ${p.duplicate_call.length}`)
+  return issues.join('、') || '配对异常'
+}
+
 async function loadAll() {
   try {
     const data = await apiGet<{
@@ -763,6 +1021,7 @@ onUnmounted(() => {
     clearInterval(statusTimer)
     statusTimer = null
   }
+  stopFontPoll()
 })
 </script>
 
@@ -1015,6 +1274,83 @@ onUnmounted(() => {
 
 .status-binding {
   margin-top: 2px;
+}
+
+/* ---------- 请求快照抽屉 ---------- */
+
+.req-tip {
+  margin: 0 0 14px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-3);
+}
+
+.req-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 12px;
+}
+
+.req-time {
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.req-chat {
+  color: var(--accent);
+  font-family: Consolas, Courier New, monospace;
+}
+
+.content-header-side {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.req-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.req-card {
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* 快照原样交给 json 组件渲染，超长时内部滚动 */
+.req-json-box {
+  background: var(--glass-divider);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px 8px 4px;
+  max-height: 56vh;
+  overflow: auto;
+}
+
+.req-json-box .vjs-tree {
+  font-family: Consolas, Courier New, monospace;
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+/* 组件自带配色是亮色系的，暗色主题下换成能看清的一组 */
+:root[data-theme='dark'] .req-json-box .vjs-key {
+  color: #8ab4f8;
+}
+
+:root[data-theme='dark'] .req-json-box .vjs-value-string {
+  color: #7ee2a8;
+}
+
+:root[data-theme='dark'] .req-json-box .vjs-value-number {
+  color: #f0b775;
 }
 
 /* 悬浮保存按钮：右下角浮出，带玻璃阴影 */
