@@ -1,4 +1,4 @@
-"""收口插件 Handler 子任务，以及由消息入口明确登记的事件 pipeline。"""
+"""收口 Handler 子任务，以及明确属于本事件的短生命周期 pipeline。"""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ _HandlerResult = TypeVar("_HandlerResult")
 
 
 class RuntimeTaskTracker:
-    """追踪 Handler 子任务，只接管消息入口明确拥有的事件 pipeline。"""
+    """追踪 Handler 子任务，只接管已确认的事件 pipeline。"""
 
     def __init__(self) -> None:
         self._accepting = True
@@ -46,6 +46,33 @@ class RuntimeTaskTracker:
 
         pipeline.add_done_callback(_release)
 
+    @staticmethod
+    def _is_native_event_pipeline(event: object | None) -> bool:
+        """Recognize only the native scheduler's root coroutine for this event.
+
+        Hooks can precede our message handler, for example when a command is
+        already sending a reply. A scheduler borrowed from another plugin must
+        still keep ownership of its own root task, even if it awaits execute().
+        """
+        if event is None:
+            return False
+        task = asyncio.current_task()
+        if task is None:
+            return False
+        try:
+            from astrbot.core.pipeline.scheduler import PipelineScheduler
+
+            coroutine = task.get_coro()
+            frame = getattr(coroutine, "cr_frame", None)
+            return (
+                getattr(coroutine, "cr_code", None) is PipelineScheduler.execute.__code__
+                and frame is not None
+                and frame.f_locals.get("event") is event
+            )
+        except (ImportError, AttributeError):
+            # Unknown framework wrappers do not grant cancellation ownership.
+            return False
+
     async def run(
         self,
         event: object | None,
@@ -53,12 +80,12 @@ class RuntimeTaskTracker:
         *,
         owns_pipeline: bool = False,
     ) -> _HandlerResult | None:
-        """运行 Handler；只有显式消息入口才取得宿主 pipeline 的取消权。"""
+        """运行 Handler；消息入口或已确认的原生事件任务可登记取消权。"""
         if not self._accepting:
             self._stop_event(event)
             return None
 
-        if owns_pipeline:
+        if owns_pipeline or self._is_native_event_pipeline(event):
             self._lease_pipeline(event)
         child = asyncio.create_task(handler())
         self._children[child] = event
@@ -111,8 +138,9 @@ def track_runtime_handler(
 ):
     """隔离 Handler 子任务；消息入口可显式登记其短生命周期 pipeline。
 
-    普通模型、发送和 Agent 完成钩子只借用调用方任务，热更新不能取消
-    调用方的长期调度循环。消息入口登记的 pipeline 仍会完整等待退出。
+    普通钩子只在调用方恰为当前事件的原生 PipelineScheduler.execute 根协程
+    时登记 pipeline，其他调用方仍只借用任务，热更新不能取消外部长期循环。
+    消息入口也可显式登记其拥有的 pipeline，停止时完整等待退出。
     """
 
     def decorate(handler_method):
