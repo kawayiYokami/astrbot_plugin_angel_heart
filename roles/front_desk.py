@@ -2321,6 +2321,58 @@ class FrontDesk:
                     continue
             ref_index += 1
 
+    async def _persona_begin_dialogs_for_request(
+        self, chat_id: str, event: AstrMessageEvent, req: Any
+    ) -> List[Dict]:
+        """Keep the selected persona's examples when replacing conversation history.
+
+        Resolve through AstrBot rather than copying the old request prefix: it can
+        contain examples from an earlier persona or persisted conversation turns.
+        """
+        conversation = getattr(req, "conversation", None)
+        manager = getattr(self.astr_context, "persona_manager", None)
+        resolver = getattr(manager, "resolve_selected_persona", None)
+        if conversation is None or not callable(resolver):
+            return []
+        try:
+            get_platform_name = getattr(event, "get_platform_name", None)
+            platform_name = (
+                get_platform_name()
+                if callable(get_platform_name)
+                else chat_id.split(":", 1)[0]
+            )
+            # Older AstrBot resolvers use these settings for the default persona.
+            # Read the event's effective config rather than the global default.
+            get_config = getattr(self.astr_context, "get_config", None)
+            settings = {}
+            if callable(get_config):
+                config = get_config(chat_id)
+                candidate = config.get("provider_settings", {})
+                if isinstance(candidate, dict):
+                    settings["provider_settings"] = candidate
+            _, persona, _, _ = await resolver(
+                umo=chat_id,
+                conversation_persona_id=getattr(conversation, "persona_id", None),
+                platform_name=platform_name,
+                **settings,
+            )
+            if not isinstance(persona, dict):
+                return []
+            dialogs = persona.get("_begin_dialogs_processed")
+            if not isinstance(dialogs, list):
+                return []
+            examples = copy.deepcopy(dialogs)
+            for message in examples:
+                message["_no_save"] = True
+            return examples
+        except Exception as exc:
+            logger.warning(
+                "AngelHeart: 读取当前人格预设对话失败，继续使用会话账本 (%s)",
+                type(exc).__name__,
+            )
+            return []
+
+
     def _update_request(
         self,
         req: Any,
@@ -2421,6 +2473,10 @@ class FrontDesk:
             current_message_id,
             scene_hint,
         )
+        persona_examples = await self._persona_begin_dialogs_for_request(
+            chat_id, event, req
+        )
+        new_contexts[:0] = persona_examples
         extra_image_urls = (
             self._collect_debounce_window_extra_image_urls(
                 recent_dialogue, event, current_message_id
