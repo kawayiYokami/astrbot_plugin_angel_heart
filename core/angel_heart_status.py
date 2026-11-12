@@ -319,7 +319,9 @@ class StatusChecker:
         normalized = message_content.casefold()
         return any(alias.casefold() in normalized for alias in aliases)
 
-    def get_leave_reply_trigger(self, chat_id: str) -> str:
+    def get_leave_reply_trigger(
+        self, chat_id: str, *, message_id: Optional[str] = None
+    ) -> str:
         """返回当前离场消息应触发的一次性回复类型；无触发时返回空字符串。"""
         try:
             if self.angel_context.is_leave_reply_in_cooldown(chat_id):
@@ -327,7 +329,7 @@ class StatusChecker:
             cm = self.config_manager.for_chat(chat_id)
             if (
                 cm.leave_echo_reply
-                and self._detect_echo_chamber(chat_id)
+                and self._detect_echo_chamber(chat_id, message_id=message_id)
             ):
                 return "echo_chamber"
             if (
@@ -339,75 +341,71 @@ class StatusChecker:
             logger.debug(f"AngelHeart[{chat_id}]: 离场应答检测失败: {e}")
         return ""
 
-    def _detect_echo_chamber(self, chat_id: str) -> bool:
-        """
-        检测复读行为 - 统计窗口内相同内容的纯文字消息数量
+    @staticmethod
+    def _echo_message_text(message: Dict) -> str:
+        """Read only actual user text; summaries and nontext placeholders do not count."""
+        if (
+            message.get("role") != "user"
+            or _is_summary_message(message)
+            or message.get("echo_eligible") is False
+        ):
+            return ""
+        content = message.get("content", "")
+        if isinstance(content, list):
+            if not content or any(
+                not isinstance(part, dict) or part.get("type") != "text"
+                or not isinstance(part.get("text"), str)
+                for part in content
+            ):
+                return ""
+            content = "".join(part["text"] for part in content)
+        return content.strip() if isinstance(content, str) else ""
 
-        Returns:
-            bool: True if echo chamber detected
-        """
+    def _detect_echo_chamber(
+        self, chat_id: str, *, message_id: Optional[str] = None
+    ) -> bool:
+        """Count distinct sources in the triggering event's uninterrupted text run."""
         try:
-            # 直接从 ConversationLedger 获取最近消息
             all_messages = self.angel_context.conversation_ledger.get_all_messages(
                 chat_id
             )
-            if len(all_messages) < 3:
+            requested_id = str(message_id or "") if message_id is not None else None
+            if requested_id == "":
                 return False
-
-            # 统计窗口内每个纯文字内容的出现次数
+            target_index = None
+            for index in range(len(all_messages) - 1, -1, -1):
+                message = all_messages[index]
+                if message.get("role") != "user" or _is_summary_message(message):
+                    continue
+                identity = str(message.get("source_message_id", message.get("message_id", "")) or "")
+                if requested_id is None or identity == requested_id:
+                    target_index = index
+                    break
+            if target_index is None:
+                return False
+            target = all_messages[target_index]
+            text = self._echo_message_text(target)
+            if not text:
+                return False
             cm = self.config_manager.for_chat(chat_id)
-            threshold = cm.echo_detection_threshold
-            content_count = {}  # content -> count
-            window = cm.echo_detection_window
-            cutoff_time = time.time() - window
-
-            for msg in all_messages:
-                if msg.get("role") != "user":
+            cutoff_time = time.time() - cm.echo_detection_window
+            if target.get("timestamp", 0) < cutoff_time:
+                return False
+            count = 0
+            seen = set()
+            for message in reversed(all_messages[: target_index + 1]):
+                if message.get("role") != "user" or _is_summary_message(message):
                     continue
-
-                # 检查时间窗口
-                if msg.get("timestamp", 0) < cutoff_time:
+                if self._echo_message_text(message) != text:
+                    break
+                identity = str(message.get("source_message_id", message.get("message_id", "")) or "")
+                if identity and identity in seen:
                     continue
-
-                # 先检查是否为纯文字消息（不包含图片）
-                content = msg.get("content", "")
-                if isinstance(content, list):
-                    # 检查是否包含图片
-                    has_image = any(
-                        item.get("type") == "image_url"
-                        for item in content
-                        if isinstance(item, dict)
-                    )
-                    if has_image:
-                        continue  # 跳过包含图片的消息
-
-                    # 提取纯文字内容
-                    text_parts = []
-                    for item in content:
-                        if isinstance(item, dict) and item.get("type") == "text":
-                            text_parts.append(item.get("text", ""))
-                    content = "".join(text_parts)
-
-                content = str(content).strip()
-
-                if not content:
-                    continue
-
-                # 统计内容出现次数
-                if content not in content_count:
-                    content_count[content] = 0
-                content_count[content] += 1
-
-            # 检查是否有内容出现次数达到阈值
-            for content, count in content_count.items():
-                if count >= threshold:
-                    logger.debug(
-                        f"AngelHeart[{chat_id}]: 检测到复读行为 - 内容: '{content}', 出现次数: {count}"
-                    )
-                    return True
-
-            return False
-
+                if identity:
+                    seen.add(identity)
+                if message.get("timestamp", 0) >= cutoff_time:
+                    count += 1
+            return count >= max(1, int(cm.echo_detection_threshold))
         except Exception as e:
             logger.debug(f"AngelHeart[{chat_id}]: 复读检测失败: {e}")
             return False
