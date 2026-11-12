@@ -421,6 +421,9 @@ class FrontDesk:
 
         new_message = {
             "role": "user",
+            "echo_eligible": bool(body_text.strip()) and all(
+                isinstance(component, (Plain, Reply)) for component in message_chain
+            ),
             "content": content_list,  # 标准多模态列表
             "sender_id": event.get_sender_id(),
             "sender_name": self._normalize_sender_name(
@@ -595,7 +598,9 @@ class FrontDesk:
         can_enter = is_wake or not cm.enter_on_mention_only
         leave_reply_trigger = ""
         if not can_enter and not is_present:
-            leave_reply_trigger = self.status_checker.get_leave_reply_trigger(chat_id)
+            leave_reply_trigger = self.status_checker.get_leave_reply_trigger(
+                chat_id, message_id=message_id
+            )
 
         # 离场进场：先标记进场，再进入助理防抖
         if can_enter and not is_present:
