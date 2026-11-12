@@ -65,6 +65,32 @@ def _examples(label):
     ]
 
 
+@pytest.mark.asyncio
+async def test_default_persona_resolution_uses_effective_session_provider_settings():
+    fd, event, req, _ = _scenario()
+    settings = {"default_personality": "session-default"}
+    original = copy.deepcopy(settings)
+    get_config = MagicMock(return_value={"provider_settings": settings})
+    fd.astr_context.get_config = get_config
+    examples = _examples("会话默认人格")
+
+    async def resolve(*, umo, conversation_persona_id, platform_name, provider_settings=None):
+        assert umo == event.unified_msg_origin
+        assert conversation_persona_id is None
+        assert platform_name == "aiocqhttp"
+        selected = (provider_settings or {}).get("default_personality")
+        return selected, {"_begin_dialogs_processed": examples} if selected else None, None, False
+
+    fd.astr_context.persona_manager.resolve_selected_persona = resolve
+
+    await fd.rewrite_prompt_for_llm(event.unified_msg_origin, event, req)
+
+    get_config.assert_called_once_with(event.unified_msg_origin)
+    assert req.contexts[:2] == examples
+    assert req.contexts[0] is not examples[0]
+    assert settings == original
+
+
 @pytest.mark.parametrize("chat_type", ["GroupMessage", "FriendMessage"])
 @pytest.mark.parametrize("conversation_persona_id", [None, "conversation-persona"])
 def test_rewrite_keeps_framework_selected_examples_without_reusing_old_prefix(

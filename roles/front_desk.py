@@ -2341,10 +2341,20 @@ class FrontDesk:
                 if callable(get_platform_name)
                 else chat_id.split(":", 1)[0]
             )
+            # Older AstrBot resolvers use these settings for the default persona.
+            # Read the event's effective config rather than the global default.
+            get_config = getattr(self.astr_context, "get_config", None)
+            settings = {}
+            if callable(get_config):
+                config = get_config(chat_id)
+                candidate = config.get("provider_settings", {})
+                if isinstance(candidate, dict):
+                    settings["provider_settings"] = candidate
             _, persona, _, _ = await resolver(
                 umo=chat_id,
                 conversation_persona_id=getattr(conversation, "persona_id", None),
                 platform_name=platform_name,
+                **settings,
             )
             if not isinstance(persona, dict):
                 return []
