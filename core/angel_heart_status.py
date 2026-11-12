@@ -364,7 +364,7 @@ class StatusChecker:
     def _detect_echo_chamber(
         self, chat_id: str, *, message_id: Optional[str] = None
     ) -> bool:
-        """Count distinct sources in the triggering event's uninterrupted text run."""
+        """Count matching sources within the window, bounded by the triggering event."""
         try:
             all_messages = self.angel_context.conversation_ledger.get_all_messages(
                 chat_id
@@ -397,7 +397,7 @@ class StatusChecker:
                 if message.get("role") != "user" or _is_summary_message(message):
                     continue
                 if self._echo_message_text(message) != text:
-                    break
+                    continue
                 identity = str(message.get("source_message_id", message.get("message_id", "")) or "")
                 if identity and identity in seen:
                     continue

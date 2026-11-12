@@ -1,4 +1,4 @@
-"""Only the triggering event's uninterrupted user text run can trigger an echo."""
+"""Echoes count matching user text within the triggering event's window."""
 
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -77,9 +77,9 @@ def test_duplicate_source_ids_only_count_once(monkeypatch):
     [{"type": "text", "text": "same"}, {"type": "image_url"}],
     " ",
 ])
-def test_real_other_content_breaks_the_user_run(monkeypatch, content):
+def test_other_content_does_not_reset_window_accumulation(monkeypatch, content):
     messages = [message("one"), message("break", content), message("two"), message("three")]
-    assert checker(monkeypatch, messages).get_leave_reply_trigger("g") == ""
+    assert checker(monkeypatch, messages).get_leave_reply_trigger("g") == "echo_chamber"
 
 
 @pytest.mark.parametrize("extra", [
@@ -89,7 +89,7 @@ def test_real_other_content_breaks_the_user_run(monkeypatch, content):
     {"kind": "summary_context"},
     {"kind": "context_compaction"},
 ])
-def test_assistant_tools_and_summaries_neither_count_nor_break_a_run(monkeypatch, extra):
+def test_assistant_tools_and_summaries_do_not_change_accumulation(monkeypatch, extra):
     messages = [message("one"), message("ignored", "other", **extra), message("two")]
     assert checker(monkeypatch, messages, threshold=2).get_leave_reply_trigger("g") == "echo_chamber"
 
