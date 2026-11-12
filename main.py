@@ -144,7 +144,7 @@ class AngelHeartPlugin(Star):
         filter.EventMessageType.GROUP_MESSAGE | filter.EventMessageType.PRIVATE_MESSAGE,
         priority=-10,
     )
-    @track_runtime_handler
+    @track_runtime_handler(owns_pipeline=True)
     async def smart_reply_handler(
         self, event: AstrMessageEvent, *args: Any, **kwargs: Any
     ) -> None:

@@ -14,7 +14,7 @@ from astrbot.core.message.components import At, Image, Plain, Poke, Reply
 
 
 class _FakeRuntimeTasks:
-    async def run(self, event, fn):
+    async def run(self, event, fn, *, owns_pipeline=False):
         return await fn()
 
 

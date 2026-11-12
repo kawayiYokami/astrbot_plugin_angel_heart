@@ -299,7 +299,7 @@ class TestLongReplyConvert:
 class _ImmediateTasks:
     """把追踪装饰器换成直接执行，避免测试里起真实子任务。"""
 
-    async def run(self, event, fn):
+    async def run(self, event, fn, *, owns_pipeline=False):
         return await fn()
 
 
