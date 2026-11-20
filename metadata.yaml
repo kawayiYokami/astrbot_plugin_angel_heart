@@ -13,3 +13,8 @@ tags:
   - 主动回复
   - 接话
   - 点名
+
+views:
+  - name: chat-config
+    title: 天使之心
+    description: 配置回复策略、字体与群聊绑定
