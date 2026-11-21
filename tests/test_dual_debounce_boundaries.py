@@ -1290,6 +1290,8 @@ class TestSecretaryActivation:
         assert event.get_extra("angelheart_decision_context")["boundary_message_id"] == "boundary-2"
         assert decision.should_reply is True
         assert decision.reply_strategy == "必须回应"
+        # 门闩已定，分析模型不该被请求：它的输出对结果没有决定权
+        secretary.perform_analysis.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_must_reply_ignores_force_reply_configuration(self):
@@ -1328,6 +1330,8 @@ class TestSecretaryActivation:
         decision = await secretary.handle_message_by_state(DummyEvent("mention"))
         assert decision.should_reply is True
         assert decision.reply_strategy == "必须回应"
+        # 门闩已定，分析模型不该被请求：它的输出对结果没有决定权
+        secretary.perform_analysis.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_empty_message_str_no_longer_short_circuits(self):

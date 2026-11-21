@@ -93,15 +93,21 @@ class Secretary:
         except Exception as e:
             logger.warning(f"AngelHeart[{chat_id}]: 固化决策上下文失败: {e}")
 
+        # 点名/唤醒在防抖放行时已把 must_reply 置为 True：这一轮必须回复，
+        # 秘书分析无权改变门闩结果，不必再请求一次分析模型。
+        if must_reply:
+            logger.debug(
+                f"AngelHeart[{chat_id}]: must_reply 已定，跳过秘书分析。"
+            )
+            return SecretaryDecision(
+                should_reply=True,
+                reply_strategy="必须回应",
+                topic="未知",
+            )
+
         decision = await self.perform_analysis(
             recent_dialogue, historical_context, chat_id, event=event
         )
-
-        # 点名巡检 / 助理防抖放行后必须回复；是否有理由不再影响门闩结果。
-        if must_reply:
-            decision.should_reply = True
-            if not decision.reply_strategy or decision.reply_strategy == "继续观察":
-                decision.reply_strategy = "必须回应"
 
         return decision
 
