@@ -28,7 +28,7 @@ export const GROUPS: GroupDef[] = [
     fields: [
       { key: 'alias', label: '唤醒词', type: 'text', placeholder: '如：AngelHeart', hint: '用于点名匹配。多个昵称请用 \'|\' 分隔。' },
       { key: 'ignored_sender_ids', label: '忽略的群聊发送者 ID', type: 'list', hint: '仅群聊生效。填写发送者 ID 字符串列表；上游命令旁路后拦截这些发送者的消息，不写入新历史、不进入秘书或防抖，也不影响已有待处理请求；已有历史保留。默认空列表不忽略任何人。' },
-      { key: 'alias_wake_cooldown_seconds', label: '昵称唤醒冷却（秒）', type: 'number', step: 0.1, hint: '仅群聊昵称点名生效。首次昵称唤醒放行后，按完整会话来源独立冷却；期间再次命中昵称按普通消息调度，不延长冷却。直接 @ 或引用回复机器人、命令和私聊不受影响。默认 0 表示不限制。' },
+      { key: 'alias_wake_cooldown_seconds', label: '昵称唤醒冷却（秒）', type: 'number', step: 0.1, hint: '仅群聊昵称点名生效。首次昵称唤醒放行后，按完整会话来源独立冷却；期间再次命中昵称按普通消息调度，不延长冷却。直接 @ 或引用回复机器人、命令和私聊不受影响。设为 0 表示不限制。' },
       { key: 'enter_on_mention_only', label: '仅点名入场', type: 'bool', hint: '启用后，离场时只有点名消息（@或昵称）能入场；关闭后任何消息都会入场处理。' },
       { key: 'force_reply_when_summoned', label: '被点名强制回复', type: 'bool', hint: '启用后，只要消息命中人格名称或助理昵称，助理都会直接回复。昵称点名仍受昵称唤醒冷却限制。' },
       { key: 'reply_even_not_questioned', label: '非提问也回复', type: 'bool', hint: '关闭时，只有群友有求于助理或话题让助理感兴趣才会回复。开启时，即使只是打招呼或闲聊也会回应。' },

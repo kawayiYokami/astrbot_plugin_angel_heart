@@ -170,13 +170,6 @@ def alias_event(request):
     return build
 
 
-def test_wake_control_defaults_preserve_existing_behavior():
-    config = ConfigManager({})
-    assert config.ignored_sender_ids == []
-    assert config.alias_wake_cooldown_seconds == 0.0
-    assert isinstance(config.alias_wake_cooldown_seconds, float)
-
-
 def test_ignored_sender_ids_normalize_numeric_and_padded_ids():
     config = make_config(ignored_sender_ids=[123, " 456 ", "", "   ", None])
     assert config.ignored_sender_ids == ["123", "456"]
@@ -418,7 +411,9 @@ def test_private_alias_wakes_do_not_use_group_cooldown(seconds):
 
 
 def test_zero_alias_cooldown_preserves_repeated_group_wakes_without_state():
-    checker = StatusChecker(make_config(), SimpleNamespace(silenced_until={}))
+    checker = StatusChecker(
+        make_config(alias_wake_cooldown_seconds=0), SimpleNamespace(silenced_until={})
+    )
     assert checker.is_event_wake(DummyEvent("first")) is True
     assert checker.is_event_wake(DummyEvent("second")) is True
 

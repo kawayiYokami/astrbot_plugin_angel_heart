@@ -1095,6 +1095,7 @@ class TestEventWakeDetection:
         self.config = make_config()
         self.angel_context = MagicMock()
         self.angel_context.silenced_until = {}
+        self.angel_context.last_alias_wake_time = {}
         self.checker = StatusChecker(self.config, self.angel_context)
 
     def test_wake_by_alias(self):
@@ -1102,8 +1103,13 @@ class TestEventWakeDetection:
         assert self.checker.is_event_wake(e) is True
 
     def test_wake_by_alias_case_insensitive(self):
-        config = make_config(wake_reply_overrides={"alias": "AngelHeart|草王"})
-        checker = StatusChecker(config, MagicMock(silenced_until={}))
+        config = make_config(
+            wake_reply_overrides={"alias": "AngelHeart|草王", "alias_wake_cooldown_seconds": 0}
+        )
+        angel_context = MagicMock()
+        angel_context.silenced_until = {}
+        angel_context.last_alias_wake_time = {}
+        checker = StatusChecker(config, angel_context)
         e = DummyEvent("w1", message_str="angelheart 在吗")
         assert checker.is_event_wake(e) is True
         e = DummyEvent("w1", message_str="aNgElHeArT 帮我看下")

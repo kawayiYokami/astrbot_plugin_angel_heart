@@ -251,7 +251,7 @@ class ConfigManager:
     def alias_wake_cooldown_seconds(self) -> float:
         """昵称唤醒间隔（秒）；零、负数或无效值关闭冷却。"""
         try:
-            seconds = float(self._get_grouped("wake_interaction", "alias_wake_cooldown_seconds", 0))
+            seconds = float(self._get_grouped("wake_interaction", "alias_wake_cooldown_seconds", 1))
         except (TypeError, ValueError):
             return 0.0
         return seconds if math.isfinite(seconds) and seconds > 0 else 0.0
