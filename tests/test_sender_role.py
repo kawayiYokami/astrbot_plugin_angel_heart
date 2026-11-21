@@ -62,7 +62,7 @@ def test_extract_event_sender_role_without_raw_message():
     assert fd._extract_event_sender_role(SimpleNamespace()) == ""
 
 
-def test_group_header_contains_role_label():
+def test_group_header_puts_role_in_front_once():
     msg = {
         "role": "user",
         "content": "早上好",
@@ -75,7 +75,9 @@ def test_group_header_contains_role_label():
 
     text = format_message_to_text(msg, "fairy")
 
-    assert "[群友: 红豆 (ID: 10001, 管理)]" in text
+    assert "[管理: 红豆 (ID: 10001)]" in text
+    assert text.count("管理") == 1
+    assert "群友" not in text
 
 
 def test_group_header_defaults_to_member_when_role_missing():
@@ -90,7 +92,8 @@ def test_group_header_defaults_to_member_when_role_missing():
 
     text = format_message_to_text(msg, "fairy")
 
-    assert "[群友: 红豆 (ID: 10001, 群友)]" in text
+    assert "[群友: 红豆 (ID: 10001)]" in text
+    assert text.count("群友") == 1
 
 
 def test_private_header_has_no_role_label():

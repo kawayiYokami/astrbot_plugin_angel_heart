@@ -136,3 +136,51 @@ export interface ChatStatusItem {
     summary: string
   } | null
 }
+
+/** 请求里的一次工具调用（原文形态） */
+export interface RequestToolCall {
+  id: string
+  type?: string
+  function?: { name?: string; arguments?: string }
+}
+
+/** 请求里的一条消息：原文保留，只有内联图片变成大小标记 */
+export interface RequestMessage {
+  role: string
+  content?: string | Array<Record<string, unknown>> | null
+  tool_calls?: RequestToolCall[]
+  tool_call_id?: string
+}
+
+/** 调用与回执的配对检查结果 */
+export interface RequestPairing {
+  ok: boolean
+  missing: string[]
+  orphan: string[]
+  duplicate_call: string[]
+  duplicate_result: string[]
+}
+
+/** 一次请求的快照 */
+export interface RequestSnapshot {
+  seq: number
+  ts: number
+  time: string
+  chat_id: string
+  source: 'secretary' | 'assistant' | string
+  model: string
+  message_count: number
+  total_chars: number
+  role_sequence: string[]
+  tool_calls: number
+  tool_results: number
+  pairing: RequestPairing
+  messages: RequestMessage[]
+}
+
+export interface RequestRingResponse {
+  available: boolean
+  chats: { chat_id: string; count: number }[]
+  chat_id?: string
+  items: RequestSnapshot[]
+}

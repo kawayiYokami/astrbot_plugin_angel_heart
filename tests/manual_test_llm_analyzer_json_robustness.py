@@ -29,7 +29,6 @@ class DummyContext:
 
 def build_analyzer() -> LLMAnalyzer:
     return LLMAnalyzer(
-        analyzer_model_name="dummy-analyzer",
         context=DummyContext(),
         config_manager=DummyConfigManager(),
     )

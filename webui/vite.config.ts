@@ -1,9 +1,18 @@
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
+import vuetify from 'vite-plugin-vuetify'
 import { resolve } from 'path'
 
 export default defineConfig({
-  plugins: [vue()],
+  plugins: [
+    vue(),
+    // 按需引入组件（不写 import * as components，避免 1.3MB 全量包），
+    // styles 指向本地 settings.scss 以复用上游 dashboard 的圆角/字号基线。
+    vuetify({
+      autoImport: true,
+      styles: { configFile: 'src/styles/settings.scss' },
+    }),
+  ],
   base: './',
   build: {
     outDir: resolve(__dirname, '../pages/chat-config'),

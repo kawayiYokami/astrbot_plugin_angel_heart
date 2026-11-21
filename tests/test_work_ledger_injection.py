@@ -203,7 +203,7 @@ class TestAnalyzerPromptInjection:
         config.for_chat.return_value = config
         config.alias = "草王"
         config.reply_strategy_guide = "系统提示词正文"
-        analyzer = LLMAnalyzer("mock", MagicMock(), config)
+        analyzer = LLMAnalyzer(MagicMock(), config)
         prompt = analyzer._build_prompts(
             historical_context=[],
             recent_dialogue=[{"role": "user", "content": "hi", "sender_name": "u"}],

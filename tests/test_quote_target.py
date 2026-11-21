@@ -257,7 +257,7 @@ def _plugin(
     plugin._is_astrbot_error_message = MagicMock(return_value=False)
 
     class _FakeRuntimeTasks:
-        async def run(self, event, fn):
+        async def run(self, event, fn, **kwargs):
             return await fn()
 
     plugin._runtime_tasks = _FakeRuntimeTasks()
@@ -332,7 +332,8 @@ def test_numbering_covers_only_quotable_group_messages():
     assert quote_map == {1: "m1", 2: "m2"}
     assert texts[0].startswith("[1] ")
     assert "第一条" in texts[0]
-    assert texts[1] == "好的"
+    # assistant 消息不编号，但 #96 之后会带自己的消息 ID 前缀供引用关联
+    assert "好的" in texts[1] and not texts[1].startswith("[1] ")
     assert texts[2].startswith("[系统工具]")
     assert not texts[2].startswith("[1]")
     assert texts[3].startswith("[系统通知]")
