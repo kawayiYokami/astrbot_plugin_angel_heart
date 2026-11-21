@@ -339,6 +339,11 @@ class ConfigManager:
         return self._get_grouped("output_rewrite", "strip_period_before_newline", False)
 
     @property
+    def quote_target_enabled(self) -> bool:
+        """是否启用群友消息编号与引用目标接管。"""
+        return bool(self._get_grouped("output_rewrite", "quote_target_enabled", True))
+
+    @property
     def long_text_image_enabled(self) -> bool:
         return self._get_grouped("output_rewrite", "long_text_image_enabled", True)
 

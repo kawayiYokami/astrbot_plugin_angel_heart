@@ -27,6 +27,7 @@ from astrbot.core.message.components import Plain, At, AtAll, Reply, Poke, Image
 
 from .core.config_manager import ConfigManager
 from .core.config_migration import run_migration
+from .core.quote_target import parse_prefix_marker
 from .roles.front_desk import FrontDesk
 from .roles.secretary import Secretary
 from .core.utils import strip_markdown, strip_period_before_newline
@@ -217,7 +218,12 @@ class AngelHeartPlugin(Star):
                 )
                 return
 
-        await self.front_desk.rewrite_prompt_for_llm(chat_id, event, req)
+        await self.front_desk.rewrite_prompt_for_llm(
+            chat_id,
+            event,
+            req,
+            allow_quote_target=not self._is_upstream_command_event(event),
+        )
 
     @register_on_agent_done()
     @track_runtime_handler
@@ -284,6 +290,8 @@ class AngelHeartPlugin(Star):
         """
         self.config_manager.mark_changed()
         self.secretary.llm_analyzer.reload_config(self.config_manager)
+        self._whitelist_cache = self._prepare_whitelist()
+
         logger.info(
             f"AngelHeart: 配置已保存并即时生效。助理休息: {self.config_manager.waiting_time}秒"
         )
@@ -504,7 +512,16 @@ class AngelHeartPlugin(Star):
                     result.chain = []  # 清空消息链
                 return
 
-            # 2. 遍历消息链中的每个元素，进行 Markdown 清洗
+            # 2. 引用目标：解析标记、按间隔判断是否插入 Reply
+            # 顺序固定在 Markdown 清洗与字数扣能之前，标记不会计入回复字数。
+            try:
+                self._apply_quote_target(event, chat_id, message_chain)
+            except Exception as e:
+                logger.warning(
+                    f"AngelHeart[{chat_id}]: 引用目标处理失败，继续原有输出清理: {e}"
+                )
+
+            # 3. 遍历消息链中的每个元素，进行 Markdown 清洗
             # 只处理 Plain 文本组件，保持其他组件不变
             if self.config_manager.strip_markdown_enabled:
                 for i, component in enumerate(message_chain):
@@ -533,7 +550,7 @@ class AngelHeartPlugin(Star):
             else:
                 logger.debug(f"AngelHeart[{chat_id}]: Markdown清洗已禁用，跳过清洗步骤。")
 
-            # 3. 句末句号清理：换行符之前的中文句号清理掉
+            # 4. 句末句号清理：换行符之前的中文句号清理掉
             if self.config_manager.strip_period_before_newline:
                 for i, component in enumerate(message_chain):
                     if isinstance(component, Plain):
@@ -558,6 +575,59 @@ class AngelHeartPlugin(Star):
         except Exception as e:
             logger.error(f"AngelHeart[{chat_id}]: strip_markdown_on_decorating_result 处理异常: {e}", exc_info=True)
             # 不重新抛出异常，避免影响消息发送流程
+
+    # --- 引用目标 ---
+
+    def _apply_quote_target(
+        self, event: AstrMessageEvent, chat_id: str, message_chain
+    ) -> None:
+        """解析正文开头的 [#n]，按编号插入 Reply。
+
+        只认正文最前面那一个标记；正文中段出现的 [#n] 一律当普通文字。
+        标记无论能否查到目标都会剥掉——它不该出现在群里。
+        """
+        # 幂等以「单个结果」为范围：工具链会为同一事件产生多条结果，
+        # 前一段（工具说明）不能把后一段（真正的回答）挡掉。
+        try:
+            result = event.get_result()
+        except Exception:
+            result = None
+        if result is not None and getattr(result, "_angelheart_quote_done", False):
+            return
+
+        plain = next(
+            (component for component in message_chain if isinstance(component, Plain)),
+            None,
+        )
+        if plain is not None:
+            number, rest = parse_prefix_marker(plain.text or "")
+            if number is not None:
+                plain.text = rest
+                target = ""
+                try:
+                    target = (
+                        self.angel_context.conversation_ledger.get_message_id_by_quote_no(
+                            chat_id, number
+                        )
+                    )
+                except Exception as e:
+                    logger.warning(f"AngelHeart[{chat_id}]: 按编号查引用目标失败: {e}")
+                if target and not any(
+                    isinstance(component, Reply) for component in message_chain
+                ):
+                    try:
+                        message_chain.insert(0, Reply(id=target))
+                    except Exception as e:
+                        logger.warning(f"AngelHeart[{chat_id}]: 插入引用失败: {e}")
+                logger.debug(
+                    f"AngelHeart[{chat_id}]: 引用目标 #{number} -> {target or '未命中'}"
+                )
+
+        if result is not None:
+            try:
+                result._angelheart_quote_done = True
+            except Exception:
+                pass
 
     def _long_image_brand(self) -> str:
         """页眉左侧显示唤醒名，取 alias 里最长的那一个。"""

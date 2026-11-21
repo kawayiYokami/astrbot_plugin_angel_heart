@@ -74,7 +74,10 @@ class AtAll:
 
 
 class Reply:
-    pass
+    """带 id 属性，支持 Reply() 与 Reply(id=...) 两种构造。"""
+
+    def __init__(self, id=""):
+        self.id = id
 
 
 class Poke:

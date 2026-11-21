@@ -97,6 +97,7 @@ class TestWhitelistHotReload:
         plugin.config_manager = manager
         plugin._whitelist_cache = set()
         plugin._whitelist_token = None
+        plugin._quote_conflict_warned = set()
         return plugin
 
     def test_whitelist_rebuilt_after_config_change(self):
@@ -133,6 +134,7 @@ class TestReloadConfigKeepsSingleManager:
         plugin._whitelist_cache = set()
         plugin._whitelist_token = None
         plugin.secretary = MagicMock()
+        plugin._quote_conflict_warned = set()
         return plugin
 
     def test_manager_identity_kept_and_values_updated(self):

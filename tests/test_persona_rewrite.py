@@ -136,7 +136,9 @@ async def test_default_persona_resolution_uses_effective_session_provider_settin
 
     await fd.rewrite_prompt_for_llm(event.unified_msg_origin, event, req)
 
-    get_config.assert_called_once_with(event.unified_msg_origin)
+    # #95 之后，_persona_begin_dialogs_for_request 也会读同一份会话配置，
+    # 这里只要求解析器拿到的是本会话的配置，不限制调用次数。
+    get_config.assert_called_with(event.unified_msg_origin)
     assert req.contexts[:2] == examples
     assert req.contexts[0] is not examples[0]
     assert settings == original
