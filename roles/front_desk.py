@@ -12,7 +12,6 @@ import os
 import re
 import time
 import uuid
-from collections import Counter
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
@@ -41,7 +40,6 @@ from ..core.utils.message_hits import (
     parse_space_phrases,
 )
 from ..core.utils.message_utils import (
-    message_dedup_key,
     normalize_history_tool_pairs,
     retain_complete_history_blocks,
     serialize_content_parts,
@@ -1180,20 +1178,15 @@ class FrontDesk:
             supplement_messages = await self._fetch_database_history(chat_id, 19, event)
 
             if supplement_messages:
-                # 按消息身份合并；无 ID 的重复发言按批内出现次数保留。
+                # 合并历史消息和当前内存消息；按时间戳去重，避免补历史时清空已有上下文。
                 # is_processed 已退役：冷启动补种直接进入当前连续块。
-                messages_by_key = {}
-                for batch in (supplement_messages, current_messages):
-                    occurrences = Counter()
-                    for msg in batch:
-                        msg.pop("is_processed", None)
-                        key = message_dedup_key(msg)
-                        occurrences[key] += 1
-                        occurrence = 1 if msg.get("source_message_id") else occurrences[key]
-                        messages_by_key[(key, occurrence)] = msg
+                messages_by_timestamp = {}
+                for msg in supplement_messages + current_messages:
+                    msg.pop("is_processed", None)
+                    messages_by_timestamp[msg.get("timestamp", 0)] = msg
 
                 all_messages = sorted(
-                    messages_by_key.values(), key=lambda m: m.get("timestamp", 0)
+                    messages_by_timestamp.values(), key=lambda m: m.get("timestamp", 0)
                 )
 
                 # 使用公共方法更新消息列表
