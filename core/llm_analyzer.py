@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 from typing import List, Dict, Optional
 import json
 import string
@@ -166,14 +167,26 @@ class LLMAnalyzer:
                     conversation_persona_id = getattr(conversation, "persona_id", None)
 
             platform_name = chat_id.split(":", 1)[0]
-            _, persona, _, _ = await persona_manager.resolve_selected_persona(
-                umo=chat_id,
-                conversation_persona_id=conversation_persona_id,
-                platform_name=platform_name,
-            )
+            params = inspect.signature(
+                persona_manager.resolve_selected_persona
+            ).parameters
+            if "conversation_persona_id" in params:
+                _, persona, _, _ = await persona_manager.resolve_selected_persona(
+                    umo=chat_id,
+                    conversation_persona_id=conversation_persona_id,
+                    platform_name=platform_name,
+                )
+            else:
+                # AstrBot 4.30+：只接受 umo / platform_name，返回三元组与人格对象
+                _, persona, _ = await persona_manager.resolve_selected_persona(
+                    umo=chat_id,
+                    platform_name=platform_name,
+                )
             if not persona:
                 return ""
-            return str(persona.get("prompt") or "").strip()
+            if isinstance(persona, dict):
+                return str(persona.get("prompt") or "").strip()
+            return str(getattr(persona, "prompt", "") or "").strip()
         except Exception as e:
             logger.warning(
                 f"AngelHeart分析器: 获取会话人格失败，本次只使用插件提示词: {e}"
