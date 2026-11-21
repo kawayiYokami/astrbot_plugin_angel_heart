@@ -23,6 +23,8 @@ TEMPLATE_GROUPS: Dict[str, Dict[str, Any]] = {
         "reply_even_not_questioned": None,
         "block_unapproved_wake_non_command": None,
         "alias": None,
+        "ignored_sender_ids": None,
+        "alias_wake_cooldown_seconds": None,
         "slap_words": None,
         "speak_words": None,
         "silence_duration": None,

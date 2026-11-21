@@ -252,7 +252,7 @@ class StatusChecker:
                 if metadata_has_hit(metadata, "at_self"):
                     return True
                 if self._alias_detection_enabled(chat_id) and metadata_has_hit(metadata, "alias"):
-                    return True
+                    return self._accept_alias_wake(event, chat_id)
                 return False
 
             # 兜底：当前事件组件上直接判定，不使用 outline
@@ -287,10 +287,31 @@ class StatusChecker:
                     body_text = extract_plain_body_from_components(event.get_messages() or [])
                 except Exception:
                     body_text = ""
-            return self._detect_wake_word(body_text, chat_id)
+            return self._detect_wake_word(body_text, chat_id) and self._accept_alias_wake(event, chat_id)
         except Exception as e:
             logger.debug(f"AngelHeart: 当前事件点名判定失败: {e}")
             return False
+
+    def _accept_alias_wake(self, event, chat_id: str) -> bool:
+        """同群首次昵称唤醒占用冷却；重复读取本事件不再次计时。"""
+        parts = chat_id.split(":")
+        if len(parts) >= 3 and parts[1] == "FriendMessage":
+            return True
+        seconds = self.config_manager.for_chat(chat_id).alias_wake_cooldown_seconds
+        if seconds <= 0:
+            return True
+
+        with self.angel_context.alias_wake_lock:
+            accepted = event.get_extra("angelheart_alias_wake_accepted", None)
+            if isinstance(accepted, bool):
+                return accepted
+            now = time.monotonic()
+            previous = self.angel_context.last_alias_wake_time.get(chat_id)
+            accepted = previous is None or now - previous >= seconds
+            if accepted:
+                self.angel_context.last_alias_wake_time[chat_id] = now
+            event.set_extra("angelheart_alias_wake_accepted", accepted)
+            return accepted
 
     def _is_silenced(self, chat_id: str) -> bool:
         """检查是否处于闭嘴状态"""
