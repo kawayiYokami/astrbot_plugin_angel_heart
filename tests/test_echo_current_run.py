@@ -150,7 +150,13 @@ async def test_cached_failed_image_is_marked_ineligible(has_image):
     )
     front = object.__new__(FrontDesk)
     front.context = SimpleNamespace(conversation_ledger=MagicMock())
-    front.config_manager = SimpleNamespace(for_chat=lambda _chat: SimpleNamespace(alias="", focus_instructions=""))
+    front.config_manager = SimpleNamespace(
+        for_chat=lambda _chat: SimpleNamespace(alias="", focus_instructions=""),
+        group_chat_enhancement=True,
+        takeover_private_chat_context=False,
+        whitelist_enabled=False,
+        chat_ids=[],
+    )
     front._record_chat_source = MagicMock()
     front._build_cached_image_item = AsyncMock(return_value=None)
 

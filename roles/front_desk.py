@@ -372,9 +372,17 @@ class FrontDesk:
         if text_content:
             content_list.append({"type": "text", "text": text_content})
 
-        # 3. 处理图片与文件组件
+        # 3. 处理图片与文件组件。
+        # 未接管上下文的会话只记文本占位：图片下载与转述是主要开销，缓存还会在
+        # URL 过期后变成喂给模型的失效内容，而这份历史本来也没有重写消费方。
+        collect_media = self._collect_media(chat_id)
         for component in message_chain:
             if isinstance(component, Image):
+                if not collect_media:
+                    # outline 对纯图片消息本身就是「[图片]」，别重复追加
+                    if "[图片]" not in text_content:
+                        content_list.append({"type": "text", "text": "[图片]"})
+                    continue
                 try:
                     item = await self._build_cached_image_item(chat_id, component)
                     if item:
@@ -386,6 +394,9 @@ class FrontDesk:
                     logger.debug(f"AngelHeart[{chat_id}]: 图片处理跳过，URL: {original_url}, 原因: {str(e)[:100]}")
 
             elif isinstance(component, File):
+                if not collect_media:
+                    # 只留文件名，不读文件正文：正文要下载并缓存拷贝，正是这里要省的
+                    continue
                 try:
                     content_list.append(await self._build_cached_file_text_item(chat_id, component))
                 except Exception as e:
@@ -1863,6 +1874,22 @@ class FrontDesk:
         """根据 unified_msg_origin 判断是否为私聊。"""
         parts = chat_id.split(":")
         return len(parts) >= 3 and parts[1] == "FriendMessage"
+
+    def _collect_media(self, chat_id: str) -> bool:
+        """该会话是否下载并缓存图片、文件。
+
+        只有接管上下文的会话才需要媒体原件：未接管时这些缓存没有消费方，
+        下载与转述纯属开销，缓存还会在 URL 过期后变成喂给模型的失效内容。
+        白名单同样算「没接管」——@ 唤醒的消息会绕过入口白名单检查直接进缓存，
+        这里必须再挡一次。
+        """
+        if self.config_manager.whitelist_enabled:
+            plain_id = chat_id.split(":")[-1]
+            if plain_id not in {str(cid) for cid in self.config_manager.chat_ids}:
+                return False
+        if self._is_private_chat(chat_id):
+            return bool(self.config_manager.takeover_private_chat_context)
+        return bool(self.config_manager.group_chat_enhancement)
 
     def _get_conversation_data_from_ledger(
         self, chat_id: str, boundary_message_id: str = ""
