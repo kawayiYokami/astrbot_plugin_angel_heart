@@ -3,7 +3,6 @@ AngelHeart 插件 - 消息格式化工具
 负责将各种角色的消息转换为文本格式，并支持可选的 XML 包裹。
 """
 
-from ..quote_target import register_quote_target
 from .time_utils import format_relative_time, format_absolute_time
 from .content_utils import convert_content_to_string
 from .reply_metadata import format_reply_metadata
@@ -68,18 +67,23 @@ def _sender_header(
     chat_id: str,
     time_tag: str,
     history: bool = False,
+    quote_no: int | None = None,
 ) -> str:
     """拼发言人抬头。群聊与私聊、正常消息与历史回退都从这里出，格式只有一套。
 
     群聊身份统一写在最前面（群友 / 管理 / 群主），后面只跟 ID，不再在括号里
     重复一次角色；私聊没有角色，只留昵称与 ID。
+
+    可引用的群友消息把编号写在抬头最前（``[#3 群友: 小白 (ID: ...)]``），
+    模型用同一个 ``[#n]`` 回指，不需要另记一套语法。
     """
     is_group = ":GroupMessage:" in chat_id
     if history:
         return f"[{role_label}(历史记录)]" if is_group else "[历史记录]"
+    prefix = f"#{quote_no} " if quote_no else ""
     if is_group:
-        return f"[{role_label}: {sender_name} (ID: {sender_id})]{time_tag}"
-    return f"[{sender_name} (ID: {sender_id})]{time_tag}"
+        return f"[{prefix}{role_label}: {sender_name} (ID: {sender_id})]{time_tag}"
+    return f"[{prefix}{sender_name} (ID: {sender_id})]{time_tag}"
 
 
 def format_message_to_text(
@@ -87,18 +91,15 @@ def format_message_to_text(
     alias: str = "AngelHeart",
     wrapper_tag: str = None,
     use_relative_time: bool = False,
-    quote_map: dict | None = None,
 ) -> str:
     """
     将消息转换为文本格式，并可选地使用 XML 标签包裹。
 
     Args:
-        msg (dict): 消息字典。
+        msg (dict): 消息字典。可引用的群友消息自带 quote_no，抬头会带上 #n。
         alias (str): AI 的昵称。
         wrapper_tag (str): 可选的 XML 包裹标签（如 "已回应消息"）。
         use_relative_time (bool): 是否使用相对时间，False 则使用当地绝对时间。
-        quote_map (dict): 可选的引用目标映射；传入时给可引用的群友消息
-            加行首编号，并登记 {编号: source_message_id}。
 
     Returns:
         str: 格式化后的字符串。
@@ -143,7 +144,14 @@ def format_message_to_text(
 
             chat_id = str(msg.get("chat_id", "") or "")
             role_label = msg.get("sender_role") or "群友"
-            header = _sender_header(sender_name, sender_id, role_label, chat_id, time_tag)
+            header = _sender_header(
+                sender_name,
+                sender_id,
+                role_label,
+                chat_id,
+                time_tag,
+                quote_no=msg.get("quote_no"),
+            )
             formatted_body = f"{header}: {text_content}"
         else:
             # 历史记录回退：拿不到发言人，身份统一写成「群友」
@@ -201,11 +209,6 @@ def format_message_to_text(
     # 5. 其他默认处理
     else:
         formatted_body = f"[{role}]\n{text_content}"
-
-    # 应用引用目标编号（仅本次显式传入映射时）
-    quote_number = register_quote_target(quote_map, msg)
-    if quote_number is not None:
-        formatted_body = f"[{quote_number}] {formatted_body}"
 
     # 应用 XML 包裹
     if wrapper_tag:

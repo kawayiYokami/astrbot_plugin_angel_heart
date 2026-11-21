@@ -27,7 +27,6 @@ from typing import Any, List, Dict  # 导入类型提示
 
 # 导入公共工具函数和 ConversationLedger
 from ..core.utils import partition_dialogue_raw, format_final_prompt
-from ..core.quote_target import collect_known_message_ids
 from ..core.image_processor import ImageProcessor
 
 from ..core.fishing_direct_reply import FishingDirectReply
@@ -69,10 +68,10 @@ class FrontDesk:
     # 引用目标协议：只提示编号用法，不改人格，不注入秘书决策
     QUOTE_INSTRUCTION = (
         "<引用说明>\n"
-        "如果这条回复针对上面某一条具体消息，请在正文最前面写 [引用:n]"
-        "（n 是行首编号，编号也可能出现在前面的本轮对话记录里）。\n"
-        "如果只是顺着话题继续说，不要写。\n"
-        "不要输出不存在的编号。\n"
+        "需要引用上面某一条具体消息时，在正文最前面写 [#编号]，例如 [#3] 你要说的话。\n"
+        "编号就是每条消息开头 # 后面的数字。\n"
+        "只是顺着话题继续说，不要写。\n"
+        "不要写不存在的编号。\n"
         "</引用说明>"
     )
     QUOTE_SUPPORTED_PLATFORM = "aiocqhttp"
@@ -1963,7 +1962,6 @@ class FrontDesk:
         recent_dialogue: List[Dict],
         decision: Any,
         alias: str,
-        quote_map: Dict[int, str] | None = None,
     ) -> str:
         """生成聚焦指令"""
         return format_final_prompt(
@@ -1971,7 +1969,6 @@ class FrontDesk:
             decision,
             alias,
             use_absolute_time=True,
-            quote_map=quote_map,
         )
 
     def _is_valid_final_prompt(self, prompt: str) -> bool:
@@ -2022,56 +2019,6 @@ class FrontDesk:
         if provider_settings.get("streaming_response", False) is True:
             return False
         return True
-
-    def _publish_quote_target_state(
-        self,
-        event: Any,
-        quote_map: Dict[int, str],
-        threshold: int,
-        chat_id: str = "",
-    ) -> None:
-        """请求重写成功后发布本事件的编号映射、阈值与引用索引已知 ID。
-
-        ``known_ids`` 只保留本轮编号映射里、且此刻已在引用索引中的目标 ID，
-        供发送阶段区分索引在生成期间被淘汰与请求时已缺少记录。
-        """
-        try:
-            event.set_extra("angelheart_quote_map", dict(quote_map))
-            event.set_extra(
-                "angelheart_quote_state",
-                {
-                    "threshold": threshold,
-                    "t0": 0.0,
-                    "target": "",
-                    "gap": None,
-                    "reason": "pending",
-                    "processed": False,
-                    "known_ids": sorted(
-                        self._request_known_quote_ids(chat_id, quote_map)
-                    ),
-                },
-            )
-        except Exception as e:
-            logger.warning(
-                f"AngelHeart: 发布引用目标状态失败: {e}"
-            )
-
-    def _request_known_quote_ids(
-        self, chat_id: str, quote_map: Dict[int, str]
-    ) -> set:
-        """请求阶段引用索引已持有、且本轮可能被引用的消息 ID。"""
-        targets = {
-            str(target or "").strip()
-            for target in (quote_map or {}).values()
-            if str(target or "").strip()
-        }
-        if not chat_id or not targets:
-            return set()
-        try:
-            messages = self.context.conversation_ledger.get_quote_messages(chat_id)
-        except Exception:
-            return set()
-        return collect_known_message_ids(messages) & targets
 
     def _parse_space_separated_phrases(self, raw: Any) -> List[str]:
         """解析空格分隔短语，去掉空项并去重保序。"""
@@ -2250,12 +2197,10 @@ class FrontDesk:
         chat_id: str,
         current_message_id: str,
         scene_hint: str | None = None,
-        quote_map: Dict[int, str] | None = None,
     ) -> List[Dict]:
         """使用 MessageProcessor 构建上下文列表
 
-        quote_map 只作用于本轮 recent_dialogue：历史消息、场景说明、工作提醒
-        与字数提醒均不参与编号。
+        编号写在消息本身（quote_no），渲染抬头时自然带上，不需要额外映射。
         """
         new_contexts = []
         if scene_hint:
@@ -2276,7 +2221,7 @@ class FrontDesk:
         for msg in recent_dialogue:
             if current_message_id and str(msg.get("source_message_id", "") or "") == current_message_id:
                 continue
-            processed_msg = processor.process_message(msg, quote_map=quote_map)
+            processed_msg = processor.process_message(msg)
             new_contexts.append(processed_msg)
 
         return new_contexts
@@ -2611,12 +2556,6 @@ class FrontDesk:
         manage_quote_target = bool(allow_quote_target) and self._should_manage_quote_target(
             chat_id, event
         )
-        quote_map: Dict[int, str] | None = {} if manage_quote_target else None
-        quote_threshold = 0
-        if manage_quote_target:
-            quote_threshold = self.config_manager.for_chat(
-                chat_id
-            ).quote_min_gap_messages
 
         # 历史重写：
         # - 群聊：必须用秘书判断点固化的切片（秘书点=主脑点）
@@ -2646,7 +2585,7 @@ class FrontDesk:
         # 2. 标记已处理消息（如果需要）
         self._mark_processed_if_needed(chat_id, recent_dialogue, should_mark_processed)
 
-        # 3. 使用 MessageProcessor 构建上下文（本轮消息与 prompt 共用同一个编号映射）
+        # 3. 使用 MessageProcessor 构建上下文（编号写在消息上，渲染时自动带上）
         processor = MessageProcessor(alias)
         new_contexts = self._build_contexts_with_processor(
             processor,
@@ -2655,29 +2594,14 @@ class FrontDesk:
             chat_id,
             current_message_id,
             scene_hint,
-            quote_map=quote_map,
         )
 
-        # 3.1 渲染当前 prompt：编号按请求中的实际出现顺序接着 contexts 递增
+        # 3.1 渲染当前 prompt
         final_prompt_str = self._generate_final_prompt(
-            prompt_recent_dialogue, None, alias, quote_map=quote_map
+            prompt_recent_dialogue, None, alias
         )
-        if quote_map:
-            if self._is_valid_final_prompt(final_prompt_str):
-                final_prompt_str = (
-                    f"{final_prompt_str}\n\n{self.QUOTE_INSTRUCTION}"
-                )
-            else:
-                # 当前 prompt 无效时不发布半成品映射，重建无编号上下文
-                quote_map = None
-                new_contexts = self._build_contexts_with_processor(
-                    processor,
-                    historical_context,
-                    context_recent_dialogue,
-                    chat_id,
-                    current_message_id,
-                    scene_hint,
-                )
+        if manage_quote_target and self._is_valid_final_prompt(final_prompt_str):
+            final_prompt_str = f"{final_prompt_str}\n\n{self.QUOTE_INSTRUCTION}"
 
         # 人格预设对话必须放在账本历史之前；重建过 contexts 时也要补上
         persona_examples = await self._persona_begin_dialogs_for_request(
@@ -2736,13 +2660,6 @@ class FrontDesk:
         if not self._is_valid_final_prompt(final_prompt_str):
             logger.warning(
                 f"AngelHeart[{chat_id}]: 重建后的当前提示词为空，本次仅重建上文，保留原始 req.prompt。"
-            )
-
-        if quote_map:
-            self._publish_quote_target_state(event, quote_map, quote_threshold, chat_id)
-            logger.debug(
-                f"AngelHeart[{chat_id}]: 引用目标协议已启用，编号 {len(quote_map)} 个，"
-                f"阈值 {quote_threshold}"
             )
 
         logger.debug(

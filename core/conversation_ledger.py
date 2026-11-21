@@ -5,14 +5,13 @@ import aiohttp
 import io
 import base64
 import os
-from collections import Counter, deque
 from PIL import Image
 from pathlib import Path
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple
 from urllib.parse import unquote, urlparse
 from . import utils
-from .quote_target import is_group_member_message
-from .utils.message_utils import message_dedup_key, retain_complete_history_blocks
+from .quote_target import is_quotable_message
+from .utils.message_utils import retain_complete_history_blocks
 from .utils.reply_metadata import collect_reply_relations, format_reply_metadata
 
 # 条件导入：当缺少astrbot依赖时使用Mock
@@ -42,8 +41,9 @@ class ConversationLedger:
 
         # 总消息数量上限（跨会话保险丝；单会话条数由上下文整理/token 限制收口）
         self.TOTAL_MESSAGE_LIMIT = 100000
-        # 引用元数据独立于正文整理；跨会话共享容量上限，不保留正文或媒体。
-        self._quote_messages = deque(maxlen=self.TOTAL_MESSAGE_LIMIT)
+        # 引用目标编号游标：每个会话独立递增，上下文压缩后归零。
+        # 编号写进消息本身，因此同一个上下文窗口内保持稳定。
+        self._quote_cursors: Dict[str, int] = {}
         # 最小保留消息数量（即使过期也保留）
         self.MIN_RETAIN_COUNT = 7
 
@@ -425,7 +425,7 @@ class ConversationLedger:
                     message,
                     key=lambda m: m.get("timestamp", 0),
                 )
-                self._record_quote_message(chat_id, message)
+                self._assign_quote_no(chat_id, message)
 
         # 2. 判断是否需要压缩/整理
         # 私聊：留给上层主动 LLM 摘要，不在入库同步路径里抢先规则收口
@@ -460,27 +460,53 @@ class ConversationLedger:
                 if ledger.get("messages") or ledger.get("current_summary")
             ]
 
-    def _record_quote_message(self, chat_id: str, message: Dict) -> None:
-        """在账本锁内记录群友消息的最小引用元数据。"""
-        if ":GroupMessage:" not in chat_id or not is_group_member_message(message):
-            return
-        self._quote_messages.append((
-            chat_id,
-            str(message.get("source_message_id", "") or ""),
-            message.get("timestamp", 0),
-            message_dedup_key(message),
-        ))
+    def _assign_quote_no(self, chat_id: str, message: Dict) -> None:
+        """给可引用的群友消息分配编号。
 
-    def get_quote_messages(self, chat_id: str) -> List[Dict]:
-        """读取独立于上下文整理的引用计数快照，顺序与正文账本一致。"""
+        编号写在消息上，入库后不再变化；同一批里重复入账的消息不会重排编号。
+        """
+        if not is_quotable_message(message):
+            return
+        if message.get("quote_no"):
+            return
+        cursor = self._quote_cursors.get(chat_id, 0) + 1
+        self._quote_cursors[chat_id] = cursor
+        message["quote_no"] = cursor
+
+    def get_message_id_by_quote_no(self, chat_id: str, quote_no: int) -> str:
+        """按编号查原始消息 ID；编号不存在或已被压缩掉时返回空串。"""
         with self._lock:
-            messages = [
-                {"role": "user", "source_message_id": source_id, "timestamp": timestamp}
-                for origin, source_id, timestamp, _ in self._quote_messages
-                if origin == chat_id
-            ]
-        messages.sort(key=lambda message: message.get("timestamp", 0))
-        return messages
+            ledger = self._ledgers.get(chat_id)
+            if not ledger:
+                return ""
+            for message in ledger["messages"]:
+                if message.get("quote_no") == quote_no:
+                    return str(message.get("source_message_id", "") or "")
+        return ""
+
+    def reset_quote_cursor(self, chat_id: str) -> None:
+        """上下文压缩后归零，让剩余消息重新从 #1 开始编号。"""
+        with self._lock:
+            self._quote_cursors[chat_id] = 0
+
+    def renumber_quote_messages(self, chat_id: str) -> None:
+        """按当前账本顺序重排编号，压缩后调用。
+
+        只有留在账本里的消息会被重新编号，已被压缩掉的编号自然失效。
+        """
+        with self._lock:
+            ledger = self._ledgers.get(chat_id)
+            self._quote_cursors[chat_id] = 0
+            if not ledger:
+                return
+            for message in ledger["messages"]:
+                message.pop("quote_no", None)
+            for message in ledger["messages"]:
+                if not is_quotable_message(message):
+                    continue
+                cursor = self._quote_cursors.get(chat_id, 0) + 1
+                self._quote_cursors[chat_id] = cursor
+                message["quote_no"] = cursor
 
     def set_messages(self, chat_id: str, messages: List[Dict]):
         """
@@ -493,22 +519,6 @@ class ConversationLedger:
         """
         ledger = self._get_or_create_ledger(chat_id)
         with self._lock:
-            if ":GroupMessage:" in chat_id:
-                current_objects = {id(message) for message in ledger["messages"]}
-                known_counts = Counter(
-                    key for origin, _, _, key in self._quote_messages if origin == chat_id
-                )
-                occurrences = Counter()
-                for message in messages:
-                    if not is_group_member_message(message):
-                        continue
-                    key = message_dedup_key(message)
-                    occurrences[key] += 1
-                    occurrence = 1 if message.get("source_message_id") else occurrences[key]
-                    if id(message) in current_objects or occurrence <= known_counts[key]:
-                        continue
-                    self._record_quote_message(chat_id, message)
-                    known_counts[key] += 1
             ledger["messages"] = messages.copy()  # 保存副本避免外部修改
 
     def get_context_snapshot(
@@ -582,32 +592,39 @@ class ConversationLedger:
 
         try:
             if mode == "private_llm":
-                return self._commit_summary_and_block(
+                organized = self._commit_summary_and_block(
                     chat_id,
                     summary_text=llm_summary or "",
                     keep_tools=True,
                     keep_from_timestamp=keep_from_timestamp,
                     reason="private_llm",
                 )
-            if mode == "private_fallback":
-                return self._rule_organize(
+            elif mode == "private_fallback":
+                organized = self._rule_organize(
                     chat_id,
                     keep_tools=True,
                     keep_from_timestamp=keep_from_timestamp,
                     reason="private_fallback",
                 )
-            # group_rule: 超时才全清工具，否则保留尾部工具（对齐“超过一定时间才丢”）
-            is_timeout = self._is_forgetting_timeout(chat_id)
-            keep_tools = not is_timeout
-            reason = "group_rule_timeout" if is_timeout else "group_rule"
-            return self._rule_organize(
-                chat_id,
-                keep_tools=keep_tools,
-                keep_from_timestamp=keep_from_timestamp,
-                reason=reason,
-            )
+            else:
+                # group_rule: 超时才全清工具，否则保留尾部工具（对齐“超过一定时间才丢”）
+                is_timeout = self._is_forgetting_timeout(chat_id)
+                keep_tools = not is_timeout
+                reason = "group_rule_timeout" if is_timeout else "group_rule"
+                organized = self._rule_organize(
+                    chat_id,
+                    keep_tools=keep_tools,
+                    keep_from_timestamp=keep_from_timestamp,
+                    reason=reason,
+                )
         finally:
             lock.release()
+
+        if organized:
+            # 压缩后按剩余消息重排编号：模型上一轮看到的 #3 若已被压缩掉，
+            # 这一轮不会再指向别人，而是从 #1 重新开始。
+            self.renumber_quote_messages(chat_id)
+        return organized
 
     def organize_on_group_enter(
         self, chat_id: str, keep_from_timestamp: float | None = None
@@ -618,7 +635,7 @@ class ConversationLedger:
             logger.info(f"AngelHeart[{chat_id}]: 会话整理进行中，跳过重复整理")
             return False
         try:
-            return self._rule_organize(
+            organized = self._rule_organize(
                 chat_id,
                 keep_tools=False,
                 keep_from_timestamp=keep_from_timestamp,
@@ -626,6 +643,10 @@ class ConversationLedger:
             )
         finally:
             lock.release()
+
+        if organized:
+            self.renumber_quote_messages(chat_id)
+        return organized
 
     async def maybe_llm_compress_private(
         self, chat_id: str, provider_text_chat
@@ -1756,7 +1777,7 @@ class ConversationLedger:
         """释放全部内存账本与 SQLite 句柄；允许重复调用。"""
         with self._lock:
             self._ledgers.clear()
-            self._quote_messages.clear()
+            self._quote_cursors.clear()
             self._last_compression_time.clear()
             self._compression_locks.clear()
 
