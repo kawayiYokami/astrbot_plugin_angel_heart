@@ -20,6 +20,17 @@ except ImportError:  # 兼容旧版 AstrBot（无 astrbot.api.web）
     HAS_WEB_API = False
 
 
+async def _get_upload(field: str = "file"):
+    """从 multipart 请求取上传文件；旧版 AstrBot 无此能力，返回 None。"""
+    if not HAS_WEB_API:
+        return None
+    try:
+        files = await request.files()
+    except Exception:
+        return None
+    return files.get(field)
+
+
 def _ok(data: Any = None, message: str = "") -> Any:
     if HAS_WEB_API:
         return json_response({"status": "ok", "message": message, "data": data})
@@ -47,6 +58,22 @@ async def _get_json() -> Dict:
     return data if isinstance(data, dict) else {}
 
 
+def _get_query(name: str, default: str = "") -> str:
+    """读取查询参数，兼容新版 astrbot.api.web 与 quart 两种形态。
+
+    新版 request 暴露的是 ``query``（PluginMultiDict），没有 quart 的 ``args``；
+    这里必须分开取，否则 AttributeError 会被吞成「参数不存在」。
+    """
+    try:
+        source = request.query if HAS_WEB_API else request.args
+        value = source.get(name)
+    except Exception:
+        return default
+    if value is None:
+        return default
+    return str(value)
+
+
 class ProfileAPI:
     """模板 CRUD 与群聊绑定 API。"""
 
@@ -59,6 +86,7 @@ class ProfileAPI:
         status_transition_manager=None,
         debounce_manager=None,
         last_decisions=None,
+        request_ring=None,
     ):
         self.profile_store = profile_store
         self.config_manager = config_manager
@@ -67,6 +95,7 @@ class ProfileAPI:
         self.status_transition_manager = status_transition_manager
         self.debounce_manager = debounce_manager
         self.last_decisions = last_decisions
+        self.request_snapshots = request_ring
 
     # ---------- 模板 ----------
 
@@ -312,6 +341,32 @@ class ProfileAPI:
             )
         return _ok(items)
 
+    # ---------- 请求摘要快照 ----------
+
+    async def request_ring(self):
+        """最近若干次请求的快照。
+
+        全局只留最近 10 次，秘书与助理共用一条队列，靠 source 区分。
+        可传 chat_id 只看该会话，limit 限制返回条数（默认全部）。
+        """
+        ring = self.request_snapshots
+        if ring is None:
+            return _ok({"available": False, "chats": [], "items": []})
+
+        chat_id = (_get_query("chat_id") or "").strip()
+        raw_limit = (_get_query("limit") or "").strip()
+        try:
+            limit = int(raw_limit) if raw_limit else 0
+        except ValueError:
+            limit = 0
+
+        try:
+            items = ring.recent(chat_id or None, limit or None)
+            chats = ring.chats()
+        except Exception as e:
+            return _err(f"读取请求快照失败: {e}")
+        return _ok({"available": True, "chats": chats, "chat_id": chat_id, "items": items})
+
 
 def register_all_routes(
     context,
@@ -325,6 +380,7 @@ def register_all_routes(
     config=None,
     plugin=None,
     prompt_settings=None,
+    request_ring=None,
 ) -> None:
     """注册全部 WebUI API 路由。"""
     api = ProfileAPI(
@@ -335,6 +391,7 @@ def register_all_routes(
         status_transition_manager,
         debounce_manager,
         last_decisions,
+        request_ring,
     )
 
     routes = [
@@ -347,7 +404,49 @@ def register_all_routes(
         ("/astrbot_plugin_angel_heart/chats", api.list_chats, ["GET"], "已知群聊列表"),
         ("/astrbot_plugin_angel_heart/chat_sources", api.list_chat_sources, ["GET"], "来源登记列表"),
         ("/astrbot_plugin_angel_heart/chat_status", api.chat_status, ["GET"], "群聊状态仪表盘"),
+        (
+            "/astrbot_plugin_angel_heart/request_ring",
+            api.request_ring,
+            ["GET"],
+            "最近 10 次请求的快照（全局，只存内存）",
+        ),
     ]
+
+    font_api = FontAPI()
+    routes.extend(
+        [
+            (
+                "/astrbot_plugin_angel_heart/fonts",
+                font_api.get_status,
+                ["GET"],
+                "长文转图字体：可选字体清单、选中项与就绪状态",
+            ),
+            (
+                "/astrbot_plugin_angel_heart/fonts/select/<font>",
+                font_api.select,
+                ["POST"],
+                "切换长文转图字体，未就绪时自动开始下载（路径参数 font）",
+            ),
+            (
+                "/astrbot_plugin_angel_heart/fonts/upload/<font>",
+                font_api.upload,
+                ["POST"],
+                "上传自定义字体文件（路径参数 font 传 custom，表单字段 file）",
+            ),
+            (
+                "/astrbot_plugin_angel_heart/fonts/upload",
+                font_api.upload,
+                ["POST"],
+                "上传自定义字体文件（字体名从 query 或表单读取，兼容旧版）",
+            ),
+            (
+                "/astrbot_plugin_angel_heart/fonts/fetch",
+                font_api.fetch,
+                ["POST"],
+                "手动触发一次字体下载",
+            ),
+        ]
+    )
 
     if prompt_settings is not None:
         prompt_api = PromptSettingsAPI(prompt_settings)
@@ -545,3 +644,89 @@ class PromptSettingsAPI:
             custom_prompt=payload.get("custom_prompt"),
         )
         return _ok(snapshot, "已保存")
+
+
+def _reject_unknown_font(key: str):
+    """字体名非法就返回错误信封，合法返回 None。上传两条路由共用同一句文案。"""
+    from ..core import font_manager as fm
+
+    if key in fm.FONTS:
+        return None
+    return _err("没有这款字体，自定义字体请上传到自定义款")
+
+
+class FontAPI:
+    """长文转图字体的状态查询、切换、上传与手动下载。
+
+    字体不随插件分发：三款内置字体由 WebUI 选中后自动从 GitHub 下载，部署环境
+    连不上 GitHub 时，可以上传一份自己的字体文件（落 custom 款）。
+    """
+
+    async def get_status(self):
+        from ..core import font_manager as fm
+
+        return _ok(fm.status_snapshot())
+
+    async def select(self, font: str = ""):
+        from ..core import font_manager as fm
+
+        # 新版桥接禁止 endpoint 里出现 ?，字体名只能走路径参数；没有无参路由，
+        # 所以这里不做 query 兜底。
+        key = (font or "").strip()
+        try:
+            snapshot = fm.select_font(key)
+        except ValueError as exc:
+            return _err(str(exc))
+        if snapshot.get("started"):
+            return _ok(snapshot, "已切换，正在下载")
+        spec = fm.FONTS.get(key, {})
+        if not spec.get("url") and not snapshot.get("ready"):
+            return _ok(snapshot, "已切换，上传字体文件后生效")
+        return _ok(snapshot, "已切换")
+
+    async def upload(self, font: str = ""):
+        from ..core import font_manager as fm
+
+        # 新版桥接禁止 endpoint 里出现 ?，字体名走路径参数；无参路由再从 query
+        # 与表单兜底，兼容旧版 /api/plug 直连。`weight` 是这块还叫「字重」时的
+        # 历史参数名，对外已是既成契约，改它会断掉旧调用，所以只留不推。
+        key = (font or _get_query("weight") or "").strip()
+        # 先校验字体名再取文件：参数校验廉价且必须排在取文件之前，非法字体名的
+        # 报错才不会被「缺文件」盖掉。
+        rejected = _reject_unknown_font(key)
+        if rejected is not None:
+            return rejected
+
+        upload = await _get_upload("file")
+        if upload is None:
+            return _err("缺少上传文件（表单字段名必须是 file）")
+        if not key:
+            try:
+                form = await request.form()
+                key = str(form.get("weight") or "").strip()
+            except Exception:
+                key = ""
+        rejected = _reject_unknown_font(key)
+        if rejected is not None:
+            return rejected
+
+        try:
+            data = await fm.install_font(key, upload)
+        except ValueError as exc:
+            return _err(str(exc))
+        except Exception as exc:
+            logger.warning(f"AngelHeart: 字体上传失败: {exc}", exc_info=True)
+            return _err(f"字体保存失败: {exc}", 500)
+        return _ok(data, "字体已保存")
+
+    async def fetch(self):
+        from ..core import font_manager as fm
+
+        if not fm.FONTS[fm.selected_font()]["url"]:
+            return _ok(fm.status_snapshot(), "这一款只能上传，没法下载")
+        started = fm.start_download_now()
+        snapshot = fm.status_snapshot()
+        snapshot["started"] = started
+        if started:
+            return _ok(snapshot, "已开始下载")
+        return _ok(snapshot, "冷却中，请稍后再试")

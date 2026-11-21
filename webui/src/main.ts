@@ -1,11 +1,31 @@
 import { createApp } from 'vue'
-import { Icon } from '@iconify/vue'
+import 'vuetify/styles'
+import './styles/global.scss'
 import App from './App.vue'
-import { loadThemeMode } from './theme'
+import { applyHostTheme, vuetify } from './theme'
+import { registerLucideIcons } from './icons'
+import { useBridge, type BridgeContext } from './composables/useBridge'
 
-// 首帧前同步主题到根节点，避免光暗切换闪烁；App.vue 内 watchEffect 持续维护
-document.documentElement.dataset.theme = loadThemeMode()
+// 图标先于任何渲染注册，页面不依赖外网
+registerLucideIcons()
 
 const app = createApp(App)
-app.component('Icon', Icon)
+app.use(vuetify)
+
+// 先用同步创建的亮色主题挂载：bridge 慢、超时或不存在都不会白屏
 app.mount('#app')
+
+const { init, onContext } = useBridge()
+
+function applyContext(context: BridgeContext | null) {
+  const colors =
+    context?.themeColors && typeof context.themeColors === 'object' ? context.themeColors : null
+  applyHostTheme({ isDark: context?.isDark === true, colors })
+}
+
+// 主题对齐放在挂载之后异步做，失败也只是保持亮色
+void init().then(applyContext)
+
+// 订阅宿主变化：切亮暗、改主题色都会推新 context。
+// 老版本没有 onContext，这里拿到的是空解绑函数，不影响渲染。
+onContext(applyContext)

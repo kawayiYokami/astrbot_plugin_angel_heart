@@ -1,7 +1,10 @@
 """测试：ImageCache 缓存读写、去重、清理 + File 组件筛选"""
 
+import asyncio
 import io
 import tempfile
+import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -64,7 +67,11 @@ def _make_diagonal_image(size=(200, 200)) -> bytes:
 def cache():
     """创建一个临时目录的 ImageCache 实例"""
     with tempfile.TemporaryDirectory() as td:
-        yield ImageCache(Path(td))
+        c = ImageCache(Path(td))
+        try:
+            yield c
+        finally:
+            c.shutdown(wait=True)
 
 
 @pytest.fixture
@@ -81,7 +88,7 @@ def ledger():
         try:
             yield lg
         finally:
-            lg.db_conn.close()
+            lg.close()
 
 
 # ── ImageCache 基本功能 ──────────────────────────
@@ -89,25 +96,27 @@ def ledger():
 class TestImageCacheBasic:
     """ImageCache 核心读写功能"""
 
-    def test_put_and_get(self, cache):
+    @pytest.mark.asyncio
+    async def test_put_and_get(self, cache):
         """put 写入后 get_cached 能正确读取"""
         data = _make_test_image()
-        dhash = cache.put("chat_1", data)
+        dhash = await cache.put("chat_1", data)
         assert dhash, "put 应返回非空 dhash"
 
-        cached = cache.get_cached("chat_1", dhash)
+        cached = await cache.get_cached("chat_1", dhash)
         assert cached is not None, "get_cached 不应返回 None"
         assert len(cached) > 0, "缓存字节不应为空"
 
         # 验证是 WebP 格式
         assert cached[:4] == b"RIFF", "WebP 文件应以 RIFF 开头"
 
-    def test_put_returns_same_dhash_for_same_image(self, cache):
+    @pytest.mark.asyncio
+    async def test_put_returns_same_dhash_for_same_image(self, cache):
         """相同图片 put 两次应返回相同的 dhash，且只存一份文件"""
         data = _make_test_image()
 
-        dhash1 = cache.put("chat_1", data)
-        dhash2 = cache.put("chat_1", data)
+        dhash1 = await cache.put("chat_1", data)
+        dhash2 = await cache.put("chat_1", data)
 
         assert dhash1 == dhash2, "相同图片的 dhash 应一致"
 
@@ -120,25 +129,28 @@ class TestImageCacheBasic:
         files = list(chat_dir.iterdir())
         assert len(files) == 1, f"相同图片不应重复缓存，发现 {len(files)} 个文件"
 
-    def test_get_cached_returns_none_for_missing(self, cache):
+    @pytest.mark.asyncio
+    async def test_get_cached_returns_none_for_missing(self, cache):
         """不存在的 dhash 应返回 None"""
-        result = cache.get_cached("chat_1", "nonexistent_dhash")
+        result = await cache.get_cached("chat_1", "nonexistent_dhash")
         assert result is None, "不存在的 dhash 应返回 None"
 
-    def test_put_different_images_produce_different_dhashes(self, cache):
+    @pytest.mark.asyncio
+    async def test_put_different_images_produce_different_dhashes(self, cache):
         """不同内容图片应产生不同的 dhash"""
         data1 = _make_striped_image()
         data2 = _make_diagonal_image()
 
-        dhash1 = cache.put("chat_1", data1)
-        dhash2 = cache.put("chat_1", data2)
+        dhash1 = await cache.put("chat_1", data1)
+        dhash2 = await cache.put("chat_1", data2)
 
         assert dhash1 != dhash2, "不同图片的 dhash 应不同"
 
-    def test_chat_id_is_sanitized_for_cache_path(self, cache):
+    @pytest.mark.asyncio
+    async def test_chat_id_is_sanitized_for_cache_path(self, cache):
         """含平台分隔符的 chat_id 不应直接成为危险/非法路径片段"""
         data = _make_test_image()
-        dhash = cache.put("aiocqhttp:GroupMessage:12345", data)
+        dhash = await cache.put("aiocqhttp:GroupMessage:12345", data)
 
         path = cache.get_cached_path("aiocqhttp:GroupMessage:12345", dhash)
 
@@ -149,11 +161,12 @@ class TestImageCacheBasic:
 class TestTextFileCache:
     """文本附件缓存"""
 
-    def test_put_text_file_copies_to_managed_cache(self, cache, tmp_path):
+    @pytest.mark.asyncio
+    async def test_put_text_file_copies_to_managed_cache(self, cache, tmp_path):
         src = tmp_path / "note.txt"
         src.write_text("hello cache", encoding="utf-8")
 
-        cached_path = cache.put_text_file("chat_1", src, "note.txt")
+        cached_path = await cache.put_text_file("chat_1", src, "note.txt")
 
         assert cached_path is not None
         assert cached_path.exists()
@@ -161,11 +174,12 @@ class TestTextFileCache:
         assert cache.is_managed_path(cached_path)
         assert cached_path.read_text(encoding="utf-8") == "hello cache"
 
-    def test_put_text_file_rejects_oversized_file(self, cache, tmp_path):
+    @pytest.mark.asyncio
+    async def test_put_text_file_rejects_oversized_file(self, cache, tmp_path):
         src = tmp_path / "large.txt"
         src.write_bytes(b"x" * (100 * 1024 + 1))
 
-        cached_path = cache.put_text_file("chat_1", src, "large.txt")
+        cached_path = await cache.put_text_file("chat_1", src, "large.txt")
 
         assert cached_path is None
 
@@ -173,14 +187,15 @@ class TestTextFileCache:
 class TestImageCacheDownscale:
     """ImageCache 尺寸缩小功能"""
 
-    def test_large_image_downscaled_to_max_1024(self, cache):
+    @pytest.mark.asyncio
+    async def test_large_image_downscaled_to_max_1024(self, cache):
         """超过 1024 边长的图片应缩小到最长边 ≤1024"""
         data = _make_large_image(size=(2048, 1536))
 
-        dhash = cache.put("chat_1", data)
+        dhash = await cache.put("chat_1", data)
         assert dhash, "put 应成功"
 
-        cached = cache.get_cached("chat_1", dhash)
+        cached = await cache.get_cached("chat_1", dhash)
         assert cached is not None
 
         # 读取 WebP 验证尺寸
@@ -191,24 +206,26 @@ class TestImageCacheDownscale:
         # 应保持宽高比
         assert abs(width / height - 2048 / 1536) < 0.02, "宽高比应保持"
 
-    def test_tiny_image_not_upscaled(self, cache):
+    @pytest.mark.asyncio
+    async def test_tiny_image_not_upscaled(self, cache):
         """小于 1024 的图片不应被放大"""
         data = _make_test_image(size=(100, 80))
 
-        dhash = cache.put("chat_1", data)
-        cached = cache.get_cached("chat_1", dhash)
+        dhash = await cache.put("chat_1", data)
+        cached = await cache.get_cached("chat_1", dhash)
 
         img = Image.open(io.BytesIO(cached))
         width, height = img.size
         assert width == 100, f"小图宽度不应被放大，实际 {width}"
         assert height == 80, f"小图高度不应被放大，实际 {height}"
 
-    def test_webp_quality_is_set(self, cache):
+    @pytest.mark.asyncio
+    async def test_webp_quality_is_set(self, cache):
         """输出的 WebP 质量应为 75"""
         data = _make_test_image()
 
-        dhash = cache.put("chat_1", data)
-        cached = cache.get_cached("chat_1", dhash)
+        dhash = await cache.put("chat_1", data)
+        cached = await cache.get_cached("chat_1", dhash)
 
         # 无法从 WebP 文件直接读 quality，但可以确认是有效的 WebP
         img = Image.open(io.BytesIO(cached))
@@ -218,53 +235,57 @@ class TestImageCacheDownscale:
 class TestImageCacheCleanup:
     """ImageCache 清理功能"""
 
-    def test_clean_chat_removes_only_one_chat(self, cache):
+    @pytest.mark.asyncio
+    async def test_clean_chat_removes_only_one_chat(self, cache):
         """clean_chat 只删除指定会话的缓存，不影响其他会话"""
         data = _make_test_image()
 
-        dhash_a = cache.put("chat_a", data)
-        dhash_b = cache.put("chat_b", data)
+        dhash_a = await cache.put("chat_a", data)
+        dhash_b = await cache.put("chat_b", data)
 
-        assert cache.get_cached("chat_a", dhash_a) is not None
-        assert cache.get_cached("chat_b", dhash_b) is not None
+        assert await cache.get_cached("chat_a", dhash_a) is not None
+        assert await cache.get_cached("chat_b", dhash_b) is not None
 
         cache.clean_chat("chat_a")
 
-        assert cache.get_cached("chat_a", dhash_a) is None, "chat_a 缓存应被清理"
-        assert cache.get_cached("chat_b", dhash_b) is not None, "chat_b 缓存应保留"
+        assert await cache.get_cached("chat_a", dhash_a) is None, "chat_a 缓存应被清理"
+        assert await cache.get_cached("chat_b", dhash_b) is not None, "chat_b 缓存应保留"
 
-    def test_clean_all_removes_all(self, cache):
+    @pytest.mark.asyncio
+    async def test_clean_all_removes_all(self, cache):
         """clean_all 应删除所有会话的缓存"""
         data = _make_test_image()
 
-        dhash_a = cache.put("chat_a", data)
-        dhash_b = cache.put("chat_b", data)
-        dhash_c = cache.put("chat_c", data)
+        dhash_a = await cache.put("chat_a", data)
+        dhash_b = await cache.put("chat_b", data)
+        dhash_c = await cache.put("chat_c", data)
 
         cache.clean_all()
 
-        assert cache.get_cached("chat_a", dhash_a) is None
-        assert cache.get_cached("chat_b", dhash_b) is None
-        assert cache.get_cached("chat_c", dhash_c) is None
+        assert await cache.get_cached("chat_a", dhash_a) is None
+        assert await cache.get_cached("chat_b", dhash_b) is None
+        assert await cache.get_cached("chat_c", dhash_c) is None
 
-    def test_cache_size_tracks_bytes(self, cache):
+    @pytest.mark.asyncio
+    async def test_cache_size_tracks_bytes(self, cache):
         """get_cache_size 应返回正确的字节数"""
         data = _make_test_image()
 
         before = cache.get_cache_size("chat_1")
         assert before == 0, "写入前应为 0"
 
-        dhash = cache.put("chat_1", data)
+        dhash = await cache.put("chat_1", data)
         after = cache.get_cache_size("chat_1")
         assert after > 0, "写入后应有字节"
 
         file_size = cache.get_cached_path("chat_1", dhash).stat().st_size
         assert after == file_size, "单个文件的大小应匹配"
 
-    def test_cache_size_after_clean(self, cache):
+    @pytest.mark.asyncio
+    async def test_cache_size_after_clean(self, cache):
         """清理后 get_cache_size 应为 0"""
         data = _make_test_image()
-        cache.put("chat_1", data)
+        await cache.put("chat_1", data)
 
         cache.clean_chat("chat_1")
         assert cache.get_cache_size("chat_1") == 0, "清理后应为 0"
@@ -289,11 +310,12 @@ class TestImageCacheDHash:
 class TestCacheDeduplicationAcrossChats:
     """跨会话去重"""
 
-    def test_same_image_different_chats_use_same_dhash(self, cache):
+    @pytest.mark.asyncio
+    async def test_same_image_different_chats_use_same_dhash(self, cache):
         """相同图片在不同会话应使用相同的 dhash 值"""
         data = _make_test_image()
-        dhash_a = cache.put("chat_a", data)
-        dhash_b = cache.put("chat_b", data)
+        dhash_a = await cache.put("chat_a", data)
+        dhash_b = await cache.put("chat_b", data)
         assert dhash_a == dhash_b, "相同图片在不同会话的 dhash 应一致"
 
 
@@ -320,22 +342,24 @@ class TestCacheCleanupIntegration:
         try:
             assert not stale_file.exists()
         finally:
-            lg.db_conn.close()
+            lg.close()
 
-    def test_cleanup_message_removes_cache(self, cache):
+    @pytest.mark.asyncio
+    async def test_cleanup_message_removes_cache(self, cache):
         """清理消息时应对应的缓存文件被删除"""
         data = _make_test_image()
-        dhash = cache.put("test_chat", data)
-        assert cache.get_cached("test_chat", dhash) is not None
+        dhash = await cache.put("test_chat", data)
+        assert await cache.get_cached("test_chat", dhash) is not None
 
         # 模拟清理：直接调用 clean_chat
         cache.clean_chat("test_chat")
-        assert cache.get_cached("test_chat", dhash) is None
+        assert await cache.get_cached("test_chat", dhash) is None
 
-    def test_cleanup_on_organize_drops_unreferenced_cache(self, ledger):
+    @pytest.mark.asyncio
+    async def test_cleanup_on_organize_drops_unreferenced_cache(self, ledger):
         """整理收口后，被丢掉消息独占的媒体缓存应清理"""
         chat_id = "chat_1"
-        dhash = ledger.image_cache.put(chat_id, _make_test_image())
+        dhash = await ledger.image_cache.put(chat_id, _make_test_image())
         cache_path = str(ledger.image_cache.get_cached_path(chat_id, dhash))
 
         # 旧图消息
@@ -361,6 +385,7 @@ class TestCacheCleanupIntegration:
             })
         ledger.organize_context(chat_id, mode="group_rule")
         ledger._cleanup_unreferenced_media_cache(chat_id)
+        ledger.image_cache.drain()
 
         # 旧图若不在连续块引用里，缓存应被清
         msgs = ledger.get_all_messages(chat_id)
@@ -375,10 +400,11 @@ class TestCacheCleanupIntegration:
         if not still_referenced:
             assert not Path(cache_path).exists()
 
-    def test_cleanup_keeps_cache_when_retained_message_references_it(self, ledger):
+    @pytest.mark.asyncio
+    async def test_cleanup_keeps_cache_when_retained_message_references_it(self, ledger):
         """同一缓存仍被保留消息引用时不能误删"""
         chat_id = "chat_1"
-        dhash = ledger.image_cache.put(chat_id, _make_test_image())
+        dhash = await ledger.image_cache.put(chat_id, _make_test_image())
         cache_path = str(ledger.image_cache.get_cached_path(chat_id, dhash))
 
         for ts in (1, 2):
@@ -395,13 +421,15 @@ class TestCacheCleanupIntegration:
 
         assert Path(cache_path).exists()
         ledger._cleanup_unreferenced_media_cache(chat_id)
+        ledger.image_cache.drain()
         assert Path(cache_path).exists()
 
-    def test_cleanup_removes_files_not_referenced_by_ledger(self, ledger):
+    @pytest.mark.asyncio
+    async def test_cleanup_removes_files_not_referenced_by_ledger(self, ledger):
         """清理依据当前账本引用集合，而不是依据刚被删除的消息"""
         chat_id = "chat_1"
-        referenced_dhash = ledger.image_cache.put(chat_id, _make_striped_image())
-        orphan_dhash = ledger.image_cache.put(chat_id, _make_diagonal_image())
+        referenced_dhash = await ledger.image_cache.put(chat_id, _make_striped_image())
+        orphan_dhash = await ledger.image_cache.put(chat_id, _make_diagonal_image())
         referenced_path = str(ledger.image_cache.get_cached_path(chat_id, referenced_dhash))
         orphan_path = str(ledger.image_cache.get_cached_path(chat_id, orphan_dhash))
 
@@ -417,6 +445,7 @@ class TestCacheCleanupIntegration:
         })
 
         ledger._cleanup_unreferenced_media_cache(chat_id)
+        ledger.image_cache.drain()
 
         assert Path(referenced_path).exists()
         assert not Path(orphan_path).exists()
@@ -484,3 +513,61 @@ class TestFileFilterLogic:
         limit = 100 * 1024
         assert 50 * 1024 <= limit, "50KB 应在限制内"
         assert 150 * 1024 > limit, "150KB 应超限"
+
+
+class TestMediaExecutionDomain:
+    """媒体执行域：阻塞清理不占事件循环，关停不丢任务。"""
+
+    @pytest.mark.asyncio
+    async def test_cleanup_does_not_block_event_loop(self, ledger, monkeypatch):
+        """删除变慢时事件循环仍能推进，调用方不等文件系统。"""
+        chat_id = "chat_slow"
+        await ledger.image_cache.put(chat_id, _make_test_image())
+        ledger.set_cleanup_busy_check(lambda _cid: False)
+
+        entered = threading.Event()
+        release = threading.Event()
+
+        def _slow_unlink(path):
+            entered.set()
+            release.wait(5.0)
+            return True
+
+        monkeypatch.setattr(ledger.image_cache, "_unlink_managed", _slow_unlink)
+
+        started = time.monotonic()
+        ledger._cleanup_unreferenced_media_cache(chat_id)
+        elapsed = time.monotonic() - started
+        assert elapsed < 0.5, f"登记清理不应等待删除，实际耗时 {elapsed:.3f}s"
+
+        # 桩还卡在执行域里时，事件循环必须仍然可以推进
+        for _ in range(300):
+            if entered.is_set():
+                break
+            await asyncio.sleep(0.01)
+        assert entered.is_set(), "删除任务应已进入执行域"
+
+        ticks = 0
+        for _ in range(5):
+            await asyncio.sleep(0.01)
+            ticks += 1
+        assert ticks == 5, "清理进行中事件循环不应被卡住"
+
+        release.set()
+        assert ledger.image_cache.drain(5.0)
+
+    def test_shutdown_waits_for_pending_cleanup(self, tmp_path):
+        """关停前提交的删除任务必须跑完，不因卸载丢任务。"""
+        cache = ImageCache(tmp_path)
+        buf = io.BytesIO()
+        Image.new("RGB", (8, 8), "green").save(buf, format="PNG")
+        dhash = asyncio.run(cache.put("chat_x", buf.getvalue()))
+        path = cache.get_cached_path("chat_x", dhash)
+        assert path.exists()
+
+        cache.schedule_cleanup("chat_x", set())
+        cache.shutdown(wait=True)
+
+        assert not path.exists(), "关停前提交的删除任务应执行完"
+        # 关闭后再登记不应抛异常
+        cache.schedule_cleanup("chat_x", set())

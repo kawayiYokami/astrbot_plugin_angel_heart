@@ -67,8 +67,10 @@ function editor(config = {}, globals = globalConfig()) {
   const posts = []
   const tpl = { id: 'old-template', description: '', config: clone(config) }
   const panel = loadHandlers('ChatConfigPanel.vue', [
-    'selectTemplate', 'saveTemplate', 'loadAll', 'savePluginConfig',
+    'selectTemplate', 'saveTemplate', 'loadAll', 'savePluginConfig', 'stopFontPoll',
   ], {
+    // 主线在 ChatConfigPanel 里加了字体轮询，selectTemplate 会先停掉它
+    fontPollTimer: null,
     profilesLoadVersion: 0,
     templates: { value: [tpl] },
     selectedId: { value: null },
@@ -82,7 +84,7 @@ function editor(config = {}, globals = globalConfig()) {
     currentTemplate: { get value() { return tpl } },
     saving: { value: false },
     savingSettings: { value: false },
-    message: { success() {}, error(message) { throw new Error(message) } },
+    toast: { success() {}, error(message) { throw new Error(message) } },
     async apiPost(route, body) {
       posts.push({ route, body: clone(body) })
       if (route === 'profiles/update') stored = clone(body.config)

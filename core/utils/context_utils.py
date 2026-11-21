@@ -268,6 +268,8 @@ def format_final_prompt(
 ) -> str:
     """
     为大模型生成最终的用户对话文本（不包含系统决策和 XML 包裹）。
+
+    可引用的群友消息自带 quote_no，抬头会带上 #n，与 contexts 渲染共用同一份编号。
     """
     from .xml_formatter import format_message_to_text
 
@@ -277,7 +279,9 @@ def format_final_prompt(
     dialogue_str = "\n".join(
         [
             format_message_to_text(
-                msg, alias, use_relative_time=not use_absolute_time
+                msg,
+                alias,
+                use_relative_time=not use_absolute_time,
             )
             for msg in marked_dialogue
         ]

@@ -74,7 +74,10 @@ class AtAll:
 
 
 class Reply:
-    pass
+    """带 id 属性，支持 Reply() 与 Reply(id=...) 两种构造。"""
+
+    def __init__(self, id=""):
+        self.id = id
 
 
 class Poke:
@@ -82,7 +85,14 @@ class Poke:
 
 
 class Image:
-    pass
+    """文件来源图片，提供与真实框架同名的 fromFileSystem 构造。"""
+
+    def __init__(self, path=""):
+        self.path = path
+
+    @classmethod
+    def fromFileSystem(cls, path):
+        return cls(path)
 
 
 class File:

@@ -1,124 +1,173 @@
 <template>
-  <div class="schema-form" :style="cssVars">
-    <!-- 分段卡片：每张 n-card 一个分组，标题硬分段，卡内字段软分段 -->
-    <n-card
+  <div class="schema-form">
+    <!-- 分段卡片：每张 v-card 一个分组，标题硬分段，卡内字段软分段 -->
+    <v-card
       v-for="group in groups"
       :key="group.key"
-      :title="group.title"
-      embedded
+      rounded="md"
+      style="margin-bottom: 16px; padding-bottom: 8px;"
       class="group-card"
     >
-      <template v-if="group.canReset" #header-extra>
-        <n-button size="tiny" quaternary @click.stop="resetGroup(group)">
-          <template #icon><Icon icon="lucide:rotate-ccw" /></template>
-          {{ fallbackValues !== undefined ? '恢复全局配置' : '恢复默认' }}
-        </n-button>
-      </template>
-
-      <p v-if="group.subtitle" class="group-desc">{{ group.subtitle }}</p>
-
-      <template v-for="row in group.rows" :key="rowKey(row)">
-        <!-- 二级子分区（组内嵌套 object）：小标题软分段 -->
-        <div v-if="row.kind === 'subsection'" class="subsection-title">{{ row.title }}</div>
-
-        <div v-else class="field-row" :class="{ 'is-block': row.block }">
-          <div class="field-main">
-            <div class="field-label">{{ row.label }}</div>
-            <div v-if="row.hint" class="field-hint">{{ row.hint }}</div>
+      <v-card-text class="config-section" style="padding-bottom: 8px;">
+        <div class="d-flex align-center ga-3">
+          <div class="flex-grow-1 min-w-0">
+            <div class="config-title text-truncate">{{ group.title }}</div>
+            <div v-if="group.subtitle" class="config-hint">{{ group.subtitle }}</div>
           </div>
-          <div class="field-control">
-            <!-- provider 下拉：显式标记或 *_provider_id 且有可选数据 -->
-            <n-select
-              v-if="isProviderSelect(row.meta, row.path)"
-              :value="asString(getIn(row.path))"
-              :options="providerOptions(row.path)"
-              clearable
-              placeholder="选择模型提供商"
-              class="control-select"
-              @update:value="(v: unknown) => setIn(row.path, v ?? '')"
-            />
-            <n-dynamic-input
-              v-else-if="isKvMap(row.meta, row.path)"
-              :value="kvRowsOf(row.path)"
-              :on-create="kvCreate"
-              class="control-kv"
-              @update:value="(rows: unknown[]) => kvWrite(row.path, rows)"
-            >
-              <template #default="{ value }">
-                <div class="kv-row">
-                  <n-input
-                    class="kv-key"
-                    :value="value.key"
-                    placeholder="人格名 / 会话ID"
-                    @update:value="(v: string) => { value.key = v; kvSync(row.path) }"
-                  />
-                  <n-input
-                    class="kv-value"
-                    :value="value.value"
-                    placeholder="记忆分类域"
-                    @update:value="(v: string) => { value.value = v; kvSync(row.path) }"
-                  />
-                </div>
-              </template>
-            </n-dynamic-input>
-            <n-switch
-              v-else-if="row.meta.type === 'bool'"
-              :value="!!getIn(row.path)"
-              @update:value="(v: unknown) => setIn(row.path, v)"
-            />
-            <n-input-number
-              v-else-if="row.meta.type === 'int'"
-              :value="asNumber(getIn(row.path))"
-              :precision="0"
-              class="control-number"
-              @update:value="(v: unknown) => setIn(row.path, v)"
-            />
-            <n-input-number
-              v-else-if="row.meta.type === 'float'"
-              :value="asNumber(getIn(row.path))"
-              :step="0.1"
-              class="control-number"
-              @update:value="(v: unknown) => setIn(row.path, v)"
-            />
-            <n-dynamic-tags
-              v-else-if="row.meta.type === 'list'"
-              :value="asList(getIn(row.path))"
-              @update:value="(v: unknown) => setIn(row.path, v)"
-            />
-            <n-input
-              v-else-if="row.meta.type === 'text'"
-              :value="asString(getIn(row.path))"
-              type="textarea"
-              :rows="3"
-              @update:value="(v: unknown) => setIn(row.path, v)"
-            />
-            <n-input
-              v-else
-              :value="asString(getIn(row.path))"
-              class="control-text"
-              @update:value="(v: unknown) => setIn(row.path, v)"
-            />
-          </div>
+          <v-btn
+            v-if="group.canReset"
+            variant="text"
+            size="small"
+            prepend-icon="lucide:rotate-ccw"
+            @click="resetGroup(group)"
+          >
+            {{ fallbackValues !== undefined ? '恢复全局配置' : '恢复默认' }}
+          </v-btn>
         </div>
-      </template>
-    </n-card>
+      </v-card-text>
+
+      <div class="object-config">
+        <div class="config-item">
+          <template v-for="row in group.rows" :key="rowKey(row)">
+            <!-- 二级子分区（组内嵌套 object）：小标题软分段 -->
+            <div v-if="row.kind === 'subsection'" class="subsection-title">{{ row.title }}</div>
+
+            <template v-else>
+              <v-row class="config-row" :class="{ 'is-disabled': isDisabled(row) }">
+                <v-col cols="12" :sm="row.block ? 12 : 6" class="property-info">
+                  <v-list-item density="compact">
+                    <v-list-item-title class="property-name">{{ row.label }}</v-list-item-title>
+                    <v-list-item-subtitle v-if="displayHint(row)" class="property-hint">{{ displayHint(row) }}</v-list-item-subtitle>
+                  </v-list-item>
+                </v-col>
+                <v-col cols="12" :sm="row.block ? 12 : 6" class="config-input">
+                  <!-- 服务商选择：显式标记或 *_provider_id 且有可选数据 -->
+                  <v-select
+                    v-if="isProviderSelect(row.meta, row.path)"
+                    :model-value="asString(getIn(row.path))"
+                    :items="providerOptions(row.path)"
+                    :disabled="isDisabled(row)"
+                    clearable
+                    placeholder="选择模型服务商"
+                    variant="outlined"
+                    density="compact"
+                    hide-details
+                    class="config-field"
+                    @update:model-value="(v: unknown) => setIn(row.path, v ?? '')"
+                  />
+                  <!-- 键值映射：行式键值编辑器替代手写 JSON -->
+                  <div v-else-if="isKvMap(row.meta, row.path)" class="kv-editor">
+                    <div
+                      v-for="(kv, kvIdx) in kvRowsOf(row.path)"
+                      :key="kvIdx"
+                      class="d-flex align-center ga-2 mb-2"
+                    >
+                      <v-text-field
+                        :model-value="kv.key"
+                        placeholder="人格名 / 会话 ID"
+                        variant="outlined"
+                        density="compact"
+                        hide-details
+                        class="config-field flex-grow-1"
+                        @update:model-value="(v: string) => { kv.key = v; kvSync(row.path) }"
+                      />
+                      <v-text-field
+                        :model-value="kv.value"
+                        placeholder="记忆分类域"
+                        variant="outlined"
+                        density="compact"
+                        hide-details
+                        class="config-field flex-grow-1"
+                        @update:model-value="(v: string) => { kv.value = v; kvSync(row.path) }"
+                      />
+                      <v-btn
+                        variant="text"
+                        size="small"
+                        icon="lucide:x"
+                        color="error"
+                        :aria-label="'删除第 ' + (kvIdx + 1) + ' 组'"
+                        @click="kvRemove(row.path, kvIdx)"
+                      />
+                    </div>
+                    <v-btn
+                      variant="text"
+                      size="small"
+                      prepend-icon="lucide:plus"
+                      @click="kvAdd(row.path)"
+                    >
+                      添加一组
+                    </v-btn>
+                  </div>
+                  <v-switch
+                    v-else-if="row.meta.type === 'bool'"
+                    :model-value="!!getIn(row.path)"
+                    :disabled="isDisabled(row)"
+                    color="primary"
+                    hide-details
+                    density="compact"
+                    inset
+                    @update:model-value="(v: unknown) => setIn(row.path, v)"
+                  />
+                  <v-text-field
+                    v-else-if="row.meta.type === 'int' || row.meta.type === 'float'"
+                    :model-value="asNumber(getIn(row.path))"
+                    :disabled="isDisabled(row)"
+                    type="number"
+                    :step="row.meta.type === 'float' ? 0.1 : 1"
+                    variant="outlined"
+                    density="compact"
+                    hide-details
+                    class="config-field"
+                    @update:model-value="(v: unknown) => setIn(row.path, v === '' || v === null || v === undefined ? null : Number(v))"
+                  />
+                  <v-combobox
+                    v-else-if="row.meta.type === 'list'"
+                    :model-value="asList(getIn(row.path))"
+                    :disabled="isDisabled(row)"
+                    multiple
+                    chips
+                    closable-chips
+                    variant="outlined"
+                    density="compact"
+                    hide-details
+                    class="config-field"
+                    @update:model-value="(v: unknown) => setIn(row.path, v)"
+                  />
+                  <v-textarea
+                    v-else-if="row.meta.type === 'text'"
+                    :model-value="asString(getIn(row.path))"
+                    :disabled="isDisabled(row)"
+                    rows="3"
+                    auto-grow
+                    variant="outlined"
+                    density="compact"
+                    hide-details
+                    class="config-field"
+                    @update:model-value="(v: unknown) => setIn(row.path, v)"
+                  />
+                  <v-text-field
+                    v-else
+                    :model-value="asString(getIn(row.path))"
+                    :disabled="isDisabled(row)"
+                    variant="outlined"
+                    density="compact"
+                    hide-details
+                    class="config-field"
+                    @update:model-value="(v: unknown) => setIn(row.path, v)"
+                  />
+                </v-col>
+              </v-row>
+              <v-divider class="config-divider" />
+            </template>
+          </template>
+        </div>
+      </div>
+    </v-card>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed } from 'vue'
-import {
-  NButton,
-  NCard,
-  NDynamicInput,
-  NDynamicTags,
-  NInput,
-  NInputNumber,
-  NSelect,
-  NSwitch,
-  useThemeVars,
-} from 'naive-ui'
-import { Icon } from '@iconify/vue'
 import type { SchemaMeta } from './schema'
 
 interface FieldRow {
@@ -156,23 +205,29 @@ const emit = defineEmits<{
   (e: 'update:modelValue', value: Record<string, unknown>): void
 }>()
 
-const themeVars = useThemeVars()
+// 后端 schema 里个别说明带了内部实现词（工具名、配置键），前端展示时换成人话。
+// 后端文件不动，只在这里覆盖显示，保证原生配置页与插件页互不影响。
+const HINT_OVERRIDES: Record<string, string> = {
+  'image_caption_provider_id':
+    '长文或图片转成文字时用哪个模型。主模型只在需要看清某张历史图片细节时才用它；上游自带的看图模型请留空，不然同一张图会被处理两次。',
+  'context_compression.max_conversation_tokens':
+    '插件最多攒多少上下文，超过就压缩。实际用的是这里和模型自带上限里更小的那个；填 0 表示不限，完全按模型的来。',
+}
 
-// naive 未暴露为 CSS 变量的文字/分隔色，从主题变量注入本组件作用域
-const cssVars = computed(() => ({
-  '--sf-title': themeVars.value.textColor1,
-  '--sf-muted': themeVars.value.textColor3,
-  '--sf-divider': themeVars.value.dividerColor,
-}))
+function displayHint(row: FieldRow): string {
+  const override = HINT_OVERRIDES[row.path.join('.')]
+  if (override !== undefined) return override
+  return row.hint ?? ''
+}
 
-// 去掉 schema description 里的「[分组] 」前缀，UI 不需要重复标签
+// 去掉 schema description 里的「[分组] 」前缀，界面不需要重复标签
 function cleanLabel(text: string | undefined): string {
   return (text ?? '').replace(/^\[[^\]]+\]\s*/, '')
 }
 
 function buildField(prefix: string[], key: string, meta: SchemaMeta): FieldRow {
   const type = meta.type ?? 'string'
-  // 宽控件独占整行：多行文本与标签编辑器
+  // 宽控件独占整行：多行文本、标签编辑器与键值编辑器
   const block = type === 'text' || type === 'list'
   return {
     kind: 'field',
@@ -233,7 +288,7 @@ const groups = computed<Group[]>(() => {
   return result
 })
 
-// 模板清除当前组覆盖以恢复继承；全局配置恢复 schema 默认值。均由保存按钮提交。
+// 恢复默认：组内所有带默认值的字段重置为 schema 默认值；改动后由父级 dirty 检测浮出保存按钮
 function resetGroup(group: Group) {
   if (props.fallbackValues !== undefined) {
     const root = { ...(props.modelValue || {}) }
@@ -292,6 +347,17 @@ function asList(v: unknown): string[] {
   return Array.isArray(v) ? v.map(String) : []
 }
 
+// 从属字段：左侧开关关掉时，右侧控件只禁用、不清值，重新打开即恢复原设置
+const FIELD_DEPENDS: Record<string, { on: string; active: (v: unknown) => boolean }> = {
+  long_text_image_threshold: { on: 'long_text_image_enabled', active: (v) => v !== false },
+}
+
+function isDisabled(row: FieldRow): boolean {
+  const rule = FIELD_DEPENDS[row.path[row.path.length - 1]]
+  if (!rule) return false
+  return !rule.active(getIn([...row.path.slice(0, -1), rule.on]))
+}
+
 // ---------- JSON 映射字段：行式键值编辑器替代手写 JSON ----------
 interface KvRow {
   key: string
@@ -334,12 +400,9 @@ function kvRowsOf(path: string[]): KvRow[] {
   return draft.rows
 }
 
-const kvCreate = (): KvRow => ({ key: '', value: '' })
-
-function kvWrite(path: string[], rows: ReadonlyArray<unknown>) {
+function kvWrite(path: string[], rows: ReadonlyArray<KvRow>) {
   const obj: Record<string, string> = {}
-  for (const row of rows) {
-    const r = row as Partial<KvRow>
+  for (const r of rows) {
     if (typeof r.key === 'string' && r.key.trim()) obj[r.key.trim()] = String(r.value ?? '')
   }
   const source = JSON.stringify(obj)
@@ -347,13 +410,23 @@ function kvWrite(path: string[], rows: ReadonlyArray<unknown>) {
   setIn(path, source)
 }
 
-// 行内输入直接 mutate 行对象（不触发 update:value），输入变化后手动序列化写回
+// 行内输入直接改行对象，输入变化后手动序列化写回
 function kvSync(path: string[]) {
   const draft = kvDrafts.get(path.join('.'))
   if (draft) kvWrite(path, draft.rows)
 }
 
-// provider 字段判定：显式标记，或 string 类型的 *_provider_id 键且对应列表非空
+function kvAdd(path: string[]) {
+  const rows = kvRowsOf(path)
+  kvWrite(path, [...rows, { key: '', value: '' }])
+}
+
+function kvRemove(path: string[], idx: number) {
+  const rows = kvRowsOf(path)
+  kvWrite(path, rows.filter((_, i) => i !== idx))
+}
+
+// 服务商字段判定：显式标记，或 string 类型的 *_provider_id 键且对应列表非空
 function isProviderSelect(meta: SchemaMeta, path: string[]): boolean {
   if (meta._special === 'select_provider') return true
   if (meta.type && meta.type !== 'string') return false
@@ -372,7 +445,7 @@ function providerOptions(path: string[]) {
     : /rerank/i.test(key)
       ? p.rerank || []
       : p.chat || []
-  return [{ label: '(留空)', value: '' }, ...ids.map((id) => ({ label: id, value: id }))]
+  return [{ title: '(留空)', value: '' }, ...ids.map((id) => ({ title: id, value: id }))]
 }
 </script>
 
@@ -380,119 +453,86 @@ function providerOptions(path: string[]) {
 .schema-form {
   display: flex;
   flex-direction: column;
-  gap: 12px;
 }
 
-/* 卡头硬分段：标题区与内容区之间的分隔线 */
-.group-card :deep(.n-card-header) {
-  border-bottom: 1px solid var(--sf-divider);
-  padding-bottom: 12px;
+/* ---- 上游 AstrBotConfigV4.vue 行式范式（照抄数值；颜色用 rgb() 包裹主题三元组） ---- */
+.v-application .config-section,
+.config-section {
+  margin-bottom: 4px;
 }
-
-.group-subtitle {
-  font-size: 12px;
-  font-weight: 400;
-  color: var(--sf-muted);
+.config-title {
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: rgb(var(--v-theme-primaryText));
 }
-
-/* 分组说明：卡体顶部小字，不进卡头（长文案会挤压标题） */
-.group-desc {
-  margin: 0 0 6px;
-  font-size: 12px;
-  color: var(--sf-muted);
-  line-height: 1.6;
+.config-hint {
+  font-size: 0.75rem;
+  color: rgb(var(--v-theme-secondaryText));
+  margin-top: 2px;
 }
-
-/* ---------- 软分段：卡内字段行，标签/hint 居左，控件右贴 ---------- */
-
-.field-row {
-  display: flex;
+.object-config {
+  width: 100%;
+}
+.config-row {
+  margin: 0;
   align-items: center;
-  justify-content: space-between;
-  gap: 20px;
-  padding: 10px 0;
+  padding: 8px 8px;
+  border-radius: 4px;
+}
+.config-row:hover {
+  background-color: rgba(0, 0, 0, 0.03);
+}
+.property-info {
+  padding: 0;
+}
+.property-name {
+  font-size: 0.875rem;
+  color: rgb(var(--v-theme-primaryText));
+}
+.property-hint {
+  font-size: 0.75rem;
+  color: rgb(var(--v-theme-secondaryText));
+  margin-top: 2px;
+}
+.config-input {
+  padding: 4px 8px;
+}
+.config-field {
+  margin-bottom: 0;
+}
+.config-divider {
+  border-color: rgba(0, 0, 0, 0.1);
+  margin-left: 24px;
 }
 
-.field-row + .field-row,
-.subsection-title + .field-row {
-  border-top: 1px solid var(--sf-divider);
-}
-
-.field-main {
-  flex: 1;
+/* 宽控件独占整行时，标题与控件上下排 */
+.config-row .property-info:has(+ .config-input) {
   min-width: 0;
 }
 
-.field-label {
-  font-size: 14px;
-  color: var(--sf-title);
-  line-height: 1.45;
+/* 从属字段被上游开关关掉：整体压淡，但值仍留在配置里 */
+.config-row.is-disabled .property-name,
+.config-row.is-disabled .property-hint {
+  opacity: 0.45;
+}
+.config-row.is-disabled .config-input {
+  opacity: 0.55;
 }
 
-.field-hint {
-  margin-top: 3px;
-  font-size: 12px;
-  color: var(--sf-muted);
-  line-height: 1.55;
-}
-
-/* 控件列：不伸展、右贴；具体控件各自定宽 */
-.field-control {
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
-}
-
-.control-number {
-  width: 150px;
-}
-
-.control-select {
-  width: 260px;
-}
-
-.control-text {
-  width: 260px;
-}
-
-/* ---------- 宽控件（多行文本/标签编辑）：独占整行 ---------- */
-
-.field-row.is-block {
-  flex-direction: column;
-  align-items: stretch;
-  gap: 10px;
-}
-
-.field-row.is-block .field-control {
+/* 键值编辑器占满右列 */
+.kv-editor {
   width: 100%;
 }
 
-/* ---------- JSON 映射编辑器 ---------- */
-
-.control-kv {
-  width: 100%;
-}
-
-.kv-row {
-  flex: 1;
-  display: flex;
-  gap: 8px;
-}
-
-.kv-key {
-  flex: 1.5;
-}
-
-.kv-value {
-  flex: 1;
-}
-
-/* ---------- 二级子分区标题 ---------- */
-
+/* 二级子分区标题 */
 .subsection-title {
-  padding: 14px 0 6px;
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--sf-title);
+  padding: 14px 16px 6px;
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: rgb(var(--v-theme-primaryText));
+}
+
+.group-card {
+  border-color: rgba(var(--v-border-color), 0.16);
 }
 </style>

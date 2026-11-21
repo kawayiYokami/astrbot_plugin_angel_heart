@@ -6,11 +6,13 @@ AngelHeart 插件 - 前台角色 (FrontDesk)
 import asyncio
 import base64
 import copy
+import inspect
 import json
 import os
 import re
 import time
 import uuid
+from collections import Counter
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
@@ -28,8 +30,9 @@ from ..core.utils import partition_dialogue_raw, format_final_prompt
 from ..core.image_processor import ImageProcessor
 
 from ..core.fishing_direct_reply import FishingDirectReply
-from ..core.message_processor import MessageProcessor
+from ..core.message_processor import MessageProcessor, ensure_tool_call_pairing
 from ..core.utils.content_utils import convert_content_to_string
+from ..core.utils.reply_metadata import normalize_reply_targets
 from ..core.utils.message_hits import (
     build_message_metadata,
     extract_plain_body_from_components,
@@ -37,7 +40,12 @@ from ..core.utils.message_hits import (
     parse_pipe_phrases,
     parse_space_phrases,
 )
-from ..core.utils.message_utils import serialize_content_parts
+from ..core.utils.message_utils import (
+    message_dedup_key,
+    normalize_history_tool_pairs,
+    retain_complete_history_blocks,
+    serialize_content_parts,
+)
 
 # 导入状态枚举
 from ..core.angel_heart_status import AngelHeartStatus, StatusChecker
@@ -56,6 +64,17 @@ class FrontDesk:
     MAX_TEXT_FILE_BYTES = 100 * 1024
     MAX_IMAGE_SOURCE_BYTES = 20 * 1024 * 1024
     BLANK_SENDER_NAME = "空白"
+
+    # 引用目标协议：只提示编号用法，不改人格，不注入秘书决策
+    QUOTE_INSTRUCTION = (
+        "<引用说明>\n"
+        "需要引用上面某一条具体消息时，在正文最前面写 [#编号]，例如 [#3] 你要说的话。\n"
+        "编号就是每条消息开头 # 后面的数字。\n"
+        "只是顺着话题继续说，不要写。\n"
+        "不要写不存在的编号。\n"
+        "</引用说明>"
+    )
+    QUOTE_SUPPORTED_PLATFORM = "aiocqhttp"
 
     # OneBot 群成员角色 → 展示标签
     SENDER_ROLE_LABELS = {
@@ -229,7 +248,7 @@ class FrontDesk:
             return None
 
         image_cache = self.context.conversation_ledger.image_cache
-        dhash = image_cache.put(chat_id, raw_bytes)
+        dhash = await image_cache.put(chat_id, raw_bytes)
         if dhash:
             cache_path = str(image_cache.get_cached_path(chat_id, dhash))
             return {
@@ -288,7 +307,7 @@ class FrontDesk:
             logger.debug(f"AngelHeart[{chat_id}]: 文本文件过大({size}bytes)，已跳过: {name}")
             return {"type": "text", "text": f"[文件过大，不支持: {name}]"}
 
-        cached_path = self.context.conversation_ledger.image_cache.put_text_file(
+        cached_path = await self.context.conversation_ledger.image_cache.put_text_file(
             chat_id,
             local_path,
             name,
@@ -421,6 +440,9 @@ class FrontDesk:
 
         new_message = {
             "role": "user",
+            "echo_eligible": bool(body_text.strip()) and all(
+                isinstance(component, (Plain, Reply)) for component in message_chain
+            ),
             "content": content_list,  # 标准多模态列表
             "sender_id": event.get_sender_id(),
             "sender_name": self._normalize_sender_name(
@@ -438,6 +460,14 @@ class FrontDesk:
                 else time.time()
             ),
         }
+        # 只保存上游显式引用的 ID；引用链/图片按需读取，避免重复下载和历史递归展开。
+        reply_targets = normalize_reply_targets([
+            getattr(component, "id", None)
+            for component in message_chain
+            if isinstance(component, Reply)
+        ])
+        if reply_targets:
+            new_message["reply_to_message_ids"] = reply_targets
         # 6. 将消息添加到 Ledger。上下文清理由压缩策略统一控制，不再因离场状态触发。
         self.context.conversation_ledger.add_message(chat_id, new_message)
 
@@ -595,7 +625,9 @@ class FrontDesk:
         can_enter = is_wake or not cm.enter_on_mention_only
         leave_reply_trigger = ""
         if not can_enter and not is_present:
-            leave_reply_trigger = self.status_checker.get_leave_reply_trigger(chat_id)
+            leave_reply_trigger = self.status_checker.get_leave_reply_trigger(
+                chat_id, message_id=message_id
+            )
 
         # 离场进场：先标记进场，再进入助理防抖
         if can_enter and not is_present:
@@ -1148,15 +1180,22 @@ class FrontDesk:
             supplement_messages = await self._fetch_database_history(chat_id, 19, event)
 
             if supplement_messages:
-                # 合并历史消息和当前内存消息；按时间戳去重，避免补历史时清空已有上下文。
+                # 按消息身份合并；无 ID 的重复发言按批内出现次数保留。
                 # is_processed 已退役：冷启动补种直接进入当前连续块。
-                messages_by_timestamp = {}
-                for msg in supplement_messages + current_messages:
-                    msg.pop("is_processed", None)
-                    messages_by_timestamp[msg.get("timestamp", 0)] = msg
+                messages_by_key = {}
+                for batch in (supplement_messages, current_messages):
+                    occurrences = Counter()
+                    for msg in batch:
+                        msg.pop("is_processed", None)
+                        key = message_dedup_key(msg)
+                        occurrences[key] += 1
+                        occurrence = (
+                            1 if msg.get("source_message_id") else occurrences[key]
+                        )
+                        messages_by_key[(key, occurrence)] = msg
 
                 all_messages = sorted(
-                    messages_by_timestamp.values(), key=lambda m: m.get("timestamp", 0)
+                    messages_by_key.values(), key=lambda m: m.get("timestamp", 0)
                 )
 
                 # 使用公共方法更新消息列表
@@ -1276,34 +1315,34 @@ class FrontDesk:
         self, history_records: List[Dict], needed_count: int
     ) -> List[Dict]:
         """将 AstrBot 官方 conversation history 转为 AngelHeart 内部消息格式。"""
+        normalized_records = []
+        for record in history_records:
+            if not isinstance(record, dict):
+                continue
+            normalized_record = self._convert_astrbot_history_record(record)
+            if normalized_record is not None:
+                normalized_records.append(normalized_record)
+
         selected_records = []
         used_tokens = 0
         message_limit = min(needed_count, self.ASTRBOT_HISTORY_MESSAGE_LIMIT)
 
-        for record in reversed(history_records):
-            if not isinstance(record, dict):
-                continue
-
-            role = record.get("role")
-            if role not in ("user", "assistant", "tool"):
-                continue
-
+        for record in reversed(normalized_records):
             content = self._extract_text_from_astrbot_history_record(record)
             content_tokens = self._estimate_text_tokens(content)
             if used_tokens + content_tokens > self.ASTRBOT_HISTORY_TEXT_TOKEN_LIMIT:
                 break
 
-            normalized_record = self._convert_astrbot_history_record(record)
-            if normalized_record is None:
-                continue
-
-            selected_records.append(normalized_record)
+            selected_records.append(record)
             used_tokens += content_tokens
 
             if len(selected_records) >= message_limit:
                 break
 
         selected_records.reverse()
+        selected_records = retain_complete_history_blocks(
+            normalized_records, selected_records
+        )
 
         base_timestamp = time.time() - max(len(selected_records), 1)
         for index, message in enumerate(selected_records):
@@ -1561,7 +1600,7 @@ class FrontDesk:
             # 4. 获取时间戳
             timestamp = raw_msg.get("time", time.time())
 
-            return {
+            converted = {
                 "role": role,
                 "content": content,
                 "sender_id": sender_id,
@@ -1571,6 +1610,18 @@ class FrontDesk:
                 "timestamp": timestamp,
                 "source": "qq_api",
             }
+            chain = raw_msg.get("message")
+            if isinstance(chain, list):
+                targets = normalize_reply_targets([
+                    part["data"].get("id")
+                    for part in chain
+                    if isinstance(part, dict)
+                    and part.get("type") == "reply"
+                    and isinstance(part.get("data"), dict)
+                ])
+                if targets:
+                    converted["reply_to_message_ids"] = targets
+            return converted
 
         except Exception as e:
             logger.warning(f"转换QQ消息格式失败: {e}")
@@ -1909,14 +1960,67 @@ class FrontDesk:
         return context_messages, current_messages
 
     def _generate_final_prompt(
-        self, recent_dialogue: List[Dict], decision: Any, alias: str
+        self,
+        recent_dialogue: List[Dict],
+        decision: Any,
+        alias: str,
     ) -> str:
         """生成聚焦指令"""
-        return format_final_prompt(recent_dialogue, decision, alias, use_absolute_time=True)
+        return format_final_prompt(
+            recent_dialogue,
+            decision,
+            alias,
+            use_absolute_time=True,
+        )
 
     def _is_valid_final_prompt(self, prompt: str) -> bool:
         """检查重建后的当前提示词是否有有效内容。"""
         return isinstance(prompt, str) and bool(prompt.strip())
+
+    # ========== 引用目标接管 ==========
+
+    def _host_settings(self, chat_id: str, group: str) -> Dict[str, Any]:
+        """读取宿主会话级配置分组；不可用时返回空字典。
+
+        宿主配置按会话档案生效，不能只检查默认配置。
+        """
+        try:
+            host_config = self.astr_context.get_config(chat_id)
+        except Exception:
+            return {}
+        try:
+            value = host_config.get(group, {}) if host_config is not None else {}
+        except Exception:
+            return {}
+        return value if isinstance(value, dict) else {}
+
+    def _quote_target_platform_supported(self, event: Any) -> bool:
+        """首版只接管 aiocqhttp；读取失败视为不支持。"""
+        try:
+            platform_name = event.get_platform_name()
+        except Exception:
+            return False
+        return str(platform_name or "") == self.QUOTE_SUPPORTED_PLATFORM
+
+    def _should_manage_quote_target(self, chat_id: str, event: Any) -> bool:
+        """判断本轮是否由插件接管引用目标。
+
+        条件：群聊、已启用群聊上下文重写、平台为 aiocqhttp、宿主会话流式
+        输出关闭。不满足时不注入编号或指令。
+
+        编号是上下文的一部分（和发送者 ID 一样），不设开关。
+        """
+        if not self._is_group_chat(chat_id):
+            return False
+        chat_config = self.config_manager.for_chat(chat_id)
+        if not chat_config.group_chat_enhancement:
+            return False
+        if not self._quote_target_platform_supported(event):
+            return False
+        provider_settings = self._host_settings(chat_id, "provider_settings")
+        if provider_settings.get("streaming_response", False) is True:
+            return False
+        return True
 
     def _parse_space_separated_phrases(self, raw: Any) -> List[str]:
         """解析空格分隔短语，去掉空项并去重保序。"""
@@ -2096,7 +2200,10 @@ class FrontDesk:
         current_message_id: str,
         scene_hint: str | None = None,
     ) -> List[Dict]:
-        """使用 MessageProcessor 构建上下文列表"""
+        """使用 MessageProcessor 构建上下文列表
+
+        编号写在消息本身（quote_no），渲染抬头时自然带上，不需要额外映射。
+        """
         new_contexts = []
         if scene_hint:
             # 在最顶部添加场景说明消息，避免某些模型不允许第一条消息是助理
@@ -2107,7 +2214,7 @@ class FrontDesk:
                 }
             )
 
-        # 1) 历史消息
+        # 1) 历史消息（不编号）
         for msg in historical_context:
             processed_msg = processor.process_message(msg)
             new_contexts.append(processed_msg)
@@ -2120,6 +2227,52 @@ class FrontDesk:
             new_contexts.append(processed_msg)
 
         return new_contexts
+
+    def _ensure_tool_call_pairing(
+        self, chat_id: str, contexts: List[Dict]
+    ) -> List[Dict]:
+        """工具链收口，出请求前保证调用与回执一一配对。"""
+        try:
+            normalized = ensure_tool_call_pairing(normalize_history_tool_pairs(contexts))
+        except Exception as e:
+            logger.error(
+                f"AngelHeart[{chat_id}]: 工具链收口失败，按原样下发: {e}", exc_info=True
+            )
+            return contexts
+        if len(normalized) != len(contexts):
+            logger.warning(
+                f"AngelHeart[{chat_id}]: 工具链收口调整上下文条数 {len(contexts)} -> {len(normalized)}"
+            )
+        return normalized
+
+    def _record_request_snapshot(self, chat_id: str, req: Any) -> None:
+        """记录本次主模型请求体的摘要快照，失败不影响主流程。
+
+        记的是插件重建之后的请求体：system + contexts + 当前提示词。
+        框架之后还会做压缩、图片预处理与二次请求，那些拿不到。
+        """
+        ring = getattr(self.context, "request_ring", None)
+        if ring is None:
+            return
+        try:
+            messages: List[Dict] = []
+            system_prompt = getattr(req, "system_prompt", "") or ""
+            if system_prompt:
+                messages.append({"role": "system", "content": system_prompt})
+            for item in getattr(req, "contexts", None) or []:
+                if isinstance(item, dict):
+                    messages.append(item)
+            prompt = getattr(req, "prompt", "") or ""
+            if prompt:
+                messages.append({"role": "user", "content": prompt})
+            ring.record(
+                chat_id,
+                source="assistant",
+                messages=messages,
+                model=getattr(req, "model", "") or "",
+            )
+        except Exception as e:
+            logger.debug(f"AngelHeart[{chat_id}]: 请求快照记录失败: {e}")
 
     def _collect_non_current_image_urls(
         self, recent_dialogue: List[Dict], current_message_id: str
@@ -2275,6 +2428,66 @@ class FrontDesk:
                     continue
             ref_index += 1
 
+    async def _persona_begin_dialogs_for_request(
+        self, chat_id: str, event: AstrMessageEvent, req: Any
+    ) -> List[Dict]:
+        """Keep the selected persona's examples when replacing conversation history.
+
+        Resolve through AstrBot rather than copying the old request prefix: it can
+        contain examples from an earlier persona or persisted conversation turns.
+        """
+        conversation = getattr(req, "conversation", None)
+        manager = getattr(self.astr_context, "persona_manager", None)
+        resolver = getattr(manager, "resolve_selected_persona", None)
+        if conversation is None or not callable(resolver):
+            return []
+        try:
+            get_platform_name = getattr(event, "get_platform_name", None)
+            platform_name = (
+                get_platform_name()
+                if callable(get_platform_name)
+                else chat_id.split(":", 1)[0]
+            )
+            # Older AstrBot resolvers use these settings for the default persona.
+            # Read the event's effective config rather than the global default.
+            get_config = getattr(self.astr_context, "get_config", None)
+            settings = {}
+            if callable(get_config):
+                config = get_config(chat_id)
+                candidate = config.get("provider_settings", {})
+                if isinstance(candidate, dict):
+                    settings["provider_settings"] = candidate
+            if "conversation_persona_id" in inspect.signature(resolver).parameters:
+                _, persona, _, _ = await resolver(
+                    umo=chat_id,
+                    conversation_persona_id=getattr(conversation, "persona_id", None),
+                    platform_name=platform_name,
+                    **settings,
+                )
+            else:
+                # AstrBot 4.30+ 收窄了签名：只接受 umo / platform_name，返回三元组。
+                # 会话已由 umo 决定，conversation_persona_id 与 provider_settings 不再需要。
+                _, persona, _ = await resolver(
+                    umo=chat_id,
+                    platform_name=platform_name,
+                )
+            if not isinstance(persona, dict):
+                return []
+            dialogs = persona.get("_begin_dialogs_processed")
+            if not isinstance(dialogs, list):
+                return []
+            examples = copy.deepcopy(dialogs)
+            for message in examples:
+                message["_no_save"] = True
+            return examples
+        except Exception as exc:
+            logger.warning(
+                "AngelHeart: 读取当前人格预设对话失败，继续使用会话账本 (%s)",
+                type(exc).__name__,
+            )
+            return []
+
+
     def _update_request(
         self,
         req: Any,
@@ -2288,7 +2501,7 @@ class FrontDesk:
     ):
         """更新请求对象"""
         # 完全覆盖原有的 contexts
-        req.contexts = contexts
+        req.contexts = normalize_history_tool_pairs(contexts)
 
         # 只在当前提示词有效时覆盖 req.prompt；否则保留原始当前轮输入。
         if self._is_valid_final_prompt(final_prompt):
@@ -2310,7 +2523,13 @@ class FrontDesk:
         else:
             req.system_prompt = original_system_prompt
 
-    async def rewrite_prompt_for_llm(self, chat_id: str, event: AstrMessageEvent, req: Any):
+    async def rewrite_prompt_for_llm(
+        self,
+        chat_id: str,
+        event: AstrMessageEvent,
+        req: Any,
+        allow_quote_target: bool = True,
+    ):
         """
         重构请求体，实现完整的对话历史格式化和指令注入。
         使用辅助方法和 MessageProcessor 类使逻辑更清晰。
@@ -2326,6 +2545,7 @@ class FrontDesk:
            保证助理上线就有完整上下文。
         缓存影响：历史前缀由账本稳定重排保持一致，临时提醒走 _no_save 尾部注入，
         前缀缓存命中不受全量重建影响。
+        allow_quote_target=False 时（如上游指令事件）不建立引用目标状态。
         """
         logger.debug(f"AngelHeart[{chat_id}]: 开始重构LLM请求体...")
 
@@ -2335,6 +2555,9 @@ class FrontDesk:
         scene_hint = None
         scene_prompt = None
         preserve_current_image_urls = self._should_preserve_current_image_urls(chat_id)
+        manage_quote_target = bool(allow_quote_target) and self._should_manage_quote_target(
+            chat_id, event
+        )
 
         # 历史重写：
         # - 群聊：必须用秘书判断点固化的切片（秘书点=主脑点）
@@ -2355,7 +2578,6 @@ class FrontDesk:
         context_recent_dialogue, prompt_recent_dialogue = self._split_recent_dialogue_at_current_message(
             recent_dialogue, current_message_id
         )
-        final_prompt_str = self._generate_final_prompt(prompt_recent_dialogue, None, alias)
         should_mark_processed = True
         if self._is_group_chat(chat_id):
             scene_hint = "这是一个群聊场景。"
@@ -2365,7 +2587,7 @@ class FrontDesk:
         # 2. 标记已处理消息（如果需要）
         self._mark_processed_if_needed(chat_id, recent_dialogue, should_mark_processed)
 
-        # 3. 使用 MessageProcessor 构建上下文
+        # 3. 使用 MessageProcessor 构建上下文（编号写在消息上，渲染时自动带上）
         processor = MessageProcessor(alias)
         new_contexts = self._build_contexts_with_processor(
             processor,
@@ -2375,6 +2597,19 @@ class FrontDesk:
             current_message_id,
             scene_hint,
         )
+
+        # 3.1 渲染当前 prompt
+        final_prompt_str = self._generate_final_prompt(
+            prompt_recent_dialogue, None, alias
+        )
+        if manage_quote_target and self._is_valid_final_prompt(final_prompt_str):
+            final_prompt_str = f"{final_prompt_str}\n\n{self.QUOTE_INSTRUCTION}"
+
+        # 人格预设对话必须放在账本历史之前；重建过 contexts 时也要补上
+        persona_examples = await self._persona_begin_dialogs_for_request(
+            chat_id, event, req
+        )
+        new_contexts[:0] = persona_examples
         extra_image_urls = (
             self._collect_debounce_window_extra_image_urls(
                 recent_dialogue, event, current_message_id
@@ -2406,6 +2641,9 @@ class FrontDesk:
         # 5.1 剔除本地文件已失效的图片块，避免本地路径透传给只认 base64/http 的上游
         new_contexts = self._strip_invalid_context_images(chat_id, new_contexts)
 
+        # 5.2 工具链收口：每个 function_call 必须恰好一条 function_call_output
+        new_contexts = self._ensure_tool_call_pairing(chat_id, new_contexts)
+
         # 6. 更新请求对象
         self._update_request(
             req,
@@ -2417,6 +2655,9 @@ class FrontDesk:
             current_image_urls=current_image_urls,
             extra_image_urls=extra_image_urls,
         )
+
+        # 6.1 记录本次请求摘要（只进内存环形队列，供 WebUI 排查请求体问题）
+        self._record_request_snapshot(chat_id, req)
 
         if not self._is_valid_final_prompt(final_prompt_str):
             logger.warning(

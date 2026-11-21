@@ -111,7 +111,7 @@ def pointed_event(kind, **kwargs):
 
 
 class FakeRuntimeTasks:
-    async def run(self, event, fn):
+    async def run(self, event, fn, **kwargs):
         return await fn()
 
 

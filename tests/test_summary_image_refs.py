@@ -40,7 +40,11 @@ class DummyConfig(ConfigManager):
 
 @pytest.fixture
 def ledger(tmp_path):
-    return ConversationLedger(DummyConfig(), tmp_path, astr_context=None)
+    lg = ConversationLedger(DummyConfig(), tmp_path, astr_context=None)
+    try:
+        yield lg
+    finally:
+        lg.close()
 
 
 def _png_bytes(color="red"):
@@ -49,8 +53,8 @@ def _png_bytes(color="red"):
     return buf.getvalue()
 
 
-def _cache_path(ledger, chat_id=CHAT_ID, color="red"):
-    dhash = ledger.image_cache.put(chat_id, _png_bytes(color))
+async def _cache_path(ledger, chat_id=CHAT_ID, color="red"):
+    dhash = await ledger.image_cache.put(chat_id, _png_bytes(color))
     return str(ledger.image_cache.get_cached_path(chat_id, dhash))
 
 
@@ -91,6 +95,8 @@ def _organize(ledger, keep_from_timestamp):
         ledger.organize_on_group_enter(CHAT_ID, keep_from_timestamp=keep_from_timestamp)
         is True
     )
+    # 删除在媒体执行域异步完成，等它跑完再断言磁盘状态
+    ledger.image_cache.drain()
 
 
 def _summary_message(ledger):
@@ -102,8 +108,9 @@ def _summary_message(ledger):
 
 
 class TestSummaryKeepsImagePath:
-    def test_folded_image_path_appears_in_summary(self, ledger):
-        cache_path = _cache_path(ledger)
+    @pytest.mark.asyncio
+    async def test_folded_image_path_appears_in_summary(self, ledger):
+        cache_path = await _cache_path(ledger)
         ledger._get_or_create_ledger(CHAT_ID)["messages"] = [
             _image_message(1, cache_path),
             _text_message(2, "继续聊"),
@@ -114,8 +121,9 @@ class TestSummaryKeepsImagePath:
         summary = _summary_message(ledger)
         assert cache_path in summary["content"]
 
-    def test_summary_message_holds_image_refs(self, ledger):
-        cache_path = _cache_path(ledger)
+    @pytest.mark.asyncio
+    async def test_summary_message_holds_image_refs(self, ledger):
+        cache_path = await _cache_path(ledger)
         ledger._get_or_create_ledger(CHAT_ID)["messages"] = [
             _image_message(1, cache_path),
             _text_message(2, "继续聊"),
@@ -126,8 +134,9 @@ class TestSummaryKeepsImagePath:
         summary = _summary_message(ledger)
         assert cache_path in summary.get("image_refs", [])
 
-    def test_cached_file_survives_cleanup(self, ledger):
-        cache_path = _cache_path(ledger)
+    @pytest.mark.asyncio
+    async def test_cached_file_survives_cleanup(self, ledger):
+        cache_path = await _cache_path(ledger)
         ledger._get_or_create_ledger(CHAT_ID)["messages"] = [
             _image_message(1, cache_path),
             _text_message(2, "继续聊"),
@@ -139,11 +148,12 @@ class TestSummaryKeepsImagePath:
 
         assert Path(cache_path).exists()
 
-    def test_unreferenced_file_still_removed(self, ledger):
+    @pytest.mark.asyncio
+    async def test_unreferenced_file_still_removed(self, ledger):
         """没被任何消息引用的缓存文件照旧清理，保留逻辑不扩大范围。"""
         from pathlib import Path
 
-        cache_path = _cache_path(ledger)
+        cache_path = await _cache_path(ledger)
         ledger._get_or_create_ledger(CHAT_ID)["messages"] = [
             _text_message(1, "只有文字"),
             _text_message(2, "继续聊"),
@@ -153,8 +163,9 @@ class TestSummaryKeepsImagePath:
 
         assert not Path(cache_path).exists()
 
-    def test_second_organize_inherits_refs(self, ledger):
-        cache_path = _cache_path(ledger)
+    @pytest.mark.asyncio
+    async def test_second_organize_inherits_refs(self, ledger):
+        cache_path = await _cache_path(ledger)
         ledger._get_or_create_ledger(CHAT_ID)["messages"] = [
             _image_message(1, cache_path),
             _text_message(2, "继续聊"),

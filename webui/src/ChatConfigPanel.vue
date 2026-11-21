@@ -1,200 +1,319 @@
 <template>
-  <n-layout class="layout" has-sider>
-    <!-- 左侧：模板列表 -->
-    <n-layout-sider
-      width="260"
-      collapse-mode="width"
-      :collapsed-width="56"
-      show-trigger="bar"
-      :collapsed="sidebarCollapsed"
-      @collapse="sidebarCollapsed = true"
-      @expand="sidebarCollapsed = false"
-    >
-      <div class="sidebar-inner" :class="{ collapsed: sidebarCollapsed }">
-        <div class="sidebar-header">
-          <button
-            class="theme-toggle"
-            type="button"
-            :title="isDark ? '切换到光模式' : '切换到暗模式'"
-            @click="toggleTheme()"
-          >
-            <Icon :icon="isDark ? 'lucide:sun' : 'lucide:moon'" />
-          </button>
-          <div v-if="!sidebarCollapsed" class="brand">天使之心</div>
-          <n-button
-            v-if="!sidebarCollapsed"
-            type="primary"
-            @click="openCreateModal"
-          >
-            <template #icon><Icon icon="lucide:plus" /></template>
-            新增
-          </n-button>
-          <n-button
-            v-else
-            type="primary"
-            circle
-            title="新增"
-            @click="openCreateModal"
-          >
-            <template #icon><Icon icon="lucide:plus" /></template>
-          </n-button>
-        </div>
-        <n-scrollbar class="sidebar-scroll">
-          <n-menu
-            class="sidebar-menu"
-            :value="sidebarMenuValue"
-            :options="sidebarMenuOptions"
-            :collapsed="sidebarCollapsed"
-            :collapsed-width="56"
-            :collapsed-icon-size="20"
-            @update:value="onSidebarMenu"
-          />
-          <n-empty
-            v-if="!templates.length && !sidebarCollapsed"
-            description="还没有模板，点击右上角新建"
-            class="list-empty"
-          />
-        </n-scrollbar>
-        <div class="sidebar-footer">
-          <n-menu
-            class="sidebar-menu"
-            :value="viewMode === 'config' && !selectedId ? 'settings' : null"
-            :options="settingsMenuOptions"
-            :collapsed="sidebarCollapsed"
-            :collapsed-width="56"
-            :collapsed-icon-size="20"
-            @update:value="selectTemplate(null)"
-          />
-        </div>
+  <!-- 左侧：导航（260px，可折叠到 56px） -->
+  <v-navigation-drawer
+    :rail="rail"
+    permanent
+    width="260"
+    rail-width="56"
+    class="heart-drawer"
+    color="transparent"
+  >
+    <div class="d-flex flex-column h-100">
+      <div class="drawer-head pa-2" :class="rail ? 'd-flex flex-column align-center ga-2' : 'd-flex align-center ga-2'">
+        <v-btn
+          :icon="rail ? 'lucide:panel-left-open' : 'lucide:panel-left-close'"
+          variant="text"
+          size="small"
+          :aria-label="rail ? '展开侧栏' : '收起侧栏'"
+          @click="rail = !rail"
+        />
+        <span v-if="!rail" class="text-subtitle-1 font-weight-medium flex-grow-1 text-truncate">天使之心</span>
+        <v-btn
+          v-if="!rail"
+          color="primary"
+          variant="flat"
+          size="small"
+          prepend-icon="lucide:plus"
+          @click="openCreateModal"
+        >
+          新增
+        </v-btn>
+        <v-btn
+          v-else
+          color="primary"
+          variant="flat"
+          size="small"
+          icon="lucide:plus"
+          aria-label="新增模板"
+          @click="openCreateModal"
+        />
       </div>
-    </n-layout-sider>
 
-    <!-- 右侧：配置详情 -->
-    <n-layout-content class="content">
-      <n-scrollbar class="content-scroll">
-      <div class="content-inner">
+      <v-divider />
+
+      <v-list class="flex-grow-1 overflow-y-auto py-2" nav bg-color="transparent">
+        <v-list-item
+          value="monitor"
+          :active="viewMode === 'monitor'"
+          color="primary"
+          @click="onSidebarMenu('monitor')"
+        >
+          <template #prepend><v-icon icon="lucide:activity" /></template>
+          <v-list-item-title v-if="!rail">联系人监控</v-list-item-title>
+          <v-tooltip v-if="rail" activator="parent" location="end">联系人监控</v-tooltip>
+        </v-list-item>
+        <v-list-item
+          value="fonts"
+          :active="viewMode === 'fonts'"
+          color="primary"
+          @click="onSidebarMenu('fonts')"
+        >
+          <template #prepend><v-icon icon="lucide:type" /></template>
+          <v-list-item-title v-if="!rail">字体</v-list-item-title>
+          <v-tooltip v-if="rail" activator="parent" location="end">字体</v-tooltip>
+        </v-list-item>
+        <v-list-item
+          v-for="tpl in templates"
+          :key="tpl.id"
+          :value="tpl.id"
+          :active="viewMode === 'config' && selectedId === tpl.id"
+          color="primary"
+          @click="onSidebarMenu(tpl.id)"
+        >
+          <template #prepend><v-icon icon="lucide:file-text" /></template>
+          <v-list-item-title v-if="!rail">{{ tpl.name }}</v-list-item-title>
+          <template v-if="!rail" #append>
+            <div class="tpl-actions">
+              <v-btn
+                size="x-small"
+                variant="text"
+                icon="lucide:pencil"
+                :aria-label="'重命名 ' + tpl.name"
+                @click.stop="openRenameModal(tpl)"
+              />
+              <v-btn
+                size="x-small"
+                variant="text"
+                icon="lucide:trash-2"
+                color="error"
+                :aria-label="'删除 ' + tpl.name"
+                @click.stop="askDeleteTemplate(tpl.id, tpl.name)"
+              />
+            </div>
+          </template>
+          <v-tooltip v-if="rail" activator="parent" location="end">{{ tpl.name }}</v-tooltip>
+        </v-list-item>
+
+        <div v-if="!templates.length && !rail">
+          <v-empty-state
+            icon="lucide:file-text"
+            title="还没有模板"
+            text="点上方「新增」建第一个"
+            class="pa-2"
+          />
+        </div>
+      </v-list>
+
+      <v-divider />
+
+      <v-list class="py-2" nav bg-color="transparent">
+        <v-list-item
+          value="settings"
+          :active="viewMode === 'config' && !selectedId"
+          color="primary"
+          @click="selectTemplate(null)"
+        >
+          <template #prepend><v-icon icon="lucide:settings" /></template>
+          <v-list-item-title v-if="!rail">插件设置</v-list-item-title>
+          <v-tooltip v-if="rail" activator="parent" location="end">插件设置</v-tooltip>
+        </v-list-item>
+      </v-list>
+    </div>
+  </v-navigation-drawer>
+
+  <v-main>
+    <div class="content-inner">
       <!-- 联系人监控 -->
       <template v-if="viewMode === 'monitor'">
         <div class="content-header">
-          <h2>联系人监控</h2>
-          <span class="content-sub">群聊与私聊的在场状态、巡检与最近决策，每 3 秒自动刷新</span>
-        </div>
-        <n-radio-group v-model:value="kindFilter" class="kind-filter">
-          <n-radio-button value="all">全部</n-radio-button>
-          <n-radio-button value="group">群聊</n-radio-button>
-          <n-radio-button value="private">私聊</n-radio-button>
-        </n-radio-group>
-        <div class="status-grid">
-          <div v-for="item in filteredStatusItems" :key="item.chat_id" class="status-card">
-            <div class="status-chat">
-              <template v-if="item.display_name">{{ item.display_name }}</template>
-              <span v-else class="status-chat-placeholder">
-                <Icon icon="lucide:user-x" class="inline-icon" /> 未命名
-              </span>
-              <span class="status-chat-id">{{ item.chat_id }}</span>
-            </div>
-            <div class="status-meta">
-              <span
-                class="status-badge"
-                :class="item.status.current_status === 'OBSERVATION' ? 'on' : 'off'"
-              >
-                {{ item.status.current_status === 'OBSERVATION' ? '在场' : '离场' }}
-              </span>
-              <span class="status-energy">
-                <Icon icon="lucide:zap" class="inline-icon" /> 能量 {{ fmtEnergy(item.energy) }}
-              </span>
-            </div>
-            <div class="status-line">
-              <span class="status-label">巡检</span>
-              <span v-if="item.patrol.waiting" class="status-value">
-                <Icon icon="lucide:timer" class="inline-icon" />
-                {{ patrolLabel(item.patrol.waiting) }} {{ item.patrol.remaining }}/{{ item.patrol.total }}s
-              </span>
-              <span v-else class="status-value">空闲</span>
-            </div>
-            <div class="status-line">
-              <span class="status-label">最近决策</span>
-              <span v-if="item.last_decision" class="status-value">
-                <Icon icon="lucide:message-square" class="inline-icon" />
-                {{ item.last_decision.should_reply ? '回复' : '不回' }} ·
-                {{ decisionTime(item.last_decision.decided_at) }} ·
-                {{ item.last_decision.summary || '无说明' }}
-              </span>
-              <span v-else class="status-value">暂无</span>
-            </div>
-            <div class="status-binding">
-              <n-select
-                :value="item.template_id"
-                :options="bindingOptions(item.chat_id)"
-                @update:value="(v: string) => setChatBinding(item.chat_id, v)"
-              />
-            </div>
+          <div>
+            <h2 class="text-h4 mb-0">联系人监控</h2>
+            <p class="content-sub text-caption text-medium-emphasis mb-0">
+              群聊与私聊的在场状态、巡检与最近决定，每 3 秒自动刷新
+            </p>
           </div>
-          <n-empty
-            v-if="!filteredStatusItems.length"
-            :description="kindFilter === 'all' ? '暂无联系人（产生消息后才会出现在这里）' : (kindFilter === 'group' ? '暂无群聊' : '暂无私聊')"
-          />
+          <v-btn variant="text" size="small" prepend-icon="lucide:scroll-text" @click="openRequestDrawer">
+            最近请求
+          </v-btn>
         </div>
+
+        <v-tabs v-model="kindFilter" color="primary" class="mb-4">
+          <v-tab value="all">全部</v-tab>
+          <v-tab value="group">群聊</v-tab>
+          <v-tab value="private">私聊</v-tab>
+        </v-tabs>
+
+        <v-row v-if="filteredStatusItems.length">
+          <v-col
+            v-for="item in filteredStatusItems"
+            :key="item.chat_id"
+            cols="12"
+            sm="6"
+          >
+            <v-card rounded="md" class="status-card">
+              <v-card-text class="d-flex flex-column ga-2">
+                <div class="status-chat">
+                  <template v-if="item.display_name">{{ item.display_name }}</template>
+                  <span v-else class="status-chat-placeholder">
+                    <v-icon icon="lucide:user-x" size="14" /> 未命名
+                  </span>
+                  <span class="status-chat-id" :title="item.chat_id">{{ chatShortId(item.chat_id) }}</span>
+                </div>
+                <div class="d-flex align-center ga-2">
+                  <v-chip
+                    size="small"
+                    variant="tonal"
+                    :color="item.status.current_status === 'OBSERVATION' ? 'success' : undefined"
+                  >
+                    {{ item.status.current_status === 'OBSERVATION' ? '在场' : '离场' }}
+                  </v-chip>
+                  <v-chip v-if="chatKind(item.chat_id)" size="small" variant="tonal">
+                    {{ chatKind(item.chat_id) }}
+                  </v-chip>
+                  <span class="text-caption text-medium-emphasis d-flex align-center ga-1">
+                    <v-icon icon="lucide:zap" size="14" /> 能量 {{ fmtEnergy(item.energy) }}
+                  </span>
+                </div>
+                <div class="status-line">
+                  <span class="status-label">巡检</span>
+                  <span v-if="item.patrol.waiting" class="status-value d-flex align-center ga-1">
+                    <v-icon icon="lucide:timer" size="14" />
+                    {{ patrolLabel(item.patrol.waiting) }} {{ item.patrol.remaining }}/{{ item.patrol.total }}s
+                  </span>
+                  <span v-else class="status-value">空闲</span>
+                </div>
+                <div class="status-line">
+                  <span class="status-label">最近决定</span>
+                  <span v-if="item.last_decision" class="status-value">
+                    {{ item.last_decision.should_reply ? '回复' : '不回' }} ·
+                    {{ decisionTime(item.last_decision.decided_at) }} ·
+                    {{ item.last_decision.summary || '没留说明' }}
+                  </span>
+                  <span v-else class="status-value">暂无</span>
+                </div>
+                <v-select
+                  :model-value="item.template_id ?? ''"
+                  :items="bindingOptions(item.chat_id)"
+                  label="用的模板"
+                  variant="outlined"
+                  density="compact"
+                  hide-details
+                  @update:model-value="(v: string) => setChatBinding(item.chat_id, v)"
+                />
+              </v-card-text>
+            </v-card>
+          </v-col>
+        </v-row>
+        <v-empty-state
+          v-else
+          icon="lucide:activity"
+          :title="kindFilter === 'all' ? '还没有联系人' : (kindFilter === 'group' ? '还没有群聊' : '还没有私聊')"
+          text="有新消息后才会出现在这里"
+        />
       </template>
 
-      <!-- 全局配置（可编辑）：schema 驱动分段卡片；有草稿变更时右下角浮出保存按钮 -->
-      <template v-else-if="!selectedId">
-        <div class="content-header">
-          <h2>全局配置</h2>
-          <span class="content-sub">未绑定群聊使用的默认配置，与原生插件配置页同源</span>
-        </div>
-        <n-card title="系统提示词" class="prompt-card" embedded>
-          <p class="group-desc">预设与自定义二选一，同一时刻只有一种生效。选预设时使用插件内置的固定文本，此处内容不参与；选自定义时使用你填写的文本。</p>
-          <n-tabs v-model:value="promptMode" type="segment" size="small">
-            <n-tab-pane name="preset" tab="预设">
-              <div v-if="promptLoaded" class="preset-text">{{ promptPreset }}</div>
-              <n-spin v-else style="margin-top: 12px" />
-            </n-tab-pane>
-            <n-tab-pane name="custom" tab="自定义">
-              <n-input
-                v-model:value="promptCustom"
-                type="textarea"
-                :rows="8"
-                placeholder="填写你自己的系统提示词"
-              />
-              <div class="preset-actions">
-                <n-button size="tiny" @click="promptCustom = promptPreset">
-                  <template #icon><Icon icon="lucide:clipboard-copy" /></template>
-                  填入预设提示词
-                </n-button>
-                <n-button size="tiny" @click="promptCustom = promptInitial">
-                  <template #icon><Icon icon="lucide:sparkles" /></template>
-                  填入初始提示词
-                </n-button>
-              </div>
-            </n-tab-pane>
-          </n-tabs>
-          <div class="prompt-save">
-            <n-button
-              type="primary"
-              size="small"
-              :disabled="!promptDirty"
-              :loading="promptSaving"
-              @click="savePromptSettings"
-            >
-              <template #icon><Icon icon="lucide:save" /></template>
-              保存提示词
-            </n-button>
+      <!-- 字体：插件级资源，独立视图 -->
+      <template v-else-if="viewMode === 'fonts'">
+        <div class="content-header mb-4">
+          <div>
+            <h2 class="text-h4 mb-0">字体</h2>
+            <p class="content-sub text-caption text-medium-emphasis mb-0">
+              长文转成图片前，先把字体下好
+            </p>
           </div>
-        </n-card>
+        </div>
+        <FontPanel
+          :dir="fontState.dir"
+          :ready="fontState.ready"
+          :downloading="fontState.downloading"
+          :cooldown-remaining="fontState.cooldown_remaining"
+          :fonts="fontState.fonts"
+          :fetching="fontFetching"
+          :selecting-key="fontSelectingKey"
+          :uploading="fontUploading"
+          @select="selectFont"
+          @fetch="triggerFontFetch"
+          @upload="uploadFont"
+        />
+      </template>
+
+      <!-- 全局配置：schema 驱动分段卡片；有草稿变更时右下角浮出保存按钮 -->
+      <template v-else-if="!selectedId">
+        <div class="content-header mb-4">
+          <div>
+            <h2 class="text-h4 mb-0">全局配置</h2>
+            <p class="content-sub text-caption text-medium-emphasis mb-0">
+              没绑模板的群聊都用这套；和原生插件配置页是同一份数据，保存后即时生效，不用重启
+            </p>
+          </div>
+        </div>
+        <v-card rounded="md" style="margin-bottom: 16px;" class="setting-card">
+          <v-card-text class="config-section">
+            <div class="config-title">系统提示词</div>
+            <div class="config-hint">预设和自定义一次只用一种。选预设就用内置的固定文本；选自定义就用下面你写的文本。</div>
+          </v-card-text>
+          <v-card-text class="pt-0">
+            <v-tabs v-model="promptMode" color="primary" class="mb-3">
+              <v-tab value="preset">预设</v-tab>
+              <v-tab value="custom">自定义</v-tab>
+            </v-tabs>
+            <template v-if="promptMode === 'preset'">
+              <div v-if="promptLoaded" class="preset-text">{{ promptPreset }}</div>
+              <div v-else class="d-flex justify-center py-4">
+                <v-progress-circular indeterminate color="primary" />
+              </div>
+            </template>
+            <template v-else>
+              <v-textarea
+                v-model="promptCustom"
+                rows="8"
+                auto-grow
+                placeholder="写你自己的系统提示词"
+                variant="outlined"
+                density="compact"
+                hide-details
+              />
+              <div class="d-flex ga-2 mt-2">
+                <v-btn size="small" variant="text" prepend-icon="lucide:clipboard-copy" @click="promptCustom = promptPreset">
+                  填入预设提示词
+                </v-btn>
+                <v-btn size="small" variant="text" prepend-icon="lucide:sparkles" @click="promptCustom = promptInitial">
+                  填入初始提示词
+                </v-btn>
+              </div>
+            </template>
+            <div class="d-flex mt-3">
+              <v-btn
+                color="primary"
+                variant="flat"
+                size="small"
+                prepend-icon="lucide:save"
+                :disabled="!promptDirty"
+                :loading="promptSaving"
+                @click="savePromptSettings"
+              >
+                保存提示词
+              </v-btn>
+            </div>
+          </v-card-text>
+        </v-card>
         <SchemaForm
           v-if="settingsLoaded"
           :schema="settingsSchema"
           v-model:model-value="settingsValues"
           :providers="settingsProviders"
         />
-        <n-spin v-else style="margin-top: 40px" />
+        <div v-else class="d-flex justify-center py-10">
+          <v-progress-circular indeterminate color="primary" />
+        </div>
       </template>
 
       <!-- 模板配置编辑：与全局配置共用 SchemaForm 分段卡 -->
       <template v-else>
-        <div class="content-header">
-          <h2>{{ currentTemplate?.name }}</h2>
+        <div class="content-header mb-4">
+          <div>
+            <h2 class="text-h4 mb-0">{{ currentTemplate?.name }}</h2>
+          </div>
         </div>
         <SchemaForm
           v-if="settingsLoaded"
@@ -203,118 +322,172 @@
           :fallback-values="templateDefaults"
           :providers="settingsProviders"
         />
-        <n-spin v-else style="margin-top: 40px" />
+        <div v-else class="d-flex justify-center py-10">
+          <v-progress-circular indeterminate color="primary" />
+        </div>
       </template>
-      </div>
-      </n-scrollbar>
-    </n-layout-content>
+    </div>
 
-    <!-- 新建模板弹窗 -->
-    <n-modal
-      v-model:show="createModalVisible"
-      preset="dialog"
-      title="新建配置模板"
-      positive-text="创建"
-      negative-text="取消"
-      @positive-click="createTemplate"
-    >
-      <n-form label-placement="top" class="create-form">
-        <n-form-item label="模板名称">
-          <n-input v-model:value="createForm.name" placeholder="如：游戏群、学术群" />
-        </n-form-item>
-        <n-form-item label="初始配置">
-          <n-radio-group v-model:value="createForm.mode">
-            <n-radio value="empty">空白模板</n-radio>
-            <n-radio value="global">从全局配置复制</n-radio>
-          </n-radio-group>
-        </n-form-item>
-      </n-form>
-    </n-modal>
-
-    <!-- 重命名弹窗 -->
-    <n-modal
-      v-model:show="renameModalVisible"
-      preset="dialog"
-      title="重命名模板"
-      positive-text="保存"
-      negative-text="取消"
-      @positive-click="renameTemplate"
-    >
-      <n-input v-model:value="renameForm.name" placeholder="模板名称" />
-    </n-modal>
-
-    <!-- 悬浮保存按钮：全局配置或模板草稿变更时浮出 -->
+    <!-- 悬浮保存：全局配置或模板草稿变更时浮出 -->
     <Transition name="fab">
-      <n-button
+      <v-btn
         v-if="configDirty"
         class="save-fab"
-        type="primary"
-        round
+        color="primary"
+        variant="flat"
+        rounded="pill"
         size="large"
+        elevation="6"
+        prepend-icon="lucide:save"
         :loading="saving || savingSettings"
         @click="saveCurrent"
       >
-        <template #icon><Icon icon="lucide:save" /></template>
         保存更改
-      </n-button>
+      </v-btn>
     </Transition>
-  </n-layout>
+  </v-main>
+
+  <!-- 最近请求：全局最近 10 条 -->
+  <v-navigation-drawer
+    v-model="requestDrawerVisible"
+    location="right"
+    temporary
+    :width="640"
+    class="req-drawer"
+  >
+    <div class="d-flex flex-column ga-3 pa-4 h-100 overflow-y-auto">
+      <div class="d-flex align-center ga-2">
+        <span class="text-h6">最近 10 次请求</span>
+        <v-spacer />
+        <v-btn icon="lucide:x" variant="text" size="small" aria-label="关闭" @click="requestDrawerVisible = false" />
+      </div>
+      <p class="text-body-2 text-medium-emphasis mb-0">
+        这里记的是插件发出去的请求原文，最多留 10 条，方便排查为什么回了这句。
+      </p>
+      <div v-if="requestLoading" class="d-flex justify-center py-8">
+        <v-progress-circular indeterminate color="primary" />
+      </div>
+      <v-empty-state
+        v-else-if="!requestItems.length"
+        icon="lucide:scroll-text"
+        title="还没有请求"
+        text="插件重载后才会开始记录"
+      />
+      <div v-else class="d-flex flex-column ga-3">
+        <v-card
+          v-for="item in requestItems"
+          :key="item.seq"
+          variant="outlined"
+          rounded="control"
+          class="req-card"
+        >
+          <v-card-text class="d-flex flex-column ga-2">
+            <div class="d-flex align-center ga-2 flex-wrap text-caption">
+              <v-chip size="small" variant="tonal" :color="item.source === 'assistant' ? 'success' : 'info'">
+                {{ item.source === 'assistant' ? '助理' : '秘书' }}
+              </v-chip>
+              <span class="text-medium-emphasis">{{ item.time }}</span>
+              <span class="req-chat" :title="item.chat_id">{{ shortChatId(item.chat_id) }}</span>
+              <v-chip size="small" variant="tonal" :color="item.pairing.ok ? undefined : 'error'">
+                {{ pairingLabel(item) }}
+              </v-chip>
+            </div>
+            <div class="req-json-box">
+              <VueJsonPretty :data="item" :deep="5" :show-length="true" />
+            </div>
+          </v-card-text>
+        </v-card>
+      </div>
+    </div>
+  </v-navigation-drawer>
+
+  <!-- 新增模板 -->
+  <v-dialog v-model="createModalVisible" max-width="440" persistent>
+    <v-card rounded="card">
+      <v-card-title class="text-h6">新增配置模板</v-card-title>
+      <v-card-text>
+        <v-text-field
+          v-model="createForm.name"
+          label="模板名称"
+          placeholder="如：游戏群、学习群"
+          variant="outlined"
+          density="compact"
+          class="mb-4"
+        />
+        <v-radio-group v-model="createForm.mode" label="初始内容" hide-details>
+          <v-radio label="空白模板" value="empty" />
+          <v-radio label="照着全局配置抄一份" value="global" />
+        </v-radio-group>
+      </v-card-text>
+      <v-card-actions class="px-4 pb-3">
+        <v-spacer />
+        <v-btn variant="text" @click="createModalVisible = false">取消</v-btn>
+        <v-btn color="primary" variant="flat" @click="onCreateConfirm">创建</v-btn>
+      </v-card-actions>
+    </v-card>
+  </v-dialog>
+
+  <!-- 重命名模板 -->
+  <v-dialog v-model="renameModalVisible" max-width="440" persistent>
+    <v-card rounded="card">
+      <v-card-title class="text-h6">重命名模板</v-card-title>
+      <v-card-text>
+        <v-text-field
+          v-model="renameForm.name"
+          label="模板名称"
+          placeholder="模板名称"
+          variant="outlined"
+          density="compact"
+          hide-details
+        />
+      </v-card-text>
+      <v-card-actions class="px-4 pb-3">
+        <v-spacer />
+        <v-btn variant="text" @click="renameModalVisible = false">取消</v-btn>
+        <v-btn color="primary" variant="flat" @click="onRenameConfirm">保存</v-btn>
+      </v-card-actions>
+    </v-card>
+  </v-dialog>
 </template>
 
 <script setup lang="ts">
-import { computed, h, inject, onMounted, onUnmounted, reactive, ref } from 'vue'
-import {
-  NButton,
-  NCard,
-  NEmpty,
-  NForm,
-  NFormItem,
-  NInput,
-  NLayout,
-  NLayoutContent,
-  NLayoutSider,
-  NMenu,
-  NModal,
-  NPopconfirm,
-  NRadio,
-  NRadioButton,
-  NRadioGroup,
-  NScrollbar,
-  NSelect,
-  NSwitch,
-  NTabPane,
-  NTabs,
-  useMessage,
-} from 'naive-ui'
-import type { MenuOption } from 'naive-ui'
-import { Icon } from '@iconify/vue'
+import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import {
   GROUPS,
   type ChatItem,
   type ChatStatusItem,
+  type RequestRingResponse,
+  type RequestSnapshot,
   type TemplateDetail,
   type TemplateConfig,
 } from './fields'
 import { useBridge } from './composables/useBridge'
-import { themeKey } from './theme'
+import { toast } from './composables/useToast'
+import { confirmDialog } from './composables/useConfirm'
+import FontPanel, { type FontState } from './FontPanel.vue'
+import { formatMB } from './format'
 import SchemaForm from './SchemaForm.vue'
+import VueJsonPretty from 'vue-json-pretty'
+import 'vue-json-pretty/lib/styles.css'
 import type { SchemaMeta } from './schema'
 
-const { apiGet, apiPost } = useBridge()
-const message = useMessage()
-const { isDark, toggle: toggleTheme } = inject(themeKey)!
+const { apiGet, apiPost, upload } = useBridge()
 
 const templates = ref<TemplateDetail[]>([])
 const chats = ref<ChatItem[]>([])
+// ---------- 请求快照抽屉：全局最近 10 次 ----------
+const requestDrawerVisible = ref(false)
+const requestItems = ref<RequestSnapshot[]>([])
+const requestLoading = ref(false)
 const statusItems = ref<ChatStatusItem[]>([])
 const kindFilter = ref<'all' | 'group' | 'private'>('all')
-const viewMode = ref<'config' | 'monitor'>('monitor')
+const viewMode = ref<'config' | 'monitor' | 'fonts'>('monitor')
 const selectedId = ref<string | null>(null)
-const sidebarCollapsed = ref(false)
-// naive-ui 的 n-layout-sider 没有 breakpoint 属性，用 matchMedia 实现窄屏自动收起
+const rail = ref(false)
+// 窄屏自动收起侧栏，保证可点区域不被挤掉
 const narrowMql = window.matchMedia('(max-width: 768px)')
 const syncSidebarToWidth = () => {
-  sidebarCollapsed.value = narrowMql.matches
+  rail.value = narrowMql.matches
 }
 onMounted(() => {
   syncSidebarToWidth()
@@ -350,69 +523,18 @@ function effectiveKind(item: ChatStatusItem): string {
   return 'group'
 }
 
-// ---------- 侧栏导航（n-menu 渲染，颜色/选中态全部来自全局主题） ----------
-const settingsMenuOptions: MenuOption[] = [
-  { label: '插件设置', key: 'settings', icon: () => h(Icon, { icon: 'lucide:settings' }) },
-]
-
-function renderTemplateLabel(tpl: TemplateDetail) {
-  return () =>
-    h('div', { class: 'tpl-label' }, [
-      h('span', { class: 'tpl-name' }, tpl.name),
-      h(
-        'div',
-        {
-          class: 'tpl-actions',
-          onClick: (e: MouseEvent) => e.stopPropagation(),
-        },
-        [
-          h(
-            NButton,
-            {
-              size: 'tiny',
-              quaternary: true,
-              circle: true,
-              title: '重命名',
-              onClick: () => openRenameModal(tpl),
-            },
-            { icon: () => h(Icon, { icon: 'lucide:pencil' }) },
-          ),
-          h(
-            NPopconfirm,
-            { onPositiveClick: () => deleteTemplate(tpl.id) },
-            {
-              trigger: () =>
-                h(
-                  NButton,
-                  { size: 'tiny', quaternary: true, circle: true, type: 'error', title: '删除' },
-                  { icon: () => h(Icon, { icon: 'lucide:trash-2' }) },
-                ),
-              default: () => '删除后绑定它的群聊将回退到全局配置',
-            },
-          ),
-        ],
-      ),
-    ])
-}
-
-const sidebarMenuOptions = computed<MenuOption[]>(() => [
-  { label: '联系人监控', key: 'monitor', icon: () => h(Icon, { icon: 'lucide:activity' }) },
-  ...templates.value.map((tpl) => ({
-    key: tpl.id,
-    icon: () => h(Icon, { icon: 'lucide:file-text' }),
-    label: renderTemplateLabel(tpl),
-  })),
-])
-
 function onSidebarMenu(key: string) {
-  if (key === 'monitor') viewMode.value = 'monitor'
-  else selectTemplate(key)
+  stopFontPoll()
+  if (key === 'monitor') {
+    viewMode.value = 'monitor'
+  } else if (key === 'fonts') {
+    viewMode.value = 'fonts'
+    // 进入即加载一次
+    void loadFonts()
+  } else {
+    selectTemplate(key)
+  }
 }
-
-const sidebarMenuValue = computed(() => {
-  if (viewMode.value === 'monitor') return 'monitor'
-  return selectedId.value
-})
 
 // ---------- 插件设置（全局 _conf_schema.json） ----------
 
@@ -465,7 +587,7 @@ function loadPromptSettings() {
       })
       promptLoaded.value = true
     } catch (e) {
-      message.error(`加载系统提示词失败: ${(e as Error).message}`)
+      toast.error(`加载系统提示词失败：${(e as Error).message}`)
     }
   })()
 }
@@ -486,11 +608,134 @@ async function savePromptSettings() {
       mode: promptMode.value,
       custom_prompt: promptCustom.value,
     })
-    message.success('提示词已保存')
+    toast.success('提示词已保存')
   } catch (e) {
-    message.error(`保存失败: ${(e as Error).message}`)
+    toast.error(`保存失败：${(e as Error).message}`)
   } finally {
     promptSaving.value = false
+  }
+}
+
+// ---------- 字体（插件级资源，放在全局配置里） ----------
+
+const fontState = ref<FontState>({
+  dir: '',
+  selected: '',
+  ready: false,
+  downloading: false,
+  cooldown_remaining: 0,
+  fonts: [],
+})
+const fontLoading = ref(false)
+const fontFetching = ref(false)
+const fontSelectingKey = ref<string | null>(null)
+const fontUploading = ref(false)
+
+// 切到未下载的字体时后端会起后台任务，这里轮询到下载结束
+let fontPollTimer: number | null = null
+
+function stopFontPoll() {
+  if (fontPollTimer !== null) {
+    clearInterval(fontPollTimer)
+    fontPollTimer = null
+  }
+}
+
+function watchFontDownload() {
+  stopFontPoll()
+  fontPollTimer = window.setInterval(() => {
+    void loadFonts().then(() => {
+      if (!fontState.value.downloading) stopFontPoll()
+    })
+  }, 2000)
+}
+
+function applyFontState(data?: Partial<FontState> | null) {
+  fontState.value = {
+    dir: String(data?.dir ?? ''),
+    selected: String(data?.selected ?? ''),
+    ready: Boolean(data?.ready),
+    downloading: Boolean(data?.downloading),
+    cooldown_remaining: Math.ceil(Number(data?.cooldown_remaining ?? 0)),
+    fonts: data?.fonts || [],
+  }
+}
+
+async function loadFonts() {
+  if (fontLoading.value) return
+  fontLoading.value = true
+  try {
+    applyFontState(await apiGet<FontState>('fonts'))
+    // 下载可能是长回复触发的，进来时已经在跑；这时得把轮询接上，否则面板停在「正在下载」不再动
+    if (fontState.value.downloading && fontPollTimer === null) watchFontDownload()
+  } catch (e) {
+    toast.error(`加载字体状态失败：${(e as Error).message}`)
+  } finally {
+    fontLoading.value = false
+  }
+}
+
+// 点一款字体：后端切选中项，未下载的话顺手起下载，这里接着轮询
+async function selectFont(key: string) {
+  if (fontSelectingKey.value) return
+  fontSelectingKey.value = key
+  try {
+    const data = await apiPost<FontState & { started: boolean }>(
+      `fonts/select/${encodeURIComponent(key)}`,
+      {},
+    )
+    applyFontState(data)
+    if (data?.started || fontState.value.downloading) {
+      toast.info('正在后台下载，下完自动生效')
+      watchFontDownload()
+    } else if (!fontState.value.ready) {
+      toast.warning('这款字体还没下好，可以点「重新下载」再试一次')
+    }
+  } catch (e) {
+    toast.error(`切换字体失败：${(e as Error).message}`)
+  } finally {
+    fontSelectingKey.value = null
+  }
+}
+
+async function triggerFontFetch() {
+  fontFetching.value = true
+  try {
+    // 桥接只把 data 解出来，信封里的 message 取不到，所以按 started 判断结果
+    const data = await apiPost<{ started: boolean }>('fonts/fetch')
+    if (data?.started) {
+      toast.success('已开始下载，下完自动生效')
+      watchFontDownload()
+    } else {
+      toast.warning('冷却中，稍后再试')
+    }
+    await loadFonts()
+  } catch (e) {
+    toast.error(`触发下载失败：${(e as Error).message}`)
+  } finally {
+    fontFetching.value = false
+  }
+}
+
+// 桥接的 endpoint 校验禁止出现 ?，key 只能走路径参数
+async function uploadFont(key: string, file: File) {
+  if (!/\.ttf$/i.test(file.name)) {
+    toast.error('只能上传 .ttf 字体文件')
+    return
+  }
+  fontUploading.value = true
+  try {
+    const data = await upload<{ key: string; size: number; ready: boolean }>(
+      `fonts/upload/${encodeURIComponent(key)}`,
+      file,
+    )
+    toast.success(`已上传（${formatMB(Number(data?.size ?? 0))}），已切换为这款字体`)
+    // 后端上传成功后会自动把选中项切到该 key，这里重新拉一次就够
+    await loadFonts()
+  } catch (e) {
+    toast.error(`上传失败：${(e as Error).message}`)
+  } finally {
+    fontUploading.value = false
   }
 }
 
@@ -510,7 +755,7 @@ function loadPluginConfig() {
       settingsBaseline.value = JSON.stringify(settingsValues.value)
       settingsLoaded.value = true
     } catch (e) {
-      message.error(`加载插件设置失败: ${(e as Error).message}`)
+      toast.error(`加载插件设置失败：${(e as Error).message}`)
     }
   })()
 }
@@ -521,9 +766,9 @@ async function savePluginConfig() {
     await apiPost('plugin_config/save', { values: settingsValues.value })
     settingsBaseline.value = JSON.stringify(settingsValues.value)
     await loadAll()
-    message.success('已保存并即时生效')
+    toast.success('已保存并即时生效')
   } catch (e) {
-    message.error(`保存失败: ${(e as Error).message}`)
+    toast.error(`保存失败：${(e as Error).message}`)
   } finally {
     savingSettings.value = false
   }
@@ -551,6 +796,7 @@ function decisionTime(ts: number): string {
 }
 
 function selectTemplate(id: string | null) {
+  stopFontPoll()
   viewMode.value = 'config'
   selectedId.value = id
   if (!id) {
@@ -603,23 +849,22 @@ function openCreateModal() {
   createModalVisible.value = true
 }
 
-async function createTemplate() {
+async function onCreateConfirm() {
   if (!createForm.name.trim()) {
-    message.warning('请输入模板名称')
-    return false
+    toast.warning('请输入模板名称')
+    return
   }
   try {
     const data = await apiPost<TemplateDetail>('profiles/create', {
       name: createForm.name,
       from_global: createForm.mode === 'global',
     })
-    message.success('模板已创建')
+    toast.success('模板已创建')
+    createModalVisible.value = false
     await loadAll()
     selectTemplate(data.id)
-    return true
   } catch (e) {
-    message.error('创建失败：' + String((e as Error)?.message || e))
-    return false
+    toast.error('创建失败：' + String((e as Error)?.message || e))
   }
 }
 
@@ -629,33 +874,43 @@ function openRenameModal(tpl: TemplateDetail) {
   renameModalVisible.value = true
 }
 
-async function renameTemplate() {
+async function onRenameConfirm() {
   if (!renameTarget || !renameForm.name.trim()) {
-    message.warning('请输入模板名称')
-    return false
+    toast.warning('请输入模板名称')
+    return
   }
   try {
     await apiPost('profiles/update', {
       id: renameTarget.id,
       name: renameForm.name.trim(),
     })
-    message.success('已保存')
+    toast.success('已保存')
+    renameModalVisible.value = false
     await loadAll()
-    return true
   } catch (e) {
-    message.error('重命名失败：' + String((e as Error)?.message || e))
-    return false
+    toast.error('重命名失败：' + String((e as Error)?.message || e))
   }
+}
+
+async function askDeleteTemplate(id: string, name: string) {
+  const ok = await confirmDialog({
+    title: `删除「${name}」？`,
+    text: '删除后，用这个模板的群聊会用回全局配置',
+    confirmText: '删除',
+    cancelText: '取消',
+    danger: true,
+  })
+  if (ok) void deleteTemplate(id)
 }
 
 async function deleteTemplate(id: string) {
   try {
     await apiPost('profiles/delete', { id })
-    message.success('模板已删除')
+    toast.success('模板已删除')
     if (selectedId.value === id) selectedId.value = null
     await loadAll()
   } catch (e) {
-    message.error('删除失败：' + String((e as Error)?.message || e))
+    toast.error('删除失败：' + String((e as Error)?.message || e))
   }
 }
 
@@ -669,9 +924,9 @@ async function saveTemplate() {
       config: JSON.parse(JSON.stringify(configModel.value)),
     })
     templateBaseline.value = JSON.stringify(configModel.value)
-    message.success('配置已保存')
+    toast.success('配置已保存')
   } catch (e) {
-    message.error('保存失败：' + String((e as Error)?.message || e))
+    toast.error('保存失败：' + String((e as Error)?.message || e))
   } finally {
     saving.value = false
   }
@@ -679,8 +934,8 @@ async function saveTemplate() {
 
 function bindingOptions(_chatId: string) {
   return [
-    { label: '全局配置（默认）', value: '' },
-    ...templates.value.map((t) => ({ label: t.name, value: t.id })),
+    { title: '全局配置（默认）', value: '' },
+    ...templates.value.map((t) => ({ title: t.name, value: t.id })),
   ]
 }
 
@@ -694,9 +949,9 @@ async function setChatBinding(chatId: string, templateId: string) {
     if (item) item.template_id = templateId
     const sitem = statusItems.value.find((c) => c.chat_id === chatId)
     if (sitem) sitem.template_id = templateId
-    message.success(templateId ? '已绑定' : '已解除绑定')
+    toast.success(templateId ? '已绑定' : '已解除绑定')
   } catch (e) {
-    message.error('绑定失败：' + String((e as Error)?.message || e))
+    toast.error('绑定失败：' + String((e as Error)?.message || e))
     await refreshStatus()
   }
 }
@@ -712,6 +967,62 @@ async function refreshStatus() {
 }
 
 let profilesLoadVersion = 0
+
+// ---------- 请求快照：全局最近 10 次 ----------
+
+async function openRequestDrawer() {
+  requestDrawerVisible.value = true
+  await loadRequestSnapshots()
+}
+
+async function loadRequestSnapshots() {
+  requestLoading.value = true
+  try {
+    const data = await apiGet<RequestRingResponse>('request_ring')
+    requestItems.value = data.items || []
+  } catch (e) {
+    toast.error('读取请求快照失败：' + String((e as Error)?.message || e))
+  } finally {
+    requestLoading.value = false
+  }
+}
+
+// 全局队列里会话混在一起，列表里只显示会话尾号，标题保留全文
+function shortChatId(chatId: string): string {
+  if (!chatId) return '未知会话'
+  const segments = chatId.split(':').filter(Boolean)
+  return segments[segments.length - 1] || chatId
+}
+
+// 监控卡片的会话标识：冒号分隔的原始结构（如 default:GroupMessage:123）不直接显示，
+// 只显示尾号，类型解析成「群聊 / 私聊」标签，原文收进 title tooltip 方便排查。
+// 类型全集：框架 MessageType 只有 Group/Friend/Other 三种（message_type.py），
+// PrivateMessage 是旧写法（后端 is_private_chat 也兼容它）；本地 17 条登记数据
+// 只有 GroupMessage×9 + FriendMessage×8，无其他类型。
+function chatKind(chatId: string): string {
+  if (!chatId) return ''
+  const segments = chatId.split(':').filter(Boolean)
+  const typeSeg = segments.length >= 2 ? segments[segments.length - 2] : ''
+  if (/^(FriendMessage|PrivateMessage)$/i.test(typeSeg)) return '私聊'
+  if (/^GroupMessage$/i.test(typeSeg)) return '群聊'
+  if (/^OtherMessage$/i.test(typeSeg)) return '其他'
+  return ''
+}
+
+function chatShortId(chatId: string): string {
+  return shortChatId(chatId)
+}
+
+function pairingLabel(snapshot: RequestSnapshot): string {
+  const p = snapshot.pairing
+  if (p.ok) return '配对正常'
+  const issues: string[] = []
+  if (p.duplicate_result.length) issues.push(`重复回执 ${p.duplicate_result.length}`)
+  if (p.missing.length) issues.push(`缺回执 ${p.missing.length}`)
+  if (p.orphan.length) issues.push(`无主回执 ${p.orphan.length}`)
+  if (p.duplicate_call.length) issues.push(`重复调用 ${p.duplicate_call.length}`)
+  return issues.join('、') || '配对异常'
+}
 
 async function loadAll() {
   const version = ++profilesLoadVersion
@@ -741,7 +1052,7 @@ async function loadAll() {
     chats.value = [...merged.values()]
       .sort((a, b) => a.chat_id.localeCompare(b.chat_id))
   } catch (e) {
-    message.error('加载失败：' + String((e as Error)?.message || e))
+    toast.error('加载失败：' + String((e as Error)?.message || e))
   }
 }
 
@@ -758,301 +1069,25 @@ onUnmounted(() => {
     clearInterval(statusTimer)
     statusTimer = null
   }
+  stopFontPoll()
 })
 </script>
 
-<style>
-.layout {
-  display: flex;
-  height: 100vh;
+<style scoped>
+.heart-drawer {
+  border-right: 1px solid rgba(var(--v-border-color), 0.12);
+  /* drawer 默认吃 surface；侧栏必须跟页面同 background，卡片才配浮出 */
+  background-color: rgb(var(--v-theme-background)) !important;
+}
+/* v-list 默认吃 surface；侧栏里的列表必须透明，否则菜单区比空白亮一档 */
+.v-application .heart-drawer .v-list {
+  background-color: transparent !important;
+}
+.drawer-head {
+  min-height: 56px;
 }
 
-.sidebar-inner {
-  height: 100%;
-  background: var(--glass-thick-bg);
-  border-right: 1px solid var(--glass-divider);
-  display: flex;
-  flex-direction: column;
-}
-
-.sidebar-inner.collapsed .sidebar-header {
-  flex-direction: column;
-  justify-content: center;
-  padding: 10px 8px;
-}
-
-.sidebar-header {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 14px 16px;
-  border-bottom: 1px solid var(--glass-divider);
-}
-
-.brand {
-  flex: 1;
-  font-size: 15px;
-  font-weight: 600;
-  color: var(--text-1);
-}
-
-/* 左上角主题切换：胶囊圆钮 */
-.theme-toggle {
-  flex-shrink: 0;
-  width: 34px;
-  height: 34px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 16px;
-  color: inherit;
-  border: 1px solid var(--glass-border);
-  border-radius: var(--radius-full);
-  background: var(--glass-regular-bg);
-  box-shadow:
-    inset 0 1px 0 var(--glass-highlight),
-    var(--glass-shadow);
-  cursor: pointer;
-  transition: transform 0.15s ease, background 0.2s ease;
-}
-
-.theme-toggle:hover {
-  transform: scale(1.06);
-}
-
-.theme-toggle:active {
-  transform: scale(0.94);
-}
-
-.inline-icon {
-  width: 13px;
-  height: 13px;
-  vertical-align: -2px;
-  margin-right: 2px;
-  color: var(--text-3);
-}
-
-.sidebar-scroll {
-  flex: 1;
-}
-
-.sidebar-footer {
-  border-top: 1px solid var(--glass-divider);
-}
-
-.list-empty {
-  margin-top: 30px;
-}
-
-.content {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-}
-
-.content-scroll {
-  height: 100%;
-}
-
-.content-inner {
-  max-width: 800px;
-  margin: 0 auto;
-  padding: 20px 28px;
-}
-
-.content-header {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  margin-bottom: 12px;
-}
-
-.content-header h2 {
-  font-size: 16px;
-  color: var(--text-1);
-}
-
-.content-sub {
-  font-size: 12px;
-  color: var(--text-3);
-}
-
-.prompt-card {
-  margin-bottom: 12px;
-}
-
-.group-desc {
-  font-size: 12px;
-  color: var(--text-3);
-  margin-bottom: 10px;
-}
-
-.preset-text {
-  padding: 10px 12px;
-  border-radius: 6px;
-  background: var(--glass-divider);
-  font-size: 13px;
-  line-height: 1.7;
-  color: var(--text-1);
-  white-space: pre-wrap;
-  word-break: break-word;
-  max-height: 360px;
-  overflow-y: auto;
-}
-
-.preset-actions {
-  display: flex;
-  justify-content: flex-start;
-  gap: 8px;
-  margin-top: 8px;
-}
-
-.prompt-save {
-  display: flex;
-  justify-content: flex-start;
-  margin-top: 12px;
-}
-
-.status-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-  gap: 12px;
-}
-
-.kind-filter {
-  margin-bottom: 12px;
-}
-
-.status-card {
-  background: var(--glass-thick-bg);
-  border: 1px solid var(--glass-border);
-  box-shadow: inset 0 1px 0 var(--glass-highlight);
-  border-radius: var(--radius-md);
-  padding: 10px 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  transition: border-color 0.2s;
-}
-
-.status-card:hover {
-  border-color: var(--accent);
-}
-
-.status-chat {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--text-1);
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.status-chat-id {
-  font-size: 12px;
-  font-weight: 400;
-  color: var(--text-3);
-  font-family: 'Consolas', 'Courier New', monospace;
-}
-
-.status-chat-placeholder {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--text-3);
-}
-
-.status-meta {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.status-badge {
-  font-size: 12px;
-  line-height: 18px;
-  padding: 0 8px;
-  border-radius: 10px;
-}
-
-.status-badge.on {
-  background: var(--accent-soft);
-  color: var(--accent);
-}
-
-.status-badge.off {
-  background: var(--glass-divider);
-  color: var(--text-3);
-}
-
-.status-energy {
-  font-size: 12px;
-  color: var(--text-2);
-}
-
-.status-line {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  font-size: 12px;
-}
-
-.status-label {
-  color: var(--text-3);
-  min-width: 52px;
-  flex-shrink: 0;
-}
-
-.status-value {
-  color: var(--text-2);
-  line-height: 1.5;
-  word-break: break-all;
-}
-
-.status-binding {
-  margin-top: 2px;
-}
-
-/* 悬浮保存按钮：右下角浮出，带玻璃阴影 */
-.save-fab {
-  position: fixed;
-  right: 28px;
-  bottom: 28px;
-  z-index: 100;
-  box-shadow: var(--glass-shadow);
-}
-
-.fab-enter-active,
-.fab-leave-active {
-  transition: opacity 0.25s ease, transform 0.25s ease;
-}
-
-.fab-enter-from,
-.fab-leave-to {
-  opacity: 0;
-  transform: translateY(14px) scale(0.92);
-}
-
-.create-form {
-  padding-top: 12px;
-}
-
-/* n-menu 模板项的行内操作钮：hover 行时才出现（render 函数节点无 scoped 标记，需全局样式） */
-.tpl-label {
-  display: flex;
-  align-items: center;
-  width: 100%;
-  min-width: 0;
-}
-
-.tpl-name {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  text-align: left;
-}
-
+/* 模板行的重命名/删除：hover 行时才出现 */
 .tpl-actions {
   display: none;
   align-items: center;
@@ -1060,8 +1095,134 @@ onUnmounted(() => {
   margin-left: auto;
   flex-shrink: 0;
 }
-
-.n-menu-item-content:hover .tpl-actions {
+.heart-drawer .v-list-item:hover .tpl-actions {
   display: flex;
+}
+
+.content-inner {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 22px 28px 96px;
+}
+.content-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+.content-sub {
+  margin-top: 4px;
+}
+
+/* ---- 上游 AstrBotConfigV4.vue 行式范式（照抄数值；颜色用 rgb() 包裹主题三元组） ---- */
+.config-section {
+  margin-bottom: 4px;
+}
+.config-title {
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: rgb(var(--v-theme-primaryText));
+}
+.config-hint {
+  font-size: 0.75rem;
+  color: rgb(var(--v-theme-secondaryText));
+  margin-top: 2px;
+}
+
+/* 联系人卡片 */
+.status-card {
+  border-color: rgba(var(--v-border-color), 0.16);
+}
+.status-chat {
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: rgb(var(--v-theme-primaryText));
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.status-chat-id {
+  font-size: 0.75rem;
+  font-weight: 400;
+  color: rgb(var(--v-theme-secondaryText));
+  font-family: Consolas, 'Courier New', monospace;
+}
+.status-chat-placeholder {
+  color: rgb(var(--v-theme-secondaryText));
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.status-line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 0.75rem;
+}
+.status-label {
+  color: rgb(var(--v-theme-secondaryText));
+  min-width: 52px;
+  flex-shrink: 0;
+}
+.status-value {
+  color: rgb(var(--v-theme-primaryText));
+  line-height: 1.5;
+  word-break: break-all;
+}
+
+/* 预设提示词正文 */
+.preset-text {
+  padding: 10px 12px;
+  border-radius: 6px;
+  background: rgba(var(--v-border-color), 0.08);
+  font-size: 0.8125rem;
+  line-height: 1.7;
+  color: rgb(var(--v-theme-primaryText));
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 360px;
+  overflow-y: auto;
+}
+
+/* 请求快照 */
+.req-chat {
+  color: rgb(var(--v-theme-primary));
+  font-family: Consolas, 'Courier New', monospace;
+}
+
+/* 快照原样交给 json 组件渲染，超长时内部滚动 */
+.req-json-box {
+  background: rgba(var(--v-border-color), 0.08);
+  border-radius: 8px;
+  padding: 8px 10px 8px 4px;
+  max-height: 56vh;
+  overflow: auto;
+}
+.req-json-box :deep(.vjs-tree) {
+  font-family: Consolas, 'Courier New', monospace;
+  font-size: 12px;
+}
+.req-card {
+  border-color: rgba(var(--v-border-color), 0.16);
+}
+
+.setting-card {
+  border-color: rgba(var(--v-border-color), 0.16);
+}
+
+.save-fab {
+  position: fixed;
+  right: 28px;
+  bottom: 28px;
+  z-index: 100;
+}
+.fab-enter-active,
+.fab-leave-active {
+  transition: opacity 0.25s ease, transform 0.25s ease;
+}
+.fab-enter-from,
+.fab-leave-to {
+  opacity: 0;
+  transform: translateY(14px) scale(0.92);
 }
 </style>
