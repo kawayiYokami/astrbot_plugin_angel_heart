@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.3.3 - 2026-11-21
+
+### Fixed
+
+- **AstrBot 4.30 下人格预设对话仍然丢失**：#100 只适配了分析器（`core/llm_analyzer.py`），`roles/front_desk.py` 重建历史时的解析调用仍是旧签名。4.30 上抛 `TypeError` 被外层 `except` 吞掉，预设对话返回空。现在两处都用 `inspect.signature` 探测参数名：有 `conversation_persona_id` 走旧路径，没有则按 4.30 只传 `umo` / `platform_name` 并解包三元组。
+
+### Changed
+
+- 补测试：`tests/test_persona_rewrite.py` 增加 4.30 签名下的预设对话保留、解析失败回落两组用例。假 resolver 换成带真实签名的实现（`_LegacyResolver` / `_ModernResolver`），此前用 `AsyncMock` 时 `inspect` 只能看到 `(*args, **kwargs)`，两条路径都测不到。
+
 ## 2.3.2 - 2026-11-21
 
 ### Fixed
