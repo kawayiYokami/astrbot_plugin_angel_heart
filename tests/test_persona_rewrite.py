@@ -11,7 +11,58 @@ from astrbot_plugin_angel_heart.core.work_ledger import WorkLedger
 from astrbot_plugin_angel_heart.roles.front_desk import FrontDesk
 
 
-def _scenario(chat_type="GroupMessage", conversation_persona_id=None):
+class _BaseResolver:
+    """Shared call recording, side_effect and assertion helpers for fake resolvers."""
+
+    def __init__(self):
+        self.return_value = None
+        self.side_effect = None
+        self.calls = []
+
+    def assert_not_called(self):
+        assert not self.calls, f"expected no resolver calls, got {self.calls}"
+
+    def assert_awaited_with(self, **kwargs):
+        assert self.calls, "expected the resolver to be called, but it was not"
+        assert self.calls[-1] == kwargs, f"expected {kwargs}, got {self.calls[-1]}"
+
+    @property
+    def await_args(self):
+        assert self.calls, "expected the resolver to be called, but it was not"
+        return SimpleNamespace(kwargs=self.calls[-1])
+
+    def _record(self, payload):
+        self.calls.append(payload)
+        effect = self.side_effect
+        if effect is None:
+            return self.return_value
+        if isinstance(effect, list):
+            return effect.pop(0)
+        raise effect
+
+
+class _LegacyResolver(_BaseResolver):
+    """Stand-in for the pre-4.30 resolver: takes conversation_persona_id, returns 4-tuple."""
+
+    async def __call__(self, *, umo, conversation_persona_id, platform_name, **kwargs):
+        return self._record(
+            {
+                "umo": umo,
+                "conversation_persona_id": conversation_persona_id,
+                "platform_name": platform_name,
+                **kwargs,
+            }
+        )
+
+
+class _ModernResolver(_BaseResolver):
+    """Stand-in for the 4.30 resolver: umo / platform_name only, returns 3-tuple."""
+
+    async def __call__(self, *, umo, platform_name):
+        return self._record({"umo": umo, "platform_name": platform_name})
+
+
+def _scenario(chat_type="GroupMessage", conversation_persona_id=None, resolver=None):
     chat_id = f"aiocqhttp:{chat_type}:10000"
     config = MagicMock()
     config.for_chat.return_value = config
@@ -21,7 +72,7 @@ def _scenario(chat_type="GroupMessage", conversation_persona_id=None):
     config.focus_reply_max_chars = 200
     angel = MagicMock()
     angel.work_ledger = WorkLedger()
-    resolver = AsyncMock()
+    resolver = resolver or _LegacyResolver()
     angel.astr_context = SimpleNamespace(
         persona_manager=SimpleNamespace(resolve_selected_persona=resolver)
     )
@@ -198,5 +249,34 @@ def test_request_without_conversation_does_not_invent_a_default_persona():
     req.conversation = None
     asyncio.run(fd.rewrite_prompt_for_llm(event.unified_msg_origin, event, req))
     resolver.assert_not_called()
+    assert "旧人格示例" not in str(req.contexts)
+    assert "账本中的真实回复" in str(req.contexts)
+
+
+@pytest.mark.parametrize("chat_type", ["GroupMessage", "FriendMessage"])
+def test_modern_resolver_keeps_examples_without_legacy_kwargs(chat_type):
+    """AstrBot 4.30 收窄签名后，预设对话仍被保留，且不再传旧参数。"""
+    resolver = _ModernResolver()
+    fd, event, req, _ = _scenario(chat_type, resolver=resolver)
+    examples = _examples("4.30 人格")
+    resolver.return_value = ("persona-id", {"_begin_dialogs_processed": examples}, False)
+
+    asyncio.run(fd.rewrite_prompt_for_llm(event.unified_msg_origin, event, req))
+
+    assert req.contexts[:2] == examples
+    assert req.contexts[0] is not examples[0]
+    assert resolver.calls == [
+        {"umo": event.unified_msg_origin, "platform_name": "aiocqhttp"}
+    ]
+
+
+def test_modern_resolver_failure_still_preserves_ledger_reply():
+    """4.30 签名下解析失败，同样退回账本内容而不是旧人格示例。"""
+    resolver = _ModernResolver()
+    fd, event, req, _ = _scenario(resolver=resolver)
+    resolver.side_effect = RuntimeError("persona unavailable")
+
+    asyncio.run(fd.rewrite_prompt_for_llm(event.unified_msg_origin, event, req))
+
     assert "旧人格示例" not in str(req.contexts)
     assert "账本中的真实回复" in str(req.contexts)

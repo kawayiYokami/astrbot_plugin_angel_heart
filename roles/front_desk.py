@@ -6,6 +6,7 @@ AngelHeart 插件 - 前台角色 (FrontDesk)
 import asyncio
 import base64
 import copy
+import inspect
 import json
 import os
 import re
@@ -2380,12 +2381,20 @@ class FrontDesk:
                 candidate = config.get("provider_settings", {})
                 if isinstance(candidate, dict):
                     settings["provider_settings"] = candidate
-            _, persona, _, _ = await resolver(
-                umo=chat_id,
-                conversation_persona_id=getattr(conversation, "persona_id", None),
-                platform_name=platform_name,
-                **settings,
-            )
+            if "conversation_persona_id" in inspect.signature(resolver).parameters:
+                _, persona, _, _ = await resolver(
+                    umo=chat_id,
+                    conversation_persona_id=getattr(conversation, "persona_id", None),
+                    platform_name=platform_name,
+                    **settings,
+                )
+            else:
+                # AstrBot 4.30+ 收窄了签名：只接受 umo / platform_name，返回三元组。
+                # 会话已由 umo 决定，conversation_persona_id 与 provider_settings 不再需要。
+                _, persona, _ = await resolver(
+                    umo=chat_id,
+                    platform_name=platform_name,
+                )
             if not isinstance(persona, dict):
                 return []
             dialogs = persona.get("_begin_dialogs_processed")
