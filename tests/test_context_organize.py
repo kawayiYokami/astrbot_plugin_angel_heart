@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+import time
 import types
 from pathlib import Path
 from unittest.mock import MagicMock, AsyncMock
@@ -199,6 +201,98 @@ class TestPartitionIncludesSummary:
 
         hist2, recent2, _ = partition_dialogue_raw(ledger, chat_id)
         assert hist2[0]["kind"] == "context_summary"
+
+
+class TestGroupSummaryNotDuplicated:
+    """issue #88：群聊离场→入场整理不能让摘要自身重复计入。"""
+
+    def test_repeated_group_enter_does_not_double_summary(self, ledger):
+        """连续 5 次入场整理，摘要恒等于「旧摘要 + 本轮丢弃的普通消息」。"""
+        chat_id = "GroupMessage:stable"
+        # 避免入库路径自动触发整理，只让本测试显式整理
+        ledger.config_manager._config["context_compression"][
+            "max_conversation_tokens"
+        ] = 100000
+        base = time.time()
+        expected: list[str] = []
+        pending: list[str] = []
+        lengths: list[int] = []
+
+        for round_no in range(5):
+            round_start = base + round_no * 10
+            for k in range(3):
+                text = f"m{round_no}{k}" + "y" * 15
+                msg = _msg(round_no * 10 + k, text, chat_id=chat_id)
+                msg["sender_name"] = "u"
+                msg["timestamp"] = round_start + k
+                ledger.add_message(chat_id, msg)
+                pending.append(text)
+
+            # 本轮只保留最后一条，其余全部收进摘要
+            expected.extend(pending[:-1])
+            pending = pending[-1:]
+            assert ledger.organize_on_group_enter(
+                chat_id, keep_from_timestamp=round_start + 2
+            )
+
+            messages = ledger.get_all_messages(chat_id)
+            summaries = [m for m in messages if m.get("kind") == "context_summary"]
+            assert len(summaries) == 1
+            assert messages[0].get("kind") == "context_summary"
+
+            summary = ledger.get_current_summary(chat_id)
+            # 摘要 = 旧摘要 + 本轮丢弃的普通消息，逐字比对，多算一次就会失败
+            sep = ConversationLedger.SUMMARY_BLOCK_SEPARATOR
+            assert summary == sep.join(f"u: {text}" for text in expected)
+            # 展示前缀只属于 content 外壳，不能叠进摘要正文
+            assert ConversationLedger.SUMMARY_CONTENT_PREFIX not in summary
+            lengths.append(len(summary))
+
+        # 每轮只累加本轮丢弃的消息，长度线性增长而不是翻倍
+        assert lengths == sorted(lengths)
+        assert lengths[-1] < 2 * lengths[-2]
+
+
+class TestRuleSummaryTrimming:
+    """超长摘要按消息条目裁剪，不把某条消息切成半句。"""
+
+    def test_long_summary_drops_oldest_entries_whole(self, ledger):
+        chat_id = "GroupMessage:trim"
+        ledger.config_manager._config["context_compression"][
+            "max_conversation_tokens"
+        ] = 100000
+        base = time.time()
+        for i in range(1, 41):
+            msg = _msg(i, f"m{i:02d}" + "x" * 100, chat_id=chat_id)
+            msg["sender_name"] = "u"
+            msg["timestamp"] = base + i
+            ledger.add_message(chat_id, msg)
+
+        assert ledger.organize_on_group_enter(chat_id, keep_from_timestamp=base + 100)
+
+        summary = ledger.get_current_summary(chat_id)
+        assert len(summary) <= ConversationLedger.RULE_SUMMARY_MAX_CHARS
+        assert summary.startswith(ConversationLedger.SUMMARY_OMIT_MARKER)
+        # 最旧的条目被整条丢弃，最新的条目完整保留
+        assert "m01" not in summary
+        assert f"m40{'x' * 100}" in summary
+        # 保留下来的每个条目都是完整消息，没有从中间切断
+        sep = ConversationLedger.SUMMARY_BLOCK_SEPARATOR
+        body = summary.split("\n", 1)[1]
+        entries = [e for e in body.split(sep) if e.strip()]
+        assert entries
+        assert all(re.fullmatch(r"u: m\d{2}x{100}", e) for e in entries)
+        assert entries[-1] == f"u: m40{'x' * 100}"
+
+    def test_oversized_single_entry_keeps_newest_tail(self, ledger):
+        """单条自身就超预算时只能截断，但保留的是最新的尾部。"""
+        block = "u: " + "旧" * 5000 + "最新尾巴"
+
+        summary = ledger._trim_rule_summary([block])
+
+        assert len(summary) <= ConversationLedger.RULE_SUMMARY_MAX_CHARS
+        assert summary.startswith(ConversationLedger.SUMMARY_OMIT_MARKER)
+        assert summary.endswith("最新尾巴")
 
 
 class TestCompressionLock:

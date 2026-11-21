@@ -23,6 +23,18 @@ class ConversationLedger:
     对话总账 - 插件内部权威的、唯一的对话记录中心。
     管理所有对话的完整历史，并以线程安全的方式处理状态。
     """
+
+    # 账本结构固定为 [摘要消息, 普通消息...]：摘要永远是第一条且只有一条。
+    SUMMARY_KINDS = ("context_summary", "summary_context", "context_compaction")
+    # 摘要展示前缀，仅用于让模型区分摘要与普通消息，不属于摘要正文。
+    SUMMARY_CONTENT_PREFIX = "[当前摘要]"
+    # 规则摘要长度上限：超长时按消息条目整条丢弃，不切断单条消息。
+    RULE_SUMMARY_MAX_CHARS = 4000
+    # 发生丢弃时补在开头的提示，标明摘要被预算截断过。
+    SUMMARY_OMIT_MARKER = "（更早的摘要已按预算省略）"
+    # 摘要里每条消息之间用两个换行分隔，让条目边界清晰可辨。
+    SUMMARY_BLOCK_SEPARATOR = "\n\n"
+
     def __init__(self, config_manager, data_dir: Path, astr_context=None):
         import bisect
         self._lock = threading.Lock()
@@ -301,23 +313,25 @@ class ConversationLedger:
         return False
 
     def _build_rule_summary(self, old_summary: str, discarded: List[Dict], keep_tools: bool) -> str:
-        """群聊/回退用的规则摘要，不是 LLM 摘要。"""
-        lines = []
+        """群聊/回退用的规则摘要，不是 LLM 摘要。
+
+        摘要内容与普通消息的文本形态一致（`name: text` 行），因此新摘要 =
+        旧摘要正文 + 本轮丢弃的普通消息正文，直接按顺序拼接。
+        摘要类消息不会出现在 discarded 里（整理入口已把 messages[0] 排除在
+        整理范围外），所以旧摘要只会写一次，不会被重复计入。
+        """
+        blocks: List[str] = []
         if old_summary:
-            lines.append(old_summary.strip())
+            blocks.append(old_summary.strip())
         for msg in discarded:
             if not keep_tools and self._is_tool_message(msg):
-                continue
-            if msg.get("kind") in ("context_summary", "summary_context", "context_compaction"):
-                text = self._extract_message_text(msg)
-                if text:
-                    lines.append(text)
                 continue
             role = msg.get("role", "user")
             name = msg.get("sender_name") or msg.get("sender_id") or role
             text = self._extract_message_text(msg)
+            lines: List[str] = []
             if text:
-                # 控制规则摘要体积
+                # 控制单条消息体积，保证每条消息在摘要里占一行
                 if len(text) > 120:
                     text = text[:120] + "…"
                 lines.append(f"{name}: {text}")
@@ -325,11 +339,56 @@ class ConversationLedger:
             # 让模型知道这张图在哪；文件本身由摘要引用保证不被清理。
             for ref in self._collect_message_image_refs([msg]):
                 lines.append(f"[图片] {ref}")
-        summary = "\n".join(lines).strip()
-        # 限制摘要总长，避免无限膨胀
-        if len(summary) > 4000:
-            summary = summary[-4000:]
-        return summary
+            if lines:
+                blocks.append("\n".join(lines))
+        if not blocks:
+            return ""
+        summary = self.SUMMARY_BLOCK_SEPARATOR.join(blocks)
+        if len(summary) <= self.RULE_SUMMARY_MAX_CHARS:
+            return summary
+        return self._trim_rule_summary(blocks)
+
+    def _trim_rule_summary(self, blocks: List[str]) -> str:
+        """超长时按消息条目从最旧整条丢弃，直到不超上限。
+
+        每条消息在摘要里是完整的一行（或一组行），因此丢弃以条目为单位，
+        不会把某条消息切成半句。只有单个条目自身就超过预算时才单独截断它，
+        那种情况下截断它自己的尾部（保留最新内容）。
+        """
+        marker = self.SUMMARY_OMIT_MARKER
+        sep = self.SUMMARY_BLOCK_SEPARATOR
+        budget = max(0, self.RULE_SUMMARY_MAX_CHARS - len(marker) - 1)
+        kept = list(blocks)
+        while len(kept) > 1 and len(sep.join(kept)) > budget:
+            kept.pop(0)
+        # 只剩一条仍超预算：按行从最旧裁，尽量保住单条消息的完整性
+        if kept and len(kept[0]) > budget:
+            lines = kept[0].split("\n")
+            tail: List[str] = []
+            used = 0
+            for line in reversed(lines):
+                extra = len(line) + (1 if tail else 0)
+                if used + extra > budget:
+                    break
+                tail.append(line)
+                used += extra
+            if tail:
+                kept[0] = "\n".join(reversed(tail))
+            else:
+                kept[0] = kept[0][-budget:] if budget else ""
+        body = sep.join(kept)
+        return f"{marker}\n{body}" if body else marker
+
+    def _extract_summary_body(self, msg: Dict) -> str:
+        """取摘要消息里的摘要正文，去掉展示用前缀。
+
+        摘要消息的 content 是 `[当前摘要]\\n<正文>`，正文才是要参与拼接的内容；
+        若把前缀当成正文拼进去，每轮整理会多叠一层前缀。
+        """
+        text = self._extract_message_text(msg)
+        if text.startswith(self.SUMMARY_CONTENT_PREFIX):
+            text = text[len(self.SUMMARY_CONTENT_PREFIX) :].lstrip("\n")
+        return text.strip()
 
     def _make_summary_message(
         self,
@@ -340,7 +399,7 @@ class ConversationLedger:
     ) -> Dict:
         message = {
             "role": "user",
-            "content": f"[当前摘要]\n{summary}",
+            "content": f"{self.SUMMARY_CONTENT_PREFIX}\n{summary}",
             "sender_id": "system",
             "sender_name": "context_summary",
             "kind": "context_summary",
@@ -763,8 +822,22 @@ class ConversationLedger:
         ledger = self._get_or_create_ledger(chat_id)
         with self._lock:
             messages = list(ledger.get("messages") or [])
-            old_summary = str(ledger.get("current_summary") or "")
             if not messages:
+                return False
+
+            # 账本结构固定为 [摘要消息, 普通消息...]：旧摘要只从第一条取一次，
+            # 整理范围收窄到 messages[1:]，discarded 因此结构上不会出现摘要。
+            summary_message = None
+            if messages[0].get("kind") in self.SUMMARY_KINDS:
+                summary_message = messages[0]
+                old_summary = self._extract_summary_body(summary_message)
+                history = messages[1:]
+            else:
+                # 兼容旧账本/外部写入：消息里没有摘要消息时才用字段兜底
+                old_summary = str(ledger.get("current_summary") or "").strip()
+                history = messages
+
+            if not history:
                 return False
 
             relation_budget = self._count_tokens_in_text(format_reply_metadata({
@@ -778,7 +851,7 @@ class ConversationLedger:
 
             retained_content = []
             content_used = 0
-            for msg in reversed(messages):
+            for msg in reversed(history):
                 if self._is_tool_message(msg):
                     continue
                 if keep_from_timestamp is not None and msg.get("timestamp", 0) < keep_from_timestamp:
@@ -795,7 +868,7 @@ class ConversationLedger:
             retained_tools = []
             tool_used = 0
             if keep_tools:
-                for msg in reversed(messages):
+                for msg in reversed(history):
                     if not self._is_tool_message(msg):
                         continue
                     if keep_from_timestamp is not None and msg.get("timestamp", 0) < keep_from_timestamp:
@@ -814,40 +887,31 @@ class ConversationLedger:
             if (
                 keep_from_timestamp is None
                 and len(retained) < self.MIN_RETAIN_COUNT
-                and len(messages) >= self.MIN_RETAIN_COUNT
+                and len(history) >= self.MIN_RETAIN_COUNT
             ):
                 if keep_tools:
-                    retained = messages[-self.MIN_RETAIN_COUNT :]
+                    retained = history[-self.MIN_RETAIN_COUNT :]
                 else:
                     # 群聊不记工具：fallback 也只取非 tool
-                    non_tools = [m for m in messages if not self._is_tool_message(m)]
+                    non_tools = [m for m in history if not self._is_tool_message(m)]
                     retained = (
                         non_tools[-self.MIN_RETAIN_COUNT :]
                         if non_tools
                         else []
                     )
 
-            retained = retain_complete_history_blocks(messages, retained)
+            retained = retain_complete_history_blocks(history, retained)
             retained_ids = {id(m) for m in retained}
-            discarded = [m for m in messages if id(m) not in retained_ids]
-            summary_sources = [
-                m for m in messages
-                if id(m) not in retained_ids
-                or m.get("kind") in ("context_summary", "summary_context", "context_compaction")
-            ]
+            discarded = [m for m in history if id(m) not in retained_ids]
+            # 旧摘要消息本身也要参与媒体引用/回复关系的继承，否则它引用的图会被清理
+            summary_sources = ([summary_message] if summary_message else []) + discarded
 
             if not discarded and not old_summary:
                 return False
 
             summary = self._build_rule_summary(old_summary, discarded, keep_tools=keep_tools)
+            # 字段是 messages[0] 的派生镜像，整理后同步一次保持一致
             ledger["current_summary"] = summary
-            # 去掉旧摘要消息，避免重复
-            retained = [
-                m
-                for m in retained
-                if m.get("kind")
-                not in ("context_summary", "summary_context", "context_compaction")
-            ]
             if summary:
                 ts = retained[0].get("timestamp", time.time()) if retained else time.time()
                 summary_image_refs = self._collect_message_image_refs(summary_sources)
