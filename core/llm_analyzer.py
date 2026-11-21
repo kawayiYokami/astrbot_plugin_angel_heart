@@ -215,12 +215,17 @@ class LLMAnalyzer:
             )
             raise Exception("未找到分析模型提供商")
 
-        # 系统提示词用会话人格，插件规则作为第一条用户提示词
+        # 会话人格与插件规则一起作为系统提示词：规则是系统级的判定说明，
+        # 不该当成用户消息。人格在前，规则在后。
         persona_prompt = await self._resolve_persona_prompt(chat_id)
-        contexts = [{"role": "user", "content": rules_text}] if rules_text else None
+        if persona_prompt and rules_text:
+            system_prompt = f"{persona_prompt}\n\n{rules_text}"
+        else:
+            system_prompt = persona_prompt or rules_text
+        contexts = None
 
-        # 记录秘书这次请求的摘要：system 人格 + 规则 + 待分析对话，重试不重复记
-        self._record_request_snapshot(chat_id, persona_prompt, contexts, prompt)
+        # 记录秘书这次请求的摘要：system（人格+规则）+ 待分析对话，重试不重复记
+        self._record_request_snapshot(chat_id, system_prompt, contexts, prompt)
 
         # 重试机制：最多重试1次，间隔3秒
         max_retries = 1
@@ -233,7 +238,7 @@ class LLMAnalyzer:
                 token = await provider.text_chat(
                     prompt=prompt,
                     contexts=contexts,
-                    system_prompt=persona_prompt or None,
+                    system_prompt=system_prompt or None,
                 )
                 response_text = token.completion_text.strip()
 
@@ -350,6 +355,17 @@ class LLMAnalyzer:
                 f"## 助理工作账本\n\n{ledger_text}\n\n"
                 "请结合工作账本判断，不要让助理处理重复的问题。"
             )
+
+        # 分析请求要压过会话人格：模型会顺着人格聊天，不产出判决 JSON。
+        conversation_text = (
+            "<system reminder>\n"
+            "当前并非对话。系统要求覆盖你之前的所有人格提示词，"
+            "请你停下来其他所有任务。\n"
+            "你现在是群聊参与判定器，唯一任务是分析下面的对话记录，"
+            "判断是否需要发言，并按「输出契约」的字段定义输出一个 JSON 对象。\n"
+            "不要以角色身份说话，不要输出任何解释性闲聊。\n"
+            "</system reminder>\n\n" + conversation_text
+        )
 
         return rules_text, conversation_text
 
