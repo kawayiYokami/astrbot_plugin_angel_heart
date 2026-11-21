@@ -2,6 +2,7 @@
 AngelHeart 插件 - 消息处理相关工具函数
 """
 
+import json
 from typing import Any
 
 from .xml_formatter import format_message_to_text
@@ -125,6 +126,160 @@ def serialize_content_parts(content: Any) -> Any:
                 serialized.append({"type": "text", "text": str(item)})
         return serialized
     return content
+
+
+def history_message_blocks(messages: list[dict]) -> list[list[dict]]:
+    """Keep a historical assistant call and its consecutive results together.
+
+    This only groups existing records; it never invents a call or executes one.
+    An already orphaned result remains a single record for the history-output
+    repair below, which preserves its content as explicitly historical text.
+    """
+    blocks = []
+    index = 0
+    while index < len(messages):
+        message = messages[index]
+        end = index + 1
+        if message.get("role") == "assistant" and message.get("tool_calls"):
+            while end < len(messages) and messages[end].get("role") == "tool":
+                end += 1
+        blocks.append(messages[index:end])
+        index = end
+    return blocks
+
+
+def retain_complete_history_blocks(
+    source: list[dict], selected: list[dict]
+) -> list[dict]:
+    """Remove whole exchanges when a message/token cutoff splits their block.
+
+    Selection still uses the caller's existing budgets and ordinary-message
+    rules. A tool exchange that does not fit must not leak a partial suffix.
+    Original objects are retained so callers can account for discarded records
+    in their summaries and media-reference cleanup.
+    """
+    selected_ids = {id(message) for message in selected}
+    complete_ids = set()
+    for block in history_message_blocks(source):
+        if all(id(message) in selected_ids for message in block):
+            complete_ids.update(id(message) for message in block)
+    return [message for message in selected if id(message) in complete_ids]
+
+
+def _history_result_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    return json.dumps(serialize_content_parts(content), ensure_ascii=False, default=str)
+
+
+def normalize_history_tool_pairs(messages: list[dict]) -> list[dict]:
+    """Repair historical protocol records without replaying external actions.
+
+    Valid closed exchanges (including reasoning parts) pass through unchanged.
+    A missing call/result is represented as a labeled historical text record;
+    duplicate result fragments of a valid call are combined into one result.
+    This function is for the saved-history boundary, never the running agent's
+    current tool request/output chain.
+    """
+    repaired = []
+    seen_call_ids = set()
+    repaired_count = 0
+    for block in history_message_blocks(messages):
+        head = block[0]
+        calls = head.get("tool_calls") if head.get("role") == "assistant" else None
+        if calls:
+            calls = serialize_content_parts(calls)
+            call_records = calls if isinstance(calls, list) else []
+            call_ids = [call.get("id") for call in call_records if isinstance(call, dict)]
+            result_ids = [message.get("tool_call_id") for message in block[1:]]
+            valid = (
+                isinstance(calls, list)
+                and len(call_ids) == len(calls)
+                and bool(call_ids)
+                and all(isinstance(call_id, str) and call_id for call_id in call_ids)
+                and len(set(call_ids)) == len(call_ids)
+                and not (set(call_ids) & seen_call_ids)
+                and all(isinstance(call_id, str) and call_id for call_id in result_ids)
+                and set(result_ids) == set(call_ids)
+                and all(
+                    isinstance(call.get("function"), dict)
+                    and isinstance(call["function"].get("name"), str)
+                    and bool(call["function"]["name"])
+                    and isinstance(call["function"].get("arguments"), str)
+                    for call in calls
+                )
+            )
+            if valid:
+                seen_call_ids.update(call_ids)
+                repaired.append(head)
+                result_positions = {}
+                result_fragments = {}
+                for message in block[1:]:
+                    call_id = message.get("tool_call_id")
+                    fragment = _history_result_text(message.get("content", ""))
+                    if call_id not in result_positions:
+                        result_positions[call_id] = len(repaired)
+                        result_fragments[call_id] = {fragment}
+                        repaired.append(message)
+                        continue
+                    position = result_positions[call_id]
+                    previous = repaired[position]
+                    if fragment not in result_fragments[call_id]:
+                        result_fragments[call_id].add(fragment)
+                        merged = dict(previous)
+                        merged["content"] = (
+                            _history_result_text(previous.get("content", ""))
+                            + "\n[同次历史工具调用的补充结果]\n"
+                            + _history_result_text(message.get("content", ""))
+                        )
+                        repaired[position] = merged
+                    repaired_count += 1
+                continue
+
+            # Keep existing assistant content/reasoning and the original call
+            # record as text; do not fabricate a missing protocol output.
+            converted = dict(head)
+            converted.pop("tool_calls", None)
+            converted.pop("is_structured_toolcall", None)
+            note = "[历史工具调用记录；配套结果不完整或调用标识重复]\n" + json.dumps(
+                calls, ensure_ascii=False, default=str
+            )
+            content = converted.get("content")
+            if isinstance(content, list):
+                converted["content"] = serialize_content_parts(content) + [
+                    {"type": "text", "text": note}
+                ]
+            else:
+                converted["content"] = (
+                    (_history_result_text(content) + "\n") if content is not None else ""
+                ) + note
+            repaired.append(converted)
+            repaired_count += 1
+            results = block[1:]
+        else:
+            results = block
+
+        for message in results:
+            if message.get("role") != "tool":
+                repaired.append(message)
+                continue
+            converted = dict(message)
+            converted["role"] = "user"
+            converted.pop("tool_call_id", None)
+            converted.pop("is_structured_toolcall", None)
+            converted["kind"] = "historical_tool_result"
+            converted["sender_name"] = "historical_tool_result"
+            converted["content"] = (
+                "[历史工具结果；原调用记录缺失或不完整]\n"
+                + _history_result_text(message.get("content", ""))
+            )
+            repaired.append(converted)
+            repaired_count += 1
+
+    if repaired_count:
+        # Counts only: tool arguments/results may contain private data.
+        logger.warning("AngelHeart: 已将 %s 条不完整或重复的历史工具记录整理为有效上下文", repaired_count)
+    return repaired
 
 
 def _is_checkpoint_context_item(item: Any) -> bool:

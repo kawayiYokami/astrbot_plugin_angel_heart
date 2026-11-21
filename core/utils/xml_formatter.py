@@ -5,6 +5,7 @@ AngelHeart 插件 - 消息格式化工具
 
 from .time_utils import format_relative_time, format_absolute_time
 from .content_utils import convert_content_to_string
+from .reply_metadata import format_reply_metadata
 
 
 def build_image_attachment_text(msg: dict) -> str:
@@ -110,6 +111,12 @@ def format_message_to_text(
         )
 
     formatted_body = ""
+    if role in ("user", "assistant") and msg.get("sender_name") != "tool_result":
+        reference_text = format_reply_metadata(msg)
+        if reference_text:
+            text_content = (
+                f"{reference_text}\n{text_content}" if text_content else reference_text
+            )
 
     # 1. User 消息处理
     if role == "user":

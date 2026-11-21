@@ -19,6 +19,7 @@ from astrbot.api import logger
 
 from .utils import format_message_to_text
 from .utils.message_utils import serialize_content_parts
+from .utils.reply_metadata import format_reply_metadata
 
 
 class MessageProcessor:
@@ -89,12 +90,16 @@ class MessageProcessor:
         # assistant 常规消息必须保留原始结构，避免丢失 think / 多模态 parts。
         if role == "assistant":
             original_content = msg.get("content", [])
+            reference_text = format_reply_metadata(msg)
             if isinstance(original_content, str):
-                return {"role": role, "content": original_content}
-            return {
-                "role": role,
-                "content": self._normalize_content(original_content),
-            }
+                return {
+                    "role": role,
+                    "content": f"{reference_text}\n{original_content}" if reference_text else original_content,
+                }
+            content = self._normalize_content(original_content)
+            if reference_text:
+                content = [{"type": "text", "text": reference_text}] + content
+            return {"role": role, "content": content}
 
         # 预处理消息内容：使用已有的图片转述和多模态内容
         processed_msg = copy.deepcopy(msg)

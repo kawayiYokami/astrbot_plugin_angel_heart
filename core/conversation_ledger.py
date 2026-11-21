@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import List, Dict, Tuple, Optional
 from urllib.parse import unquote, urlparse
 from . import utils
+from .utils.message_utils import retain_complete_history_blocks
+from .utils.reply_metadata import collect_reply_relations, format_reply_metadata
 
 # 条件导入：当缺少astrbot依赖时使用Mock
 from astrbot.api import logger
@@ -326,7 +328,11 @@ class ConversationLedger:
         return summary
 
     def _make_summary_message(
-        self, summary: str, timestamp: float, image_refs: List[str] | None = None
+        self,
+        summary: str,
+        timestamp: float,
+        image_refs: List[str] | None = None,
+        reply_relations: List[Dict] | None = None,
     ) -> Dict:
         message = {
             "role": "user",
@@ -338,6 +344,8 @@ class ConversationLedger:
         }
         if image_refs:
             message["image_refs"] = list(dict.fromkeys(image_refs))
+        if reply_relations:
+            message["reply_relations"] = collect_reply_relations(reply_relations)
         return message
 
     def _collect_message_image_refs(self, messages: List[Dict] | None) -> List[str]:
@@ -483,6 +491,7 @@ class ConversationLedger:
             return messages
         ts = messages[0].get("timestamp", time.time()) if messages else time.time()
         summary_refs: List[str] = []
+        summary_reply_relations: List[Dict] = []
         for msg in messages:
             if msg.get("kind") in (
                 "context_summary",
@@ -490,8 +499,12 @@ class ConversationLedger:
                 "context_compaction",
             ):
                 summary_refs = self._collect_message_image_refs([msg])
+                summary_reply_relations = collect_reply_relations([msg])
                 break
-        return [self._make_summary_message(summary, ts, summary_refs)] + messages
+        summary_message = self._make_summary_message(
+            summary, ts, summary_refs, summary_reply_relations
+        )
+        return [summary_message] + messages
 
     def organize_context(
         self,
@@ -594,7 +607,13 @@ class ConversationLedger:
                 return False
 
             # 保留最近正文预算，其余交给 LLM 摘要
-            content_budget = self.config_manager.context_content_retain_tokens
+            relation_budget = self._count_tokens_in_text(format_reply_metadata({
+                "kind": "context_summary",
+                "reply_relations": collect_reply_relations(formal),
+            }))
+            content_budget = max(
+                0, self.config_manager.context_content_retain_tokens - relation_budget
+            )
             retained = []
             used = 0
             for msg in reversed(formal):
@@ -606,6 +625,7 @@ class ConversationLedger:
                 else:
                     break
             retained.reverse()
+            retained = retain_complete_history_blocks(formal, retained)
             retained_ids = {id(m) for m in retained}
             discarded = [m for m in formal if id(m) not in retained_ids]
 
@@ -661,7 +681,11 @@ class ConversationLedger:
             if not text and self._is_tool_message(msg):
                 text = "[tool]"
             if text:
-                lines.append(f"- {name}: {text[:300]}")
+                reference_text = format_reply_metadata(msg)
+                if reference_text:
+                    lines.append(f"- {name}: {reference_text}\n{text[:300]}")
+                else:
+                    lines.append(f"- {name}: {text[:300]}")
         body = "\n".join(lines)
         return (
             "你正在为私聊会话生成上下文交接摘要。\n"
@@ -688,7 +712,13 @@ class ConversationLedger:
             if not messages:
                 return False
 
-            content_budget = self.config_manager.context_content_retain_tokens
+            relation_budget = self._count_tokens_in_text(format_reply_metadata({
+                "kind": "context_summary",
+                "reply_relations": collect_reply_relations(messages),
+            }))
+            content_budget = max(
+                0, self.config_manager.context_content_retain_tokens - relation_budget
+            )
             tool_budget = self.config_manager.context_tool_retain_tokens if keep_tools else 0
 
             retained_content = []
@@ -742,8 +772,14 @@ class ConversationLedger:
                         else []
                     )
 
+            retained = retain_complete_history_blocks(messages, retained)
             retained_ids = {id(m) for m in retained}
             discarded = [m for m in messages if id(m) not in retained_ids]
+            summary_sources = [
+                m for m in messages
+                if id(m) not in retained_ids
+                or m.get("kind") in ("context_summary", "summary_context", "context_compaction")
+            ]
 
             if not discarded and not old_summary:
                 return False
@@ -759,9 +795,11 @@ class ConversationLedger:
             ]
             if summary:
                 ts = retained[0].get("timestamp", time.time()) if retained else time.time()
-                summary_image_refs = self._collect_message_image_refs(discarded)
+                summary_image_refs = self._collect_message_image_refs(summary_sources)
                 retained = [
-                    self._make_summary_message(summary, ts, summary_image_refs)
+                    self._make_summary_message(
+                        summary, ts, summary_image_refs, collect_reply_relations(summary_sources)
+                    )
                 ] + retained
             original = len(messages)
             ledger["messages"] = retained
@@ -807,7 +845,13 @@ class ConversationLedger:
                     m for m in base_messages if m.get("timestamp", 0) >= keep_from_timestamp
                 ]
             else:
-                content_budget = self.config_manager.context_content_retain_tokens
+                relation_budget = self._count_tokens_in_text(format_reply_metadata({
+                    "kind": "context_summary",
+                    "reply_relations": collect_reply_relations(messages),
+                }))
+                content_budget = max(
+                    0, self.config_manager.context_content_retain_tokens - relation_budget
+                )
                 retained = []
                 used = 0
                 for msg in reversed(base_messages):
@@ -821,14 +865,16 @@ class ConversationLedger:
                         break
                 retained.reverse()
 
+            retained = retain_complete_history_blocks(base_messages, retained)
             ts = retained[0].get("timestamp", time.time()) if retained else time.time()
             retained_ids = {id(m) for m in retained}
-            summary_image_refs = self._collect_message_image_refs(
-                [m for m in messages if id(m) not in retained_ids]
-            )
+            discarded = [m for m in messages if id(m) not in retained_ids]
+            summary_image_refs = self._collect_message_image_refs(discarded)
             ledger["current_summary"] = summary_text
             ledger["messages"] = [
-                self._make_summary_message(summary_text, ts, summary_image_refs)
+                self._make_summary_message(
+                    summary_text, ts, summary_image_refs, collect_reply_relations(discarded)
+                )
             ] + retained
             self._last_compression_time[chat_id] = time.time()
             logger.info(
@@ -1007,7 +1053,9 @@ class ConversationLedger:
                                 # 保留这条消息
                                 new_messages.append(msg)
 
-                        ledger_data["messages"] = new_messages
+                        ledger_data["messages"] = retain_complete_history_blocks(
+                            original_messages, new_messages
+                        )
                         affected_chat_ids.append(chat_id)
 
         for chat_id in affected_chat_ids:
@@ -1578,6 +1626,8 @@ class ConversationLedger:
             if key not in ["content", "timestamp", "is_processed"] and isinstance(value, str):
                 total += self._count_tokens_in_text(value)
 
+        total += self._count_tokens_in_text(format_reply_metadata(msg))
+
         return total
 
     def _estimate_tokens(self, chat_id: str) -> int:
@@ -1618,6 +1668,8 @@ class ConversationLedger:
                 for key, value in msg.items():
                     if key not in ["content", "timestamp", "is_processed"] and isinstance(value, str):
                         total_tokens += self._count_tokens_in_text(value)
+
+                total_tokens += self._count_tokens_in_text(format_reply_metadata(msg))
 
             logger.info(
                 f"AngelHeart[{chat_id}]: 上下文Token测算完成，"
