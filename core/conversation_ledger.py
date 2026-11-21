@@ -484,29 +484,20 @@ class ConversationLedger:
                     return str(message.get("source_message_id", "") or "")
         return ""
 
-    def reset_quote_cursor(self, chat_id: str) -> None:
-        """上下文压缩后归零，让剩余消息重新从 #1 开始编号。"""
-        with self._lock:
-            self._quote_cursors[chat_id] = 0
-
     def renumber_quote_messages(self, chat_id: str) -> None:
         """按当前账本顺序重排编号，压缩后调用。
 
         只有留在账本里的消息会被重新编号，已被压缩掉的编号自然失效。
         """
         with self._lock:
-            ledger = self._ledgers.get(chat_id)
             self._quote_cursors[chat_id] = 0
+            ledger = self._ledgers.get(chat_id)
             if not ledger:
                 return
             for message in ledger["messages"]:
                 message.pop("quote_no", None)
             for message in ledger["messages"]:
-                if not is_quotable_message(message):
-                    continue
-                cursor = self._quote_cursors.get(chat_id, 0) + 1
-                self._quote_cursors[chat_id] = cursor
-                message["quote_no"] = cursor
+                self._assign_quote_no(chat_id, message)
 
     def set_messages(self, chat_id: str, messages: List[Dict]):
         """
