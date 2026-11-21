@@ -2005,14 +2005,14 @@ class FrontDesk:
     def _should_manage_quote_target(self, chat_id: str, event: Any) -> bool:
         """判断本轮是否由插件接管引用目标。
 
-        条件：群聊、已启用群聊上下文重写、插件开关开启、平台为 aiocqhttp、
-        宿主会话流式输出关闭。不满足时不注入编号或指令。
+        条件：群聊、已启用群聊上下文重写、平台为 aiocqhttp、宿主会话流式
+        输出关闭。不满足时不注入编号或指令。
+
+        编号是上下文的一部分（和发送者 ID 一样），不设开关。
         """
         if not self._is_group_chat(chat_id):
             return False
         chat_config = self.config_manager.for_chat(chat_id)
-        if not chat_config.quote_target_enabled:
-            return False
         if not chat_config.group_chat_enhancement:
             return False
         if not self._quote_target_platform_supported(event):

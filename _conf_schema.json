@@ -334,12 +334,6 @@
         "hint": "启用后，会清理换行符之前的中文句号（。），例如「你好。\\n明天见。」变为「你好\\n明天见」。",
         "default": false
       },
-      "quote_target_enabled": {
-        "type": "bool",
-        "description": "启用引用目标",
-        "hint": "启用后，每条群友消息会带上编号（如 #3），模型可以用 [#3] 指定要引用的那条。编号在压缩后重新从 #1 开始。仅支持 aiocqhttp 群聊。",
-        "default": true
-      },
       "long_text_image_enabled": {
         "type": "bool",
         "description": "长回复转长图",
