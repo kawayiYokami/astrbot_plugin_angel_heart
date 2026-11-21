@@ -1,5 +1,21 @@
 # Changelog
 
+## 2.3.2 - 2026-11-21
+
+### Fixed
+
+- **裁剪历史时切断工具链，导致续轮 400（#87）**：历史补种、token/条数裁剪和摘要整理可能把 `assistant` 的 `tool_calls` 与对应的 `tool` 回执拆开，留下孤立结果或重复调用 ID，供应商直接拒绝请求。现在按完整 `assistant`/`tool` 块整体保留或丢弃，不让裁剪切在块中间；不完整、无效或重复的旧协议记录在请求出口转换为带标签的历史文字，保留已有事实。`core/utils/message_utils.py`、`core/conversation_ledger.py`。
+- **显式引用丢失真实目标（#87）**：用户引用历史图片或助手回复时，账本只留下当前消息 ID，实际引用目标丢失。现在只保存真实消息 ID，每条最多 4 个目标，摘要保留最近 16 条关系；引用元数据计入 token 估算并预留预算。`core/utils/reply_metadata.py`、`core/message_processor.py`。
+- **热更新误杀其他插件的调度循环（#86）**：模型、Agent 完成和发送钩子可能由其他插件的长期调度循环调用，原跟踪器把调用方登记成自身 pipeline，热更新时连带取消了外部循环。改为默认只管理钩子的子任务、由消息入口显式登记 pipeline；更早执行的钩子仅在根协程精确匹配原生 `PipelineScheduler.execute` 且 event 为本次事件时才登记。`core/runtime_task_tracker.py`、`main.py`。
+- **接管历史时丢失人格预设对话（#95）**：`req.contexts` 被账本覆盖后，框架已加入的当前人格预设对话消失。现在通过 `resolve_selected_persona()` 读取当前生效人格，从 `Context.get_config(chat_id)` 取会话 `provider_settings` 交给解析器，预设对话深复制后放在账本历史之前并标记 `_no_save`。`roles/front_desk.py`。
+- **离场应答冷却读错配置源（#97）**：给群聊绑定独立模板并覆盖离场冷却后，复读或热聊的一次性回复仍按全局冷却计时，因为 `start_leave_reply_cooldown()` 直接读全局 `ConfigManager`。改为通过 `for_chat(chat_id)` 读取有效值，未覆盖字段继续继承全局。`core/angel_heart_context.py`。
+- **无关旧消息误触发复读（#99）**：旧逻辑统计窗口内全部消息，任一内容出现到阈值就返回 True，一批旧重复能让一条无关新消息触发离场回复；`len(all_messages) < 3` 还让阈值为 1 或 2 时直接失效。现在以触发事件的消息 ID 为边界往回累计同文记录，来源 ID 去重，阈值含当前消息，摘要与含图消息不计数。`core/angel_heart_status.py`、`roles/front_desk.py`。
+
+### Changed
+
+- 账本 user 消息新增 `echo_eligible` 标记（有正文且消息链只有 `Plain`/`Reply`），供复读检测判断；老账本无此字段时回落到内容检查。
+- 补测试：历史工具块保留与引用元数据（`tests/test_history_tool_pairs.py`、`tests/test_explicit_reply_metadata.py`）、复读边界（`tests/test_echo_current_run.py`）。
+
 ## 2.3.1 - 2026-11-21
 
 ### Changed
