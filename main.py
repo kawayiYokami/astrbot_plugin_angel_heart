@@ -232,6 +232,22 @@ class AngelHeartPlugin(Star):
     ):
         """只在 Agent 完成后一次性记录本事件新增的完整 assistant/tool 链。"""
         chat_id = event.unified_msg_origin
+
+        # 本轮没有可发送内容时立刻收口：空内容会被框架跳过发送，
+        # after_message_sent 不再触发，账本会一直挂在 running。
+        try:
+            response_text = str(
+                getattr(response, "completion_text", "") or ""
+            ).strip()
+            if not response_text and not self._has_sendable_content(
+                getattr(response, "result_chain", None)
+            ):
+                self._close_work_on_empty_result(
+                    event, chat_id, "Agent 结束但无可发送内容"
+                )
+        except Exception as e:
+            logger.debug(f"AngelHeart[{chat_id}]: 完成点空内容判定失败: {e}")
+
         try:
             completed_messages = extract_completed_agent_messages(
                 getattr(run_context, "messages", None),
@@ -519,6 +535,10 @@ class AngelHeartPlugin(Star):
                 result = event.get_result()
                 if result:
                     result.chain = []  # 清空消息链
+                # 链清空后发送环节被跳过，发送后钩子不再触发，这里先收口
+                self._close_work_on_empty_result(
+                    event, chat_id, "检测到错误信息，已清空消息链"
+                )
                 return
 
             # 2. 引用目标：解析标记、按间隔判断是否插入 Reply
@@ -580,6 +600,11 @@ class AngelHeartPlugin(Star):
             # 4. 长回复整条转长图：文字换成图片，避免群里刷屏。
             #    账本记录的是 run_context.messages 里的原文，这里只替换发送用的消息链。
             await self._try_convert_long_reply(event, message_chain)
+            # 清洗、扣能、转图之后若已无可发内容，发送环节会被跳过，这里先收口
+            if not self._has_sendable_content(message_chain):
+                self._close_work_on_empty_result(
+                    event, chat_id, "发送前消息链无可发内容"
+                )
             logger.debug(f"AngelHeart[{chat_id}]: 消息链中的Markdown格式清洗完成。")
         except Exception as e:
             logger.error(f"AngelHeart[{chat_id}]: strip_markdown_on_decorating_result 处理异常: {e}", exc_info=True)
@@ -904,6 +929,52 @@ class AngelHeartPlugin(Star):
             )
 
         return ""
+
+    @staticmethod
+    def _has_sendable_content(chain) -> bool:
+        """消息链里有没有真正能发出去的内容。
+
+        与框架 respond 阶段同口径：空白 Plain、只有 Reply/At 都不算内容。
+        空内容时框架会跳过整个发送环节，after_message_sent 不再触发。
+        """
+        for component in chain or []:
+            name = type(component).__name__
+            if name == "Plain":
+                if str(getattr(component, "text", "") or "").strip():
+                    return True
+                continue
+            if name in {"Reply", "At"}:
+                continue
+            return True
+        return False
+
+    def _close_work_on_empty_result(
+        self, event: AstrMessageEvent, chat_id: str, reason: str
+    ) -> None:
+        """本轮没有可发送内容时立即收口工作账本。
+
+        空内容会被框架跳过发送，after_message_sent 不再触发，账本那条 running
+        无人收尾，同会话后续消息会一直撞 assistant_busy 直到超时。这里主动收口。
+        """
+        try:
+            work_id = ""
+            if hasattr(event, "get_extra"):
+                work_id = str(event.get_extra("angelheart_work_id", "") or "")
+            if not work_id:
+                work_id = self.front_desk._get_event_message_id(event)
+            if not work_id:
+                return
+            self.angel_context.work_ledger.complete_work(
+                chat_id,
+                work_id,
+                status="failed",
+                result_summary=reason,
+            )
+            logger.debug(
+                f"AngelHeart[{chat_id}]: {reason}，已收口工作账本 work_id={work_id}"
+            )
+        except Exception as e:
+            logger.debug(f"AngelHeart[{chat_id}]: 空结果收口工作账本失败: {e}")
 
     def _is_astrbot_error_message(self, text_content: str) -> bool:
         """

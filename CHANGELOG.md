@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.3.4 - 2026-11-21
+
+### Fixed
+
+- **空正文回复卡死同会话（#98）**：Agent 跑完但没有可发送正文时，框架会跳过整个发送环节，`after_message_sent` 不触发，账本里那条 `running` 无人收尾，同会话后续消息一直撞 `assistant_busy` 直到 `running_timeout` 到期。现在在三处提前收口：Agent 结束但无可发内容、命中 AstrBot 错误信息清空消息链、发送前消息链已无可发内容。判空口径与框架 respond 阶段一致，空白 `Plain`、只有 `Reply`/`At` 都算无内容。
+
+### Changed
+
+- 补测试：`tests/test_empty_reply_work_closure.py` 覆盖判空口径与三处收口；正常回复仍交给发送后钩子，账本状态不变。
+
 ## 2.3.3 - 2026-11-21
 
 ### Fixed
