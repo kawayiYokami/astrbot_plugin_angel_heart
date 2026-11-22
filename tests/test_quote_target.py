@@ -1,7 +1,8 @@
 """引用目标协议测试：编号入库、抬头渲染、前缀解析、出站插 Reply。
 
-编号写在消息上（``quote_no``），入库时分配、压缩后重排，因此同一个上下文
-窗口内保持稳定；模型输出开头的 ``[#n]`` 指定引用目标。
+编号写在消息上（``quote_no``），入库时分配，此后只增不减、压缩后也不复位：
+同一个会话生命周期内 ``#3`` 永远是同一条消息。模型输出开头的 ``[#n]`` 指定
+引用目标，失效编号查不到目标而不会误指别人。
 """
 
 from __future__ import annotations
@@ -169,28 +170,73 @@ def test_existing_numbers_survive_new_messages(ledger):
 
 
 def test_get_message_id_by_quote_no(ledger):
-    ledger.add_messages(GROUP_CHAT_ID, [_user("m1", "第一条", 1.0), _user("m2", "第二条", 2.0)])
+    ledger.add_messages(
+        GROUP_CHAT_ID, [_user("m1", "第一条", 1.0), _user("m2", "第二条", 2.0)]
+    )
 
     assert ledger.get_message_id_by_quote_no(GROUP_CHAT_ID, 1) == "m1"
     assert ledger.get_message_id_by_quote_no(GROUP_CHAT_ID, 2) == "m2"
     assert ledger.get_message_id_by_quote_no(GROUP_CHAT_ID, 9) == ""
 
 
-def test_renumber_after_compaction_restarts_from_one(ledger):
-    ledger.add_messages(
-        GROUP_CHAT_ID,
-        [_user("m1", "第一条", 1.0), _user("m2", "第二条", 2.0), _user("m3", "第三条", 3.0)],
+def test_quote_numbers_keep_original_after_history_trim(ledger):
+    """历史超 4000 字丢最旧之后，剩下的消息编号保持原值，不从头重排。
+
+    这是新旧行为真正分叉的场景：重排会把 m15 变成 #1，不复位则保持 #15。
+    """
+    for i in range(1, 81):
+        ledger.add_messages(GROUP_CHAT_ID, [_user(f"m{i}", "长" * 200, float(i))])
+    before = {
+        m["source_message_id"]: m.get("quote_no")
+        for m in ledger.get_all_messages(GROUP_CHAT_ID)
+    }
+
+    assert ledger.organize_on_group_enter(GROUP_CHAT_ID, keep_from_timestamp=79.0)
+
+    messages = ledger.get_all_messages(GROUP_CHAT_ID)
+    sources = [m["source_message_id"] for m in messages]
+    # 最旧的历史被 4000 字预算整条丢弃
+    assert "m1" not in sources
+    # 留在账本里的每条，编号仍是整理前的值
+    for m in messages:
+        assert m["quote_no"] == before[m["source_message_id"]]
+
+
+def test_quote_numbers_survive_real_compaction(ledger):
+    """真走一次入场整理：窗口内编号不变，新消息接着往后编。
+
+    不用 set_messages 模拟压缩，直接调 organize_on_group_enter，确保锁的是
+    「整理路径不重排」这个行为本身。
+    """
+    for i in range(1, 8):
+        ledger.add_messages(GROUP_CHAT_ID, [_user(f"m{i}", f"第{i}条", float(i))])
+
+    before = {
+        m["source_message_id"]: m.get("quote_no")
+        for m in ledger.get_all_messages(GROUP_CHAT_ID)
+    }
+    assert before == {f"m{i}": i for i in range(1, 8)}
+
+    # 触发点之前的滑出窗口，之后原样留在窗口
+    assert ledger.organize_on_group_enter(GROUP_CHAT_ID, keep_from_timestamp=6.0)
+
+    messages = ledger.get_all_messages(GROUP_CHAT_ID)
+    assert [m["source_message_id"] for m in messages] == ["m6", "m7"]
+    # 窗口内每条编号仍是整理前的值，没有被重排
+    for m in messages:
+        assert m["quote_no"] == before[m["source_message_id"]]
+
+    # 滑出的 m1 彻底没了，编号也不会被回收
+    assert "m1" not in {m["source_message_id"] for m in messages}
+
+    # 新消息接着往后编，不回头占用已丢的编号
+    ledger.add_messages(GROUP_CHAT_ID, [_user("m8", "第八条", 8.0)])
+    newest = next(
+        m
+        for m in ledger.get_all_messages(GROUP_CHAT_ID)
+        if m["source_message_id"] == "m8"
     )
-    # 模拟压缩：只留下后两条
-    remaining = [m for m in ledger.get_all_messages(GROUP_CHAT_ID) if m["source_message_id"] != "m1"]
-    ledger.set_messages(GROUP_CHAT_ID, remaining)
-
-    ledger.renumber_quote_messages(GROUP_CHAT_ID)
-
-    numbers = {m["source_message_id"]: m.get("quote_no") for m in ledger.get_all_messages(GROUP_CHAT_ID)}
-    assert numbers == {"m2": 1, "m3": 2}
-    assert ledger.get_message_id_by_quote_no(GROUP_CHAT_ID, 1) == "m2"
-    assert ledger.get_message_id_by_quote_no(GROUP_CHAT_ID, 3) == ""
+    assert newest["quote_no"] == 8
 
 
 # ---------------------------------------------------------------------------

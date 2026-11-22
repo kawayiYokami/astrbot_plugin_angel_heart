@@ -86,8 +86,6 @@ def test_other_content_does_not_reset_window_accumulation(monkeypatch, content):
     {"role": "assistant"},
     {"role": "tool"},
     {"kind": "context_summary"},
-    {"kind": "summary_context"},
-    {"kind": "context_compaction"},
 ])
 def test_assistant_tools_and_summaries_do_not_change_accumulation(monkeypatch, extra):
     messages = [message("one"), message("ignored", "other", **extra), message("two")]

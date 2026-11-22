@@ -36,6 +36,5 @@ def test_summary_message_processed_as_user_role():
 
 
 def test_all_summary_kinds_recognized():
-    for kind in ("context_summary", "summary_context", "context_compaction"):
-        assert _is_summary_message({"role": "user", "kind": kind}) is True
+    assert _is_summary_message({"role": "user", "kind": "context_summary"}) is True
     assert _is_summary_message({"role": "user", "sender_name": "红豆"}) is False

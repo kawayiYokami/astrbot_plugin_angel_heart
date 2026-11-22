@@ -14,7 +14,7 @@ from .utils.message_hits import (
 
 # 上下文整理产出的摘要消息以 user 角色存在账本里，但它不是任何人说的话，
 # 任何「扫描用户消息」的判断都必须把它排除。
-SUMMARY_MESSAGE_KINDS = ("context_summary", "summary_context", "context_compaction")
+SUMMARY_MESSAGE_KINDS = ("context_summary",)
 
 
 def _is_summary_message(msg: Dict) -> bool:
@@ -120,7 +120,14 @@ class StatusChecker:
             return None
 
     def _get_latest_user_message(self, chat_id: str) -> Optional[Dict]:
-        """获取最新的用户消息（过滤 assistant/tool/system）"""
+        """获取账本里最新的用户消息（过滤 assistant/tool/system）。
+
+        这是**账本视角**的最新 user，不是当前轮输入。当前轮消息走
+        `req.prompt` / `event.message_str`，不经过账本压缩，也不靠这个函数取。
+
+        压缩不会让它取错：整理永远保留最近的消息，当前轮一定在当前块里，
+        所以取到的仍是同一条，只是可能被折成历史条目（正文截断）。
+        """
         try:
             ledger = self.angel_context.conversation_ledger
             all_messages = ledger.get_all_messages(chat_id)
@@ -251,7 +258,9 @@ class StatusChecker:
             if isinstance(metadata, dict) and "hits" in metadata:
                 if metadata_has_hit(metadata, "at_self"):
                     return True
-                if self._alias_detection_enabled(chat_id) and metadata_has_hit(metadata, "alias"):
+                if self._alias_detection_enabled(chat_id) and metadata_has_hit(
+                    metadata, "alias"
+                ):
                     return self._accept_alias_wake(event, chat_id)
                 return False
 
@@ -271,7 +280,9 @@ class StatusChecker:
                     qq = getattr(component, "qq", None)
                     if qq is None:
                         continue
-                    if str(qq) == self_id and ("At" in cls_name or "at" in cls_name.lower()):
+                    if str(qq) == self_id and (
+                        "At" in cls_name or "at" in cls_name.lower()
+                    ):
                         return True
             except Exception:
                 pass
@@ -284,10 +295,14 @@ class StatusChecker:
                 body_text = ""
             if not body_text:
                 try:
-                    body_text = extract_plain_body_from_components(event.get_messages() or [])
+                    body_text = extract_plain_body_from_components(
+                        event.get_messages() or []
+                    )
                 except Exception:
                     body_text = ""
-            return self._detect_wake_word(body_text, chat_id) and self._accept_alias_wake(event, chat_id)
+            return self._detect_wake_word(
+                body_text, chat_id
+            ) and self._accept_alias_wake(event, chat_id)
         except Exception as e:
             logger.debug(f"AngelHeart: 当前事件点名判定失败: {e}")
             return False
@@ -322,10 +337,7 @@ class StatusChecker:
     def _alias_detection_enabled(self, chat_id: str) -> bool:
         """点名昵称检测是否启用。"""
         cm = self.config_manager.for_chat(chat_id)
-        return bool(
-            cm.enter_on_mention_only
-            or cm.force_reply_when_summoned
-        )
+        return bool(cm.enter_on_mention_only or cm.force_reply_when_summoned)
 
     def _detect_wake_word(self, message_content: str, chat_id: str) -> bool:
         """检测正文中是否包含点名昵称（大小写不敏感）。"""
@@ -348,15 +360,11 @@ class StatusChecker:
             if self.angel_context.is_leave_reply_in_cooldown(chat_id):
                 return ""
             cm = self.config_manager.for_chat(chat_id)
-            if (
-                cm.leave_echo_reply
-                and self._detect_echo_chamber(chat_id, message_id=message_id)
+            if cm.leave_echo_reply and self._detect_echo_chamber(
+                chat_id, message_id=message_id
             ):
                 return "echo_chamber"
-            if (
-                cm.leave_dense_reply
-                and self._detect_dense_conversation(chat_id)
-            ):
+            if cm.leave_dense_reply and self._detect_dense_conversation(chat_id):
                 return "dense_conversation"
         except Exception as e:
             logger.debug(f"AngelHeart[{chat_id}]: 离场应答检测失败: {e}")
@@ -374,7 +382,8 @@ class StatusChecker:
         content = message.get("content", "")
         if isinstance(content, list):
             if not content or any(
-                not isinstance(part, dict) or part.get("type") != "text"
+                not isinstance(part, dict)
+                or part.get("type") != "text"
                 or not isinstance(part.get("text"), str)
                 for part in content
             ):
@@ -398,7 +407,10 @@ class StatusChecker:
                 message = all_messages[index]
                 if message.get("role") != "user" or _is_summary_message(message):
                     continue
-                identity = str(message.get("source_message_id", message.get("message_id", "")) or "")
+                identity = str(
+                    message.get("source_message_id", message.get("message_id", ""))
+                    or ""
+                )
                 if requested_id is None or identity == requested_id:
                     target_index = index
                     break
@@ -419,7 +431,10 @@ class StatusChecker:
                     continue
                 if self._echo_message_text(message) != text:
                     continue
-                identity = str(message.get("source_message_id", message.get("message_id", "")) or "")
+                identity = str(
+                    message.get("source_message_id", message.get("message_id", ""))
+                    or ""
+                )
                 if identity and identity in seen:
                     continue
                 if identity:

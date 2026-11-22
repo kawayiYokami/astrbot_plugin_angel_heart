@@ -85,8 +85,21 @@ def _slice_messages_through_id(
     return []
 
 
+def _split_history_prefix(
+    dialogue: List[Dict], summary: str
+) -> Tuple[List[Dict], List[Dict]]:
+    """切出摘要前缀。
+
+    账本是内存态，重启即空，不存在旧格式消息；这里只认私聊产出的那一条
+    摘要消息。`summary` 参数保留只为调用方签名稳定。
+    """
+    if dialogue and dialogue[0].get("kind") == "context_summary":
+        return [dialogue[0]], dialogue[1:]
+    return [], dialogue
+
+
 def partition_dialogue(
-    ledger: 'ConversationLedger',
+    ledger: "ConversationLedger",
     chat_id: str,
     boundary_message_id: str = "",
 ) -> Tuple[List[Dict], List[Dict], float]:
@@ -115,29 +128,9 @@ def partition_dialogue(
     recent_dialogue.sort(key=lambda m: m.get("timestamp", 0))
     boundary_ts = recent_dialogue[-1].get("timestamp", 0.0) if recent_dialogue else 0.0
 
-    historical_context = []
-    if summary:
-        has_summary_msg = any(
-            m.get("kind") in ("context_summary", "summary_context", "context_compaction")
-            for m in recent_dialogue[:1]
-        )
-        if not has_summary_msg:
-            ts = recent_dialogue[0].get("timestamp", 0) if recent_dialogue else 0
-            historical_context = [
-                {
-                    "role": "user",
-                    "content": f"[当前摘要]\n{summary}",
-                    "sender_id": "system",
-                    "sender_name": "context_summary",
-                    "kind": "context_summary",
-                    "timestamp": max(0.0, float(ts) - 0.001) if ts else 0.0,
-                }
-            ]
-        else:
-            # 块内已有摘要消息：把它视作历史前缀，其余当 recent
-            historical_context = [recent_dialogue[0]]
-            recent_dialogue = recent_dialogue[1:]
-
+    historical_context, recent_dialogue = _split_history_prefix(
+        recent_dialogue, summary
+    )
     return historical_context, recent_dialogue, boundary_ts
 
 
@@ -188,7 +181,7 @@ def _generate_tool_description(tool_name: str, tool_args: Dict) -> str:
 
 
 def partition_dialogue_raw(
-    ledger: 'ConversationLedger',
+    ledger: "ConversationLedger",
     chat_id: str,
     boundary_message_id: str = "",
 ) -> Tuple[List[Dict], List[Dict], float]:
@@ -211,32 +204,13 @@ def partition_dialogue_raw(
     recent_dialogue = sorted(all_messages, key=lambda m: m.get("timestamp", 0))
     boundary_ts = recent_dialogue[-1].get("timestamp", 0.0) if recent_dialogue else 0.0
 
-    historical_context = []
-    if summary:
-        has_summary_msg = any(
-            m.get("kind") in ("context_summary", "summary_context", "context_compaction")
-            for m in recent_dialogue[:1]
-        )
-        if not has_summary_msg:
-            ts = recent_dialogue[0].get("timestamp", 0) if recent_dialogue else 0
-            historical_context = [
-                {
-                    "role": "user",
-                    "content": f"[当前摘要]\n{summary}",
-                    "sender_id": "system",
-                    "sender_name": "context_summary",
-                    "kind": "context_summary",
-                    "timestamp": max(0.0, float(ts) - 0.001) if ts else 0.0,
-                }
-            ]
-        else:
-            historical_context = [recent_dialogue[0]]
-            recent_dialogue = recent_dialogue[1:]
-
+    historical_context, recent_dialogue = _split_history_prefix(
+        recent_dialogue, summary
+    )
     return historical_context, recent_dialogue, boundary_ts
 
 
-def format_decision_xml(decision: 'SecretaryDecision') -> str:
+def format_decision_xml(decision: "SecretaryDecision") -> str:
     """
     生成系统决策 XML 字符串。
 
@@ -262,7 +236,7 @@ def format_decision_xml(decision: 'SecretaryDecision') -> str:
 
 def format_final_prompt(
     recent_dialogue: List[Dict],
-    decision: 'SecretaryDecision',
+    decision: "SecretaryDecision",
     alias: str = "AngelHeart",
     use_absolute_time: bool = True,
 ) -> str:

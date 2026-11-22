@@ -24,8 +24,7 @@ class DummyConfig(ConfigManager):
                 "context_compression": {
                     "max_conversation_tokens": 200,
                     "context_compression_threshold": 0.5,
-                    "content_retain_tokens": 80,
-                    "tool_retain_tokens": 40,
+                    "content_retain_tokens": 4000,
                     "forgetting_timeout": 0,
                 },
                 "timing": {},
@@ -100,39 +99,34 @@ def _organize(ledger, keep_from_timestamp):
 
 
 def _summary_message(ledger):
+    """取账本里第一条带图片的消息。
+
+    滑动窗口不再生成摘要：图片消息如果还在窗口内，就原样保留，
+    路径跟着消息走。
+    """
     messages = ledger.get_all_messages(CHAT_ID)
     assert messages
-    head = messages[0]
-    assert head.get("kind") == "context_summary"
-    return head
+    for msg in messages:
+        if ledger._collect_message_image_refs([msg]):
+            return msg
+    raise AssertionError("窗口内没有带图片的消息")
 
 
 class TestSummaryKeepsImagePath:
     @pytest.mark.asyncio
-    async def test_folded_image_path_appears_in_summary(self, ledger):
+    async def test_image_message_in_window_keeps_path(self, ledger):
+        """图片消息留在窗口内时，路径挂在消息上，能被引用收集到。"""
         cache_path = await _cache_path(ledger)
         ledger._get_or_create_ledger(CHAT_ID)["messages"] = [
             _image_message(1, cache_path),
             _text_message(2, "继续聊"),
         ]
 
-        _organize(ledger, keep_from_timestamp=2.0)
-
-        summary = _summary_message(ledger)
-        assert cache_path in summary["content"]
-
-    @pytest.mark.asyncio
-    async def test_summary_message_holds_image_refs(self, ledger):
-        cache_path = await _cache_path(ledger)
-        ledger._get_or_create_ledger(CHAT_ID)["messages"] = [
-            _image_message(1, cache_path),
-            _text_message(2, "继续聊"),
-        ]
-
-        _organize(ledger, keep_from_timestamp=2.0)
-
-        summary = _summary_message(ledger)
-        assert cache_path in summary.get("image_refs", [])
+        msgs = ledger.get_all_messages(CHAT_ID)
+        refs = []
+        for msg in msgs:
+            refs.extend(ledger._collect_message_image_refs([msg]))
+        assert cache_path in refs
 
     @pytest.mark.asyncio
     async def test_cached_file_survives_cleanup(self, ledger):
@@ -142,7 +136,8 @@ class TestSummaryKeepsImagePath:
             _text_message(2, "继续聊"),
         ]
 
-        _organize(ledger, keep_from_timestamp=2.0)
+        ledger._cleanup_unreferenced_media_cache(CHAT_ID)
+        ledger.image_cache.drain()
 
         from pathlib import Path
 
@@ -159,22 +154,24 @@ class TestSummaryKeepsImagePath:
             _text_message(2, "继续聊"),
         ]
 
-        _organize(ledger, keep_from_timestamp=2.0)
+        ledger._cleanup_unreferenced_media_cache(CHAT_ID)
+        ledger.image_cache.drain()
 
         assert not Path(cache_path).exists()
 
     @pytest.mark.asyncio
-    async def test_second_organize_inherits_refs(self, ledger):
+    async def test_image_evicted_from_window_is_cleaned(self, ledger):
+        """图片消息滑出窗口后，文件跟着清理——滑动窗口不再为旧图保底。"""
         cache_path = await _cache_path(ledger)
         ledger._get_or_create_ledger(CHAT_ID)["messages"] = [
             _image_message(1, cache_path),
             _text_message(2, "继续聊"),
         ]
-        _organize(ledger, keep_from_timestamp=2.0)
 
-        ledger.add_message(CHAT_ID, _text_message(3, "再聊一句"), should_prune=False)
-        _organize(ledger, keep_from_timestamp=3.0)
+        # 触发点之后没有图片，图片被挤出窗口
+        assert ledger.organize_on_group_enter(CHAT_ID, keep_from_timestamp=2.0) is True
+        ledger.image_cache.drain()
 
-        summary = _summary_message(ledger)
-        assert cache_path in summary["content"]
-        assert cache_path in summary.get("image_refs", [])
+        from pathlib import Path
+
+        assert not Path(cache_path).exists()

@@ -73,7 +73,7 @@ def format_reply_metadata(message: dict) -> str:
         lines.append(f"[本消息 ID: {source}]")
     if targets:
         lines.append(f"[本消息引用的目标消息 ID: {', '.join(targets)}]")
-    if message.get("kind") in ("context_summary", "summary_context", "context_compaction"):
+    if message.get("kind") == "context_summary":
         for relation in collect_reply_relations([message]):
             sender = relation["sender_id"] or "未知"
             targets_text = ", ".join(relation["reply_to_message_ids"])

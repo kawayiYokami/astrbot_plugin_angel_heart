@@ -26,7 +26,6 @@ class DummyConfig(ConfigManager):
                     "max_conversation_tokens": 200,
                     "context_compression_threshold": 0.5,
                     "content_retain_tokens": 80,
-                    "tool_retain_tokens": 40,
                     "forgetting_timeout": 0,
                 },
                 "timing": {},

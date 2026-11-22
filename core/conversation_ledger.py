@@ -7,12 +7,16 @@ import base64
 import os
 from PIL import Image
 from pathlib import Path
-from typing import List, Dict, Tuple
+from typing import List, Dict, Optional, Tuple
 from urllib.parse import unquote, urlparse
 from . import utils
 from .quote_target import is_quotable_message
-from .utils.message_utils import retain_complete_history_blocks
-from .utils.reply_metadata import collect_reply_relations, format_reply_metadata
+from .utils.message_utils import history_message_blocks, retain_complete_history_blocks
+from .utils.reply_metadata import (
+    collect_reply_relations,
+    format_reply_metadata,
+    normalize_reply_targets,
+)
 
 # 条件导入：当缺少astrbot依赖时使用Mock
 from astrbot.api import logger
@@ -24,29 +28,30 @@ class ConversationLedger:
     管理所有对话的完整历史，并以线程安全的方式处理状态。
     """
 
-    # 账本结构固定为 [摘要消息, 普通消息...]：摘要永远是第一条且只有一条。
-    SUMMARY_KINDS = ("context_summary", "summary_context", "context_compaction")
+    # 账本主形态是滑动窗口：只装最近的一段正文，工具不进窗口，滑出的直接丢弃。
+    # 私聊额外在头部保留一条摘要消息，它是上下文前缀，不参与预算、不参与压缩。
+    # 账本是内存态，重启即空，不存在旧格式消息，所以只认这一种 kind。
+    SUMMARY_KINDS = ("context_summary",)
     # 摘要展示前缀，仅用于让模型区分摘要与普通消息，不属于摘要正文。
     SUMMARY_CONTENT_PREFIX = "[当前摘要]"
-    # 规则摘要长度上限：超长时按消息条目整条丢弃，不切断单条消息。
-    RULE_SUMMARY_MAX_CHARS = 4000
-    # 发生丢弃时补在开头的提示，标明摘要被预算截断过。
-    SUMMARY_OMIT_MARKER = "（更早的摘要已按预算省略）"
-    # 摘要里每条消息之间用两个换行分隔，让条目边界清晰可辨。
+    # 条目之间用两个换行分隔，让边界清晰可辨。
     SUMMARY_BLOCK_SEPARATOR = "\n\n"
 
     def __init__(self, config_manager, data_dir: Path, astr_context=None):
         import bisect
-        self._lock = threading.Lock()
+
         # 专用于数据库操作的锁，保护并发访问 SQLite
         self._db_lock = threading.Lock()
         # 每个 chat_id 对应一个独立的账本
         self._ledgers: Dict[str, Dict] = {}
+        # 账本锁按会话独立：同一会话串行，不同会话互不阻塞
+        self._chat_locks: Dict[str, threading.RLock] = {}
         self.config_manager = config_manager
         self.astr_context = astr_context
 
         # 图片缓存管理器（插件自有目录，不依赖上游临时文件）
         from .image_cache import ImageCache
+
         self.image_cache = ImageCache(data_dir)
         # 会话账本是内存态，重启后无法可靠关联旧媒体引用，启动时清空运行期缓存。
         self.image_cache.clean_all()
@@ -144,11 +149,16 @@ class ConversationLedger:
                 parsed = urlparse(url)
                 path = unquote(parsed.path or "")
 
-                if '..' in path or path.startswith('/etc') or path.startswith('/sys'):
+                if ".." in path or path.startswith("/etc") or path.startswith("/sys"):
                     logger.warning(f"拒绝访问受限路径: {path}")
                     return b""
 
-                if os.name == 'nt' and len(path) > 2 and path[0] == '/' and path[2] == ':':
+                if (
+                    os.name == "nt"
+                    and len(path) > 2
+                    and path[0] == "/"
+                    and path[2] == ":"
+                ):
                     path = path[1:]
 
                 if not os.path.exists(path):
@@ -256,33 +266,43 @@ class ConversationLedger:
             self.BROKEN_IMAGE_CAPTION,
         )
 
+    def _get_chat_lock(self, chat_id: str) -> threading.RLock:
+        """按会话取账本锁：同一会话串行，不同会话互不阻塞。"""
+        lock = self._chat_locks.get(chat_id)
+        if lock is None:
+            lock = self._chat_locks.setdefault(chat_id, threading.RLock())
+        return lock
+
     def _get_or_create_ledger(self, chat_id: str) -> Dict:
         """获取或创建指定会话的账本。"""
-        with self._lock:
-            if chat_id not in self._ledgers:
-                self._ledgers[chat_id] = {
+        ledger = self._ledgers.get(chat_id)
+        if ledger is None:
+            ledger = self._ledgers.setdefault(
+                chat_id,
+                {
                     "messages": [],
                     "current_summary": "",  # 当前摘要（正式上下文前缀）
-                }
-            else:
-                self._ledgers[chat_id].setdefault("current_summary", "")
-                # 兼容清理旧字段
-                self._ledgers[chat_id].pop("last_processed_timestamp", None)
-            if chat_id not in self._compression_locks:
-                self._compression_locks[chat_id] = threading.Lock()
-            return self._ledgers[chat_id]
+                },
+            )
+        else:
+            ledger.setdefault("current_summary", "")
+            # 兼容清理旧字段
+            ledger.pop("last_processed_timestamp", None)
+        if chat_id not in self._compression_locks:
+            self._compression_locks.setdefault(chat_id, threading.Lock())
+        return ledger
 
     def _is_private_chat_id(self, chat_id: str) -> bool:
         return "FriendMessage" in (chat_id or "")
 
     def get_current_summary(self, chat_id: str) -> str:
         ledger = self._get_or_create_ledger(chat_id)
-        with self._lock:
+        with self._get_chat_lock(chat_id):
             return str(ledger.get("current_summary") or "")
 
     def set_current_summary(self, chat_id: str, summary: str) -> None:
         ledger = self._get_or_create_ledger(chat_id)
-        with self._lock:
+        with self._get_chat_lock(chat_id):
             ledger["current_summary"] = (summary or "").strip()
 
     def _get_compression_lock(self, chat_id: str) -> threading.Lock:
@@ -308,76 +328,9 @@ class ConversationLedger:
             return True
         if msg.get("role") == "user" and msg.get("sender_name") == "tool_result":
             return True
-        if msg.get("kind") in ("context_summary", "summary_context", "context_compaction"):
+        if msg.get("kind") in self.SUMMARY_KINDS:
             return False
         return False
-
-    def _build_rule_summary(self, old_summary: str, discarded: List[Dict], keep_tools: bool) -> str:
-        """群聊/回退用的规则摘要，不是 LLM 摘要。
-
-        摘要内容与普通消息的文本形态一致（`name: text` 行），因此新摘要 =
-        旧摘要正文 + 本轮丢弃的普通消息正文，直接按顺序拼接。
-        摘要类消息不会出现在 discarded 里（整理入口已把 messages[0] 排除在
-        整理范围外），所以旧摘要只会写一次，不会被重复计入。
-        """
-        blocks: List[str] = []
-        if old_summary:
-            blocks.append(old_summary.strip())
-        for msg in discarded:
-            if not keep_tools and self._is_tool_message(msg):
-                continue
-            role = msg.get("role", "user")
-            name = msg.get("sender_name") or msg.get("sender_id") or role
-            text = self._extract_message_text(msg)
-            lines: List[str] = []
-            if text:
-                # 控制单条消息体积，保证每条消息在摘要里占一行
-                if len(text) > 120:
-                    text = text[:120] + "…"
-                lines.append(f"{name}: {text}")
-            # 图片消息折叠后只留文字会丢掉图，附上本地缓存路径，
-            # 让模型知道这张图在哪；文件本身由摘要引用保证不被清理。
-            for ref in self._collect_message_image_refs([msg]):
-                lines.append(f"[图片] {ref}")
-            if lines:
-                blocks.append("\n".join(lines))
-        if not blocks:
-            return ""
-        summary = self.SUMMARY_BLOCK_SEPARATOR.join(blocks)
-        if len(summary) <= self.RULE_SUMMARY_MAX_CHARS:
-            return summary
-        return self._trim_rule_summary(blocks)
-
-    def _trim_rule_summary(self, blocks: List[str]) -> str:
-        """超长时按消息条目从最旧整条丢弃，直到不超上限。
-
-        每条消息在摘要里是完整的一行（或一组行），因此丢弃以条目为单位，
-        不会把某条消息切成半句。只有单个条目自身就超过预算时才单独截断它，
-        那种情况下截断它自己的尾部（保留最新内容）。
-        """
-        marker = self.SUMMARY_OMIT_MARKER
-        sep = self.SUMMARY_BLOCK_SEPARATOR
-        budget = max(0, self.RULE_SUMMARY_MAX_CHARS - len(marker) - 1)
-        kept = list(blocks)
-        while len(kept) > 1 and len(sep.join(kept)) > budget:
-            kept.pop(0)
-        # 只剩一条仍超预算：按行从最旧裁，尽量保住单条消息的完整性
-        if kept and len(kept[0]) > budget:
-            lines = kept[0].split("\n")
-            tail: List[str] = []
-            used = 0
-            for line in reversed(lines):
-                extra = len(line) + (1 if tail else 0)
-                if used + extra > budget:
-                    break
-                tail.append(line)
-                used += extra
-            if tail:
-                kept[0] = "\n".join(reversed(tail))
-            else:
-                kept[0] = kept[0][-budget:] if budget else ""
-        body = sep.join(kept)
-        return f"{marker}\n{body}" if body else marker
 
     def _extract_summary_body(self, msg: Dict) -> str:
         """取摘要消息里的摘要正文，去掉展示用前缀。
@@ -441,7 +394,6 @@ class ConversationLedger:
                     refs.append(ref)
         return list(dict.fromkeys(refs))
 
-
     def add_message(self, chat_id: str, message: Dict, should_prune: bool = False):
         """
         向指定会话添加一条新消息。
@@ -469,9 +421,9 @@ class ConversationLedger:
         if not messages:
             return
 
-        # 1. 同一把锁内写完整批，读者要么全见要么全不见
+        # 1. 同一把会话锁内写完整批，读者要么全见要么全不见
         ledger = self._get_or_create_ledger(chat_id)
-        with self._lock:
+        with self._get_chat_lock(chat_id):
             for message in messages:
                 # is_processed 已退役，写入时清理旧字段
                 message.pop("is_processed", None)
@@ -507,17 +459,17 @@ class ConversationLedger:
         """
         ledger = self._get_or_create_ledger(chat_id)
         should_cleanup_cache = False
-        with self._lock:
+        with self._get_chat_lock(chat_id):
             return ledger["messages"].copy()  # 返回副本避免外部修改
 
     def get_all_chat_ids(self) -> List[str]:
         """返回已知会话 ID 列表（有消息记录或摘要的会话）。"""
-        with self._lock:
-            return [
-                chat_id
-                for chat_id, ledger in self._ledgers.items()
-                if ledger.get("messages") or ledger.get("current_summary")
-            ]
+        # 跨会话只读：取快照遍历，不持任何锁
+        return [
+            chat_id
+            for chat_id, ledger in list(self._ledgers.items())
+            if ledger.get("messages") or ledger.get("current_summary")
+        ]
 
     def _assign_quote_no(self, chat_id: str, message: Dict) -> None:
         """给可引用的群友消息分配编号。
@@ -534,7 +486,7 @@ class ConversationLedger:
 
     def get_message_id_by_quote_no(self, chat_id: str, quote_no: int) -> str:
         """按编号查原始消息 ID；编号不存在或已被压缩掉时返回空串。"""
-        with self._lock:
+        with self._get_chat_lock(chat_id):
             ledger = self._ledgers.get(chat_id)
             if not ledger:
                 return ""
@@ -542,21 +494,6 @@ class ConversationLedger:
                 if message.get("quote_no") == quote_no:
                     return str(message.get("source_message_id", "") or "")
         return ""
-
-    def renumber_quote_messages(self, chat_id: str) -> None:
-        """按当前账本顺序重排编号，压缩后调用。
-
-        只有留在账本里的消息会被重新编号，已被压缩掉的编号自然失效。
-        """
-        with self._lock:
-            self._quote_cursors[chat_id] = 0
-            ledger = self._ledgers.get(chat_id)
-            if not ledger:
-                return
-            for message in ledger["messages"]:
-                message.pop("quote_no", None)
-            for message in ledger["messages"]:
-                self._assign_quote_no(chat_id, message)
 
     def set_messages(self, chat_id: str, messages: List[Dict]):
         """
@@ -568,7 +505,7 @@ class ConversationLedger:
             messages: 新的消息列表
         """
         ledger = self._get_or_create_ledger(chat_id)
-        with self._lock:
+        with self._get_chat_lock(chat_id):
             ledger["messages"] = messages.copy()  # 保存副本避免外部修改
 
     def get_context_snapshot(
@@ -578,36 +515,13 @@ class ConversationLedger:
         return utils.partition_dialogue(self, chat_id, boundary_message_id)
 
     def get_formal_context(self, chat_id: str) -> List[Dict]:
-        """正式上下文：当前摘要 + 当前连续消息块。"""
+        """正式上下文：账本里的消息。
+
+        压缩只保留最近那批，不生成摘要，所以这里不需要再补任何前缀。
+        """
         ledger = self._get_or_create_ledger(chat_id)
-        with self._lock:
-            summary = str(ledger.get("current_summary") or "").strip()
-            messages = [m.copy() for m in ledger.get("messages", [])]
-        if not summary:
-            return messages
-        # 若消息块开头已有摘要消息，不再重复插入
-        if messages and messages[0].get("kind") in (
-            "context_summary",
-            "summary_context",
-            "context_compaction",
-        ):
-            return messages
-        ts = messages[0].get("timestamp", time.time()) if messages else time.time()
-        summary_refs: List[str] = []
-        summary_reply_relations: List[Dict] = []
-        for msg in messages:
-            if msg.get("kind") in (
-                "context_summary",
-                "summary_context",
-                "context_compaction",
-            ):
-                summary_refs = self._collect_message_image_refs([msg])
-                summary_reply_relations = collect_reply_relations([msg])
-                break
-        summary_message = self._make_summary_message(
-            summary, ts, summary_refs, summary_reply_relations
-        )
-        return [summary_message] + messages
+        with self._get_chat_lock(chat_id):
+            return [m.copy() for m in ledger.get("messages", [])]
 
     def organize_context(
         self,
@@ -615,25 +529,24 @@ class ConversationLedger:
         mode: str = "auto",
         *,
         keep_from_timestamp: float | None = None,
-        llm_summary: str | None = None,
     ) -> bool:
         """
         会话整理入口（可上锁）。
 
         mode:
-        - auto: 私聊优先 LLM 摘要结果（若提供），否则规则收口；群聊规则整理
+        - auto: 私聊走安全规则回退；群聊规则整理
         - group_rule: 群聊规则整理
-        - private_llm: 使用传入的 llm_summary 做私聊摘要提交
-        - private_fallback: 私聊摘要失败时的安全规则回退
+        - private_fallback: 私聊安全规则回退（LLM 失败或不可用时的兜底）
+
+        私聊的 LLM 摘要走 maybe_llm_compress_private。这里的 private_fallback
+        也会走到 _rule_organize，但摘要消息在保留侧，不会被清掉。
         """
-        is_private = self._is_private_chat_id(chat_id)
         if mode == "auto":
-            if is_private and llm_summary:
-                mode = "private_llm"
-            elif is_private:
-                mode = "private_fallback"
-            else:
-                mode = "group_rule"
+            mode = (
+                "private_fallback"
+                if self._is_private_chat_id(chat_id)
+                else "group_rule"
+            )
 
         lock = self._get_compression_lock(chat_id)
         if not lock.acquire(blocking=False):
@@ -641,39 +554,17 @@ class ConversationLedger:
             return False
 
         try:
-            if mode == "private_llm":
-                organized = self._commit_summary_and_block(
-                    chat_id,
-                    summary_text=llm_summary or "",
-                    keep_tools=True,
-                    keep_from_timestamp=keep_from_timestamp,
-                    reason="private_llm",
-                )
-            elif mode == "private_fallback":
-                organized = self._rule_organize(
-                    chat_id,
-                    keep_tools=True,
-                    keep_from_timestamp=keep_from_timestamp,
-                    reason="private_fallback",
-                )
-            else:
-                # group_rule: 超时才全清工具，否则保留尾部工具（对齐“超过一定时间才丢”）
-                is_timeout = self._is_forgetting_timeout(chat_id)
-                keep_tools = not is_timeout
-                reason = "group_rule_timeout" if is_timeout else "group_rule"
-                organized = self._rule_organize(
-                    chat_id,
-                    keep_tools=keep_tools,
-                    keep_from_timestamp=keep_from_timestamp,
-                    reason=reason,
-                )
+            reason = "private_fallback" if mode == "private_fallback" else "group_rule"
+            organized = self._rule_organize(
+                chat_id,
+                keep_from_timestamp=keep_from_timestamp,
+                reason=reason,
+            )
         finally:
             lock.release()
 
-        if organized:
-            # 压缩后按剩余消息重排编号：模型上一轮看到的 #3 若已被压缩掉，
-            # 这一轮不会再指向别人，而是从 #1 重新开始。
-            self.renumber_quote_messages(chat_id)
+        # 编号不复位：被精简的条目保留原编号，新消息继续往后递增，
+        # 所以模型上一轮看到的 #n 永远不会在下一轮指向别人。
         return organized
 
     def organize_on_group_enter(
@@ -687,22 +578,19 @@ class ConversationLedger:
         try:
             organized = self._rule_organize(
                 chat_id,
-                keep_tools=False,
                 keep_from_timestamp=keep_from_timestamp,
                 reason="group_enter",
             )
         finally:
             lock.release()
 
-        if organized:
-            self.renumber_quote_messages(chat_id)
+        # 同 organize_context：编号单调递增，压缩后不重排
         return organized
 
     async def maybe_llm_compress_private(
         self, chat_id: str, provider_text_chat
     ) -> bool:
-        """
-        私聊主动 LLM 摘要压缩。
+        """私聊调度压缩：先清出拿去摘要的，解锁后再调模型，摘要回来插在最前面。
 
         provider_text_chat: async (prompt:str) -> str
         """
@@ -716,75 +604,114 @@ class ConversationLedger:
             return False
 
         try:
-            formal = self.get_formal_context(chat_id)
-            if len(formal) < self.MIN_RETAIN_COUNT:
-                return False
+            ledger = self._get_or_create_ledger(chat_id)
+            with self._get_chat_lock(chat_id):
+                messages = list(ledger.get("messages") or [])
+                if len(messages) < self.MIN_RETAIN_COUNT:
+                    return False
 
-            # 保留最近正文预算，其余交给 LLM 摘要
-            relation_budget = self._count_tokens_in_text(format_reply_metadata({
-                "kind": "context_summary",
-                "reply_relations": collect_reply_relations(formal),
-            }))
-            content_budget = max(
-                0, self.config_manager.context_content_retain_tokens - relation_budget
-            )
-            retained = []
-            used = 0
-            for msg in reversed(formal):
-                # 私聊工具有价值，可进入保留候选
-                tokens = self._count_message_tokens(msg)
-                if used + tokens <= content_budget or len(retained) < self.MIN_RETAIN_COUNT:
-                    retained.append(msg)
-                    used += tokens
-                else:
-                    break
-            retained.reverse()
-            retained = retain_complete_history_blocks(formal, retained)
-            retained_ids = {id(m) for m in retained}
-            discarded = [m for m in formal if id(m) not in retained_ids]
-
-            if not discarded:
-                return False
-
-            prompt = self._build_private_summary_prompt(
-                old_summary=self.get_current_summary(chat_id),
-                discarded=discarded,
-            )
-            try:
-                summary_text = await provider_text_chat(prompt)
-                summary_text = (summary_text or "").strip()
-            except Exception as e:
-                logger.warning(f"AngelHeart[{chat_id}]: 私聊 LLM 摘要失败，安全回退: {e}")
-                summary_text = ""
-
-            if not summary_text:
-                # 失败：安全规则回退，不提交半成品
-                return self._rule_organize(
-                    chat_id,
-                    keep_tools=True,
-                    reason="private_llm_failed_fallback",
+                # 摘要里的引用关系要占预算，先从上下文预算里扣掉
+                relation_budget = self._count_tokens_in_text(
+                    format_reply_metadata(
+                        {
+                            "kind": "context_summary",
+                            "reply_relations": collect_reply_relations(messages),
+                        }
+                    )
+                )
+                budget = max(
+                    0,
+                    self.config_manager.context_content_retain_tokens
+                    - relation_budget,
                 )
 
-            # retained 来自 formal 尾部预算，提交时按条数保留后缀，避免 timestamp 下界误捞
-            keep_count = len(
-                [
-                    m
-                    for m in retained
-                    if m.get("kind")
-                    not in ("context_summary", "summary_context", "context_compaction")
+                # 判断哪些消息拿去压缩：10K 线左侧那批
+                pending, retained = self._split_by_budget(messages, budget)
+                if not pending:
+                    return False
+
+                # 清空拿去压缩的：账本只留右侧，期间新入账的自然接在后面
+                ledger["messages"] = retained
+                summary_image_refs = self._collect_message_image_refs(pending)
+                reply_relations = collect_reply_relations(pending)
+                # 摘要时间戳取保留侧第一条正文，不能取旧摘要（它更早）
+                body = [
+                    m for m in retained if m.get("kind") not in self.SUMMARY_KINDS
                 ]
+                summary_ts = (
+                    body[0].get("timestamp", time.time()) if body else time.time()
+                )
+
+            # 锁已放开，本会话照常入账
+            summary_meta = {
+                "timestamp": summary_ts,
+                "image_refs": summary_image_refs,
+                "reply_relations": reply_relations,
+            }
+            compressed, summary_text = await self._compress_private(
+                pending,
+                budget,
+                provider_text_chat,
+                old_summary=self.get_current_summary(chat_id),
+                summary_meta=summary_meta,
             )
-            return self._commit_summary_and_block(
-                chat_id,
-                summary_text=summary_text,
-                keep_tools=True,
-                keep_count=keep_count,
-                reason="private_llm",
-            )
+
+            # 压缩结果插在最前面，旧摘要被替换掉
+            with self._get_chat_lock(chat_id):
+                kept = [
+                    m
+                    for m in (ledger.get("messages") or [])
+                    if m.get("kind") not in self.SUMMARY_KINDS
+                ]
+                ledger["messages"] = compressed + kept
+                ledger["current_summary"] = summary_text
+                self._last_compression_time[chat_id] = time.time()
+
+            self._cleanup_unreferenced_media_cache(chat_id)
+            return True
         finally:
             lock.release()
 
-    def _build_private_summary_prompt(self, old_summary: str, discarded: List[Dict]) -> str:
+    async def _compress_private(
+        self,
+        messages: List[Dict],
+        budget: int,
+        provider_text_chat,
+        *,
+        old_summary: str,
+        summary_meta: Dict,
+    ) -> tuple[List[Dict], str]:
+        """私聊压缩器：方法1 走 LLM 摘要，不行就降级到方法2（群聊压缩）。
+
+        返回 (写进账本的头部内容, 新的 current_summary)。
+        降级时头部内容是一组原始消息，current_summary 为空。
+        """
+        prompt = self._build_private_summary_prompt(
+            old_summary=old_summary,
+            discarded=messages,
+        )
+        try:
+            summary_text = await provider_text_chat(prompt)
+            summary_text = (summary_text or "").strip()
+        except Exception as e:
+            logger.warning(f"私聊 LLM 摘要失败，降级规则压缩: {e}")
+            summary_text = ""
+
+        if summary_text:
+            summary_message = self._make_summary_message(
+                summary_text,
+                summary_meta.get("timestamp", time.time()),
+                summary_meta.get("image_refs"),
+                summary_meta.get("reply_relations"),
+            )
+            return [summary_message], summary_text
+
+        # 方法2：群聊那套规则压缩，去工具 + 按预算留尾部
+        return self._compress_snapshot(messages, budget), ""
+
+    def _build_private_summary_prompt(
+        self, old_summary: str, discarded: List[Dict]
+    ) -> str:
         lines = []
         if old_summary:
             lines.append(f"已有摘要：\n{old_summary}")
@@ -811,195 +738,124 @@ class ConversationLedger:
             f"{body}"
         )
 
+    def _split_by_budget(
+        self,
+        messages: List[Dict],
+        budget: int,
+        *,
+        keep_from_timestamp: float | None = None,
+    ) -> tuple[List[Dict], List[Dict]]:
+        """按上下文预算把消息切成 (待压缩, 保留)。
+
+        从最新往前收到预算为止，收下的留在账本，没收下的就是待压缩那批。
+        工具块在选块阶段就不进候选，所以保留区天然不含工具。
+
+        摘要消息（`kind` 属于 `SUMMARY_KINDS`）不参与预算，直接放在保留侧
+        头部——它是上下文前缀，不是可压缩的对话。私聊账本里它恒在第一位。
+        """
+        summary_messages = [
+            m for m in messages if m.get("kind") in self.SUMMARY_KINDS
+        ]
+        history = [m for m in messages if m.get("kind") not in self.SUMMARY_KINDS]
+        if not history:
+            return [], summary_messages
+
+        kept_blocks: List[List[Dict]] = []
+        used_tokens = 0
+        for block in reversed(history_message_blocks(history)):
+            if any(self._is_tool_message(m) for m in block):
+                # 工具不进窗口：滑动窗口只装对话
+                continue
+            if keep_from_timestamp is not None and any(
+                m.get("timestamp", 0) < keep_from_timestamp for m in block
+            ):
+                # 入场整理：触发点之前不进当前块
+                continue
+            tokens = sum(self._count_message_tokens(m) for m in block)
+            if (
+                used_tokens + tokens <= budget
+                or len(kept_blocks) < self.MIN_RETAIN_COUNT
+            ):
+                kept_blocks.append(block)
+                used_tokens += tokens
+            else:
+                break
+
+        right = [m for block in reversed(kept_blocks) for m in block]
+        right.sort(key=lambda m: m.get("timestamp", 0))
+        # 有明确 keep_from 时，不回退成“最近 N 条”，避免把入场前历史再带回来
+        if (
+            keep_from_timestamp is None
+            and len(right) < self.MIN_RETAIN_COUNT
+            and len(history) >= self.MIN_RETAIN_COUNT
+        ):
+            non_tools = [m for m in history if not self._is_tool_message(m)]
+            right = non_tools[-self.MIN_RETAIN_COUNT :] if non_tools else []
+
+        right = retain_complete_history_blocks(history, right)
+        right_ids = {id(m) for m in right}
+        left = [m for m in history if id(m) not in right_ids]
+        return left, summary_messages + right
+
+    def _compress_snapshot(
+        self,
+        messages: List[Dict],
+        budget: int,
+        *,
+        keep_from_timestamp: float | None = None,
+    ) -> List[Dict]:
+        """群聊压缩器：整批进去，去掉所有工具，按预算留尾部一组原始消息。"""
+        _left, right = self._split_by_budget(
+            messages, budget, keep_from_timestamp=keep_from_timestamp
+        )
+        return right
+
     def _rule_organize(
         self,
         chat_id: str,
         *,
-        keep_tools: bool,
         keep_from_timestamp: float | None = None,
         reason: str = "rule",
     ) -> bool:
+        """群聊非调度压缩：持会话锁 → 交出内容并清空 → 压缩 → 结果插回最前面。
+
+        压缩期间本会话的入账被锁挡住，插回时账本是空的，所以「插」等价于「覆盖」。
+        压缩只搬运消息对象，编号在入库时已定，不重排。
+        """
         ledger = self._get_or_create_ledger(chat_id)
-        with self._lock:
+        with self._get_chat_lock(chat_id):
             messages = list(ledger.get("messages") or [])
             if not messages:
                 return False
 
-            # 账本结构固定为 [摘要消息, 普通消息...]：旧摘要只从第一条取一次，
-            # 整理范围收窄到 messages[1:]，discarded 因此结构上不会出现摘要。
-            summary_message = None
-            if messages[0].get("kind") in self.SUMMARY_KINDS:
-                summary_message = messages[0]
-                old_summary = self._extract_summary_body(summary_message)
-                history = messages[1:]
-            else:
-                # 兼容旧账本/外部写入：消息里没有摘要消息时才用字段兜底
-                old_summary = str(ledger.get("current_summary") or "").strip()
-                history = messages
+            # 交出内容并清空
+            ledger["messages"] = []
 
-            if not history:
+            try:
+                left, retained = self._split_by_budget(
+                    messages,
+                    self.config_manager.context_content_retain_tokens,
+                    keep_from_timestamp=keep_from_timestamp,
+                )
+            except Exception:
+                # 压缩出错：原样放回，不能把账本留在空状态
+                ledger["messages"] = messages
+                raise
+
+            if not left:
+                # 没有可丢的：原样放回
+                ledger["messages"] = messages + ledger["messages"]
                 return False
 
-            relation_budget = self._count_tokens_in_text(format_reply_metadata({
-                "kind": "context_summary",
-                "reply_relations": collect_reply_relations(messages),
-            }))
-            content_budget = max(
-                0, self.config_manager.context_content_retain_tokens - relation_budget
-            )
-            tool_budget = self.config_manager.context_tool_retain_tokens if keep_tools else 0
-
-            retained_content = []
-            content_used = 0
-            for msg in reversed(history):
-                if self._is_tool_message(msg):
-                    continue
-                if keep_from_timestamp is not None and msg.get("timestamp", 0) < keep_from_timestamp:
-                    # 入场整理：触发点之前不进当前块
-                    continue
-                tokens = self._count_message_tokens(msg)
-                if content_used + tokens <= content_budget or len(retained_content) < self.MIN_RETAIN_COUNT:
-                    retained_content.append(msg)
-                    content_used += tokens
-                else:
-                    break
-            retained_content.reverse()
-
-            retained_tools = []
-            tool_used = 0
-            if keep_tools:
-                for msg in reversed(history):
-                    if not self._is_tool_message(msg):
-                        continue
-                    if keep_from_timestamp is not None and msg.get("timestamp", 0) < keep_from_timestamp:
-                        continue
-                    tokens = self._count_message_tokens(msg)
-                    if tool_used + tokens <= tool_budget:
-                        retained_tools.append(msg)
-                        tool_used += tokens
-                    else:
-                        break
-                retained_tools.reverse()
-
-            retained = retained_content + retained_tools
-            retained.sort(key=lambda m: m.get("timestamp", 0))
-            # 有明确 keep_from 时，不回退成“最近 N 条”，避免把入场前历史再带回来
-            if (
-                keep_from_timestamp is None
-                and len(retained) < self.MIN_RETAIN_COUNT
-                and len(history) >= self.MIN_RETAIN_COUNT
-            ):
-                if keep_tools:
-                    retained = history[-self.MIN_RETAIN_COUNT :]
-                else:
-                    # 群聊不记工具：fallback 也只取非 tool
-                    non_tools = [m for m in history if not self._is_tool_message(m)]
-                    retained = (
-                        non_tools[-self.MIN_RETAIN_COUNT :]
-                        if non_tools
-                        else []
-                    )
-
-            retained = retain_complete_history_blocks(history, retained)
-            retained_ids = {id(m) for m in retained}
-            discarded = [m for m in history if id(m) not in retained_ids]
-            # 旧摘要消息本身也要参与媒体引用/回复关系的继承，否则它引用的图会被清理
-            summary_sources = ([summary_message] if summary_message else []) + discarded
-
-            if not discarded and not old_summary:
-                return False
-
-            summary = self._build_rule_summary(old_summary, discarded, keep_tools=keep_tools)
-            # 字段是 messages[0] 的派生镜像，整理后同步一次保持一致
-            ledger["current_summary"] = summary
-            if summary:
-                ts = retained[0].get("timestamp", time.time()) if retained else time.time()
-                summary_image_refs = self._collect_message_image_refs(summary_sources)
-                retained = [
-                    self._make_summary_message(
-                        summary, ts, summary_image_refs, collect_reply_relations(summary_sources)
-                    )
-                ] + retained
-            original = len(messages)
-            ledger["messages"] = retained
+            # 插回最前面
+            ledger["messages"] = retained + ledger["messages"]
+            ledger["current_summary"] = ""
             self._last_compression_time[chat_id] = time.time()
-            logger.info(
-                f"AngelHeart[{chat_id}]: 上下文整理完成({reason}) "
-                f"{original} -> {len(retained)}，摘要长度={len(summary)}"
-            )
-        self._cleanup_unreferenced_media_cache(chat_id)
-        return True
 
-    def _commit_summary_and_block(
-        self,
-        chat_id: str,
-        *,
-        summary_text: str,
-        keep_tools: bool,
-        keep_from_timestamp: float | None = None,
-        keep_count: int | None = None,
-        reason: str = "summary",
-    ) -> bool:
-        summary_text = (summary_text or "").strip()
-        if not summary_text:
-            return self._rule_organize(
-                chat_id,
-                keep_tools=keep_tools,
-                keep_from_timestamp=keep_from_timestamp,
-                reason=f"{reason}_empty_fallback",
-            )
-
-        ledger = self._get_or_create_ledger(chat_id)
-        with self._lock:
-            messages = list(ledger.get("messages") or [])
-            summary_kinds = ("context_summary", "summary_context", "context_compaction")
-            base_messages = [m for m in messages if m.get("kind") not in summary_kinds]
-
-            if keep_count is not None:
-                # 私聊 LLM 摘要：保留尾部 N 条，避免 timestamp 下界误捞
-                n = max(0, int(keep_count))
-                retained = base_messages[-n:] if n else []
-            elif keep_from_timestamp is not None:
-                retained = [
-                    m for m in base_messages if m.get("timestamp", 0) >= keep_from_timestamp
-                ]
-            else:
-                relation_budget = self._count_tokens_in_text(format_reply_metadata({
-                    "kind": "context_summary",
-                    "reply_relations": collect_reply_relations(messages),
-                }))
-                content_budget = max(
-                    0, self.config_manager.context_content_retain_tokens - relation_budget
-                )
-                retained = []
-                used = 0
-                for msg in reversed(base_messages):
-                    if not keep_tools and self._is_tool_message(msg):
-                        continue
-                    tokens = self._count_message_tokens(msg)
-                    if used + tokens <= content_budget or len(retained) < self.MIN_RETAIN_COUNT:
-                        retained.append(msg)
-                        used += tokens
-                    else:
-                        break
-                retained.reverse()
-
-            retained = retain_complete_history_blocks(base_messages, retained)
-            ts = retained[0].get("timestamp", time.time()) if retained else time.time()
-            retained_ids = {id(m) for m in retained}
-            discarded = [m for m in messages if id(m) not in retained_ids]
-            summary_image_refs = self._collect_message_image_refs(discarded)
-            ledger["current_summary"] = summary_text
-            ledger["messages"] = [
-                self._make_summary_message(
-                    summary_text, ts, summary_image_refs, collect_reply_relations(discarded)
-                )
-            ] + retained
-            self._last_compression_time[chat_id] = time.time()
-            logger.info(
-                f"AngelHeart[{chat_id}]: 摘要提交完成({reason}) "
-                f"保留 {len(retained)} 条，摘要长度={len(summary_text)}"
-            )
+        logger.info(
+            f"AngelHeart[{chat_id}]: 上下文整理完成({reason}) "
+            f"{len(messages)} -> {len(retained)}"
+        )
         self._cleanup_unreferenced_media_cache(chat_id)
         return True
 
@@ -1034,7 +890,9 @@ class ConversationLedger:
                 cache_dhash = item.get("cache_dhash")
                 item_chat_id = msg.get("chat_id")
                 if cache_dhash and item_chat_id:
-                    add_path(str(self.image_cache.get_cached_path(item_chat_id, cache_dhash)))
+                    add_path(
+                        str(self.image_cache.get_cached_path(item_chat_id, cache_dhash))
+                    )
 
         image_refs = msg.get("image_refs", [])
         if isinstance(image_refs, list):
@@ -1045,16 +903,17 @@ class ConversationLedger:
 
     def _collect_referenced_cache_paths(self, chat_id: str = "") -> set[str]:
         """从当前账本收集仍被引用的插件媒体缓存路径。"""
-        with self._lock:
-            if chat_id:
-                ledger = self._ledgers.get(chat_id)
+        if chat_id:
+            ledger = self._ledgers.get(chat_id)
+            with self._get_chat_lock(chat_id):
                 messages = list(ledger["messages"]) if ledger else []
-            else:
-                messages = [
-                    msg
-                    for ledger in self._ledgers.values()
-                    for msg in ledger["messages"]
-                ]
+        else:
+            # 跨会话只读：逐会话取快照，不阻塞入账
+            messages = [
+                msg
+                for _cid, ledger in list(self._ledgers.items())
+                for msg in ledger.get("messages") or []
+            ]
 
         referenced_paths: set[str] = set()
         for msg in messages:
@@ -1083,9 +942,7 @@ class ConversationLedger:
         """
         if self._is_chat_busy(chat_id):
             self._pending_cleanup.add(chat_id)
-            logger.debug(
-                f"AngelHeart[{chat_id}]: 会话调度中，媒体缓存清理延后"
-            )
+            logger.debug(f"AngelHeart[{chat_id}]: 会话调度中，媒体缓存清理延后")
             return
         self.image_cache.schedule_cleanup(
             chat_id, self._collect_referenced_cache_paths(chat_id)
@@ -1113,74 +970,52 @@ class ConversationLedger:
         self._cleanup_unreferenced_media_cache(chat_id)
 
     def _enforce_total_message_limit(self):
-        """强制执行总消息数量限制。
-        如果超过限制，从最旧的消息开始删除。
+        """全局条数水位：超限时按最旧顺序依次压缩群聊会话，不删消息。
+
+        单会话条数由上下文压缩收口；这里是跨会话的保险丝。
+        压不动的会话直接跳过、继续下一个，避免永远卡在同一个会话上。
         """
-        affected_chat_ids = []
-        with self._lock:
-            # 计算当前总消息数
-            total_messages = 0
-            all_messages_with_info = []
+        # 每条会话的消息列表也拷一份，统计和选候选都基于同一时刻的视图
+        snapshot = [
+            (chat_id, list(ledger.get("messages") or []))
+            for chat_id, ledger in list(self._ledgers.items())
+        ]
+        total_messages = sum(len(msgs) for _cid, msgs in snapshot)
+        if total_messages <= self.TOTAL_MESSAGE_LIMIT:
+            return
 
-            for chat_id, ledger_data in self._ledgers.items():
-                for msg in ledger_data["messages"]:
-                    all_messages_with_info.append((msg["timestamp"], chat_id, msg))
-                    total_messages += 1
+        # 候选：有消息的群聊会话，按该会话最早消息的 timestamp 排序
+        candidates = []
+        for chat_id, messages in snapshot:
+            if self._is_private_chat_id(chat_id):
+                continue
+            if not messages:
+                continue
+            earliest = min(m.get("timestamp", 0) for m in messages)
+            candidates.append((earliest, chat_id))
 
-            # 如果超过总限制，删除最旧的消息
-            if total_messages > self.TOTAL_MESSAGE_LIMIT:
-                # 按时间戳排序（升序，最旧的在前）
-                all_messages_with_info.sort(key=lambda x: x[0])
+        if not candidates:
+            return
 
-                # 计算需要删除多少条消息
-                excess_count = total_messages - self.TOTAL_MESSAGE_LIMIT
+        candidates.sort()
+        for _earliest, chat_id in candidates:
+            if not self.organize_context(chat_id, mode="group_rule"):
+                # 这个会话压不动，换下一个
+                continue
+            total_messages = sum(
+                len(ledger.get("messages") or [])
+                for _cid, ledger in list(self._ledgers.items())
+            )
+            if total_messages <= self.TOTAL_MESSAGE_LIMIT:
+                logger.info(
+                    f"AngelHeart[{chat_id}]: 全局消息数回落到 "
+                    f"{total_messages}，停止压缩"
+                )
+                return
 
-                # 创建一个字典来跟踪每个会话需要删除的消息
-                messages_to_remove = {}
-                for i in range(excess_count):
-                    timestamp, chat_id, msg = all_messages_with_info[i]
-                    if chat_id not in messages_to_remove:
-                        messages_to_remove[chat_id] = []
-                    messages_to_remove[chat_id].append(msg)
-
-                # 从每个会话中删除对应的消息
-                for chat_id, msgs_to_remove in messages_to_remove.items():
-                    if chat_id in self._ledgers:
-                        ledger_data = self._ledgers[chat_id]
-                        # 从消息列表中删除需要移除的消息
-                        original_messages = ledger_data["messages"]
-                        # 使用消息的内存id或其他唯一标识来删除特定消息
-                        # 由于消息是字典，我们基于时间戳和内容来识别
-                        new_messages = []
-                        msgs_to_remove_copy = msgs_to_remove.copy()
-
-                        for msg in original_messages:
-                            # 检查是否是要删除的消息
-                            msg_to_remove_idx = -1
-                            for i, msg_to_remove in enumerate(msgs_to_remove_copy):
-                                # 比较时间戳和内容来确定是否是同一消息
-                                if (msg["timestamp"] == msg_to_remove["timestamp"] and
-                                    msg.get("content") == msg_to_remove.get("content") and
-                                    msg.get("role") == msg_to_remove.get("role")):
-                                    msg_to_remove_idx = i
-                                    break
-
-                            if msg_to_remove_idx != -1:
-                                # 这是要删除的消息，从待删除列表中移除
-                                msgs_to_remove_copy.pop(msg_to_remove_idx)
-                            else:
-                                # 保留这条消息
-                                new_messages.append(msg)
-
-                        ledger_data["messages"] = retain_complete_history_blocks(
-                            original_messages, new_messages
-                        )
-                        affected_chat_ids.append(chat_id)
-
-        for chat_id in affected_chat_ids:
-            self._cleanup_unreferenced_media_cache(chat_id)
-
-    def add_caption_to_message(self, chat_id: str, message_timestamp: float, caption: str) -> bool:
+    def add_caption_to_message(
+        self, chat_id: str, message_timestamp: float, caption: str
+    ) -> bool:
         """
         为指定会话中的特定消息添加图片转述
 
@@ -1193,12 +1028,16 @@ class ConversationLedger:
             bool: 是否成功添加转述
         """
         ledger = self._get_or_create_ledger(chat_id)
-        with self._lock:
+        with self._get_chat_lock(chat_id):
             # 查找对应时间戳的消息
             for message in ledger["messages"]:
-                if abs(message.get("timestamp", 0) - message_timestamp) < 0.001:  # 处理浮点数精度
+                if (
+                    abs(message.get("timestamp", 0) - message_timestamp) < 0.001
+                ):  # 处理浮点数精度
                     message["image_caption"] = caption
-                    image_refs = self._extract_image_refs_from_content(message.get("content"))
+                    image_refs = self._extract_image_refs_from_content(
+                        message.get("content")
+                    )
                     if image_refs:
                         message["image_refs"] = image_refs
 
@@ -1206,12 +1045,17 @@ class ConversationLedger:
                     if isinstance(message.get("content"), list):
                         # 移除所有 image_url 组件
                         message["content"] = [
-                            item for item in message["content"]
+                            item
+                            for item in message["content"]
                             if item.get("type") != "image_url"
                         ]
-                        logger.debug(f"AngelHeart[{chat_id}]: 已清空图片URL，避免重复转述")
+                        logger.debug(
+                            f"AngelHeart[{chat_id}]: 已清空图片URL，避免重复转述"
+                        )
 
-                    logger.debug(f"AngelHeart[{chat_id}]: 已为消息添加图片转述: {caption[:50]}...")
+                    logger.debug(
+                        f"AngelHeart[{chat_id}]: 已为消息添加图片转述: {caption[:50]}..."
+                    )
                     return True
             return False
 
@@ -1245,7 +1089,12 @@ class ConversationLedger:
 
     def _get_image_item_read_ref(self, item: dict) -> str:
         """提取图片读取引用，优先使用插件缓存路径。"""
-        for key in ("cache_path", "local_file_path", "original_file_url", "original_url"):
+        for key in (
+            "cache_path",
+            "local_file_path",
+            "original_file_url",
+            "original_url",
+        ):
             ref = item.get(key)
             if isinstance(ref, str) and ref:
                 return ref
@@ -1318,7 +1167,9 @@ class ConversationLedger:
             return "图片理解失败：视觉 Provider 未返回文字结果。"
         return result
 
-    async def generate_captions_for_chat(self, chat_id: str, caption_provider_id: str, astr_context=None) -> int:
+    async def generate_captions_for_chat(
+        self, chat_id: str, caption_provider_id: str, astr_context=None
+    ) -> int:
         """
         为指定会话中的所有未转述图片生成转述
 
@@ -1331,13 +1182,17 @@ class ConversationLedger:
             int: 成功转述的图片数量
         """
         if not astr_context:
-            logger.warning(f"AngelHeart[{chat_id}]: astr_context 为空，无法进行图片转述")
+            logger.warning(
+                f"AngelHeart[{chat_id}]: astr_context 为空，无法进行图片转述"
+            )
             return 0
 
         # 获取转述Provider
         caption_provider = astr_context.get_provider_by_id(caption_provider_id)
         if not caption_provider:
-            logger.error(f"AngelHeart[{chat_id}]: 无法找到图片转述Provider: {caption_provider_id}")
+            logger.error(
+                f"AngelHeart[{chat_id}]: 无法找到图片转述Provider: {caption_provider_id}"
+            )
             return 0
 
         # 获取配置
@@ -1350,7 +1205,7 @@ class ConversationLedger:
         ledger = self._get_or_create_ledger(chat_id)
         processed_count = 0
 
-        with self._lock:
+        with self._get_chat_lock(chat_id):
             # 确定最近 7 条消息的时间戳边界
             all_messages = ledger["messages"]
             recent_7 = all_messages[-7:] if len(all_messages) > 7 else all_messages
@@ -1360,11 +1215,14 @@ class ConversationLedger:
             messages_needing_caption = []
             expired_messages = []
             for message in all_messages:
-                if (message.get("role") == "user" and
-                    isinstance(message.get("content"), list) and
-                    not message.get("image_caption")):
-
-                    has_image = any(item.get("type") == "image_url" for item in message["content"])
+                if (
+                    message.get("role") == "user"
+                    and isinstance(message.get("content"), list)
+                    and not message.get("image_caption")
+                ):
+                    has_image = any(
+                        item.get("type") == "image_url" for item in message["content"]
+                    )
                     if has_image:
                         if message.get("timestamp", 0) >= recent_cutoff_ts:
                             messages_needing_caption.append(message)
@@ -1379,7 +1237,8 @@ class ConversationLedger:
                 msg["image_caption"] = self.EXPIRED_IMAGE_CAPTION
                 if isinstance(msg.get("content"), list):
                     msg["content"] = [
-                        item for item in msg["content"]
+                        item
+                        for item in msg["content"]
                         if item.get("type") != "image_url"
                     ]
                 processed_count += 1
@@ -1389,7 +1248,9 @@ class ConversationLedger:
                     f"AngelHeart[{chat_id}]: {len(expired_messages)} 条不在最近7条范围内的图片消息已标记过期"
                 )
 
-            logger.info(f"AngelHeart[{chat_id}]: 找到 {len(messages_needing_caption)} 条需要转述图片的消息")
+            logger.info(
+                f"AngelHeart[{chat_id}]: 找到 {len(messages_needing_caption)} 条需要转述图片的消息"
+            )
 
         # 逐一处理需要转述的消息（在锁外进行异步操作）
         for message in messages_needing_caption:
@@ -1401,7 +1262,9 @@ class ConversationLedger:
                         read_ref = self._get_image_item_read_ref(item)
                         if read_ref and read_ref != "[IMAGE_PLACEHOLDER]":
                             image_urls.append(read_ref)
-                            logger.debug(f"AngelHeart[{chat_id}]: 使用图片缓存引用进行转述: {read_ref[:100]}...")
+                            logger.debug(
+                                f"AngelHeart[{chat_id}]: 使用图片缓存引用进行转述: {read_ref[:100]}..."
+                            )
 
                 if image_urls:
                     # 我们只处理第一张图片的URL作为缓存键
@@ -1433,23 +1296,34 @@ class ConversationLedger:
                     # 2. 查询 SQLite dHash 缓存（在锁保护下执行）
                     if img_dhash:
                         with self._db_lock:
-                            self.db_cursor.execute("SELECT caption FROM image_content_cache WHERE dhash = ?", (img_dhash,))
+                            self.db_cursor.execute(
+                                "SELECT caption FROM image_content_cache WHERE dhash = ?",
+                                (img_dhash,),
+                            )
                             result = self.db_cursor.fetchone()
 
                         if result:
                             final_caption = result[0]
-                            logger.info(f"AngelHeart[{chat_id}]: 图片转述缓存命中 (dHash: {img_dhash}): {target_url[:50]}...")
+                            logger.info(
+                                f"AngelHeart[{chat_id}]: 图片转述缓存命中 (dHash: {img_dhash}): {target_url[:50]}..."
+                            )
 
                     if not final_caption:
                         # 3. 缓存未命中，调用 LLM
-                        logger.debug(f"AngelHeart[{chat_id}]: 缓存未命中(dHash: {img_dhash})，调用LLM转述URL: {target_url[:50]}...")
-                        caption_input_url = self._build_caption_image_data_url(raw_image_data)
+                        logger.debug(
+                            f"AngelHeart[{chat_id}]: 缓存未命中(dHash: {img_dhash})，调用LLM转述URL: {target_url[:50]}..."
+                        )
+                        caption_input_url = self._build_caption_image_data_url(
+                            raw_image_data
+                        )
                         if caption_input_url:
                             logger.debug(
                                 f"AngelHeart[{chat_id}]: 转述图片已压缩为 WEBP(quality=75, max_side=960)"
                             )
                         else:
-                            caption_input_url = self._build_original_image_data_url(raw_image_data)
+                            caption_input_url = self._build_original_image_data_url(
+                                raw_image_data
+                            )
                             if caption_input_url:
                                 logger.debug(
                                     f"AngelHeart[{chat_id}]: 压缩图片失败，回退使用原始 data URL 进行转述"
@@ -1486,14 +1360,20 @@ class ConversationLedger:
                                     with self._db_lock:
                                         self.db_cursor.execute(
                                             "INSERT OR REPLACE INTO image_content_cache (dhash, caption, timestamp) VALUES (?, ?, ?)",
-                                            (img_dhash, final_caption, time.time())
+                                            (img_dhash, final_caption, time.time()),
                                         )
                                         self.db_conn.commit()
-                                    logger.info(f"AngelHeart[{chat_id}]: 新图片转述已缓存 (dHash: {img_dhash}): {target_url[:50]}...")
+                                    logger.info(
+                                        f"AngelHeart[{chat_id}]: 新图片转述已缓存 (dHash: {img_dhash}): {target_url[:50]}..."
+                                    )
                                 except sqlite3.IntegrityError:
-                                    logger.debug(f"AngelHeart[{chat_id}]: 缓存写入冲突，已忽略")
+                                    logger.debug(
+                                        f"AngelHeart[{chat_id}]: 缓存写入冲突，已忽略"
+                                    )
                             else:
-                                logger.warning(f"AngelHeart[{chat_id}]: 图片dHash为空，无法写入缓存")
+                                logger.warning(
+                                    f"AngelHeart[{chat_id}]: 图片dHash为空，无法写入缓存"
+                                )
                         else:
                             logger.warning(f"AngelHeart[{chat_id}]: 图片转述返回空结果")
                             if not self._apply_broken_image_caption(
@@ -1508,11 +1388,17 @@ class ConversationLedger:
 
                     # 5. 将最终的转述结果（来自缓存或LLM）添加到消息中
                     if final_caption:
-                        if self.add_caption_to_message(chat_id, message["timestamp"], final_caption):
+                        if self.add_caption_to_message(
+                            chat_id, message["timestamp"], final_caption
+                        ):
                             processed_count += 1
-                            logger.info(f"AngelHeart[{chat_id}]: 图片转述成功: {final_caption[:50]}...")
+                            logger.info(
+                                f"AngelHeart[{chat_id}]: 图片转述成功: {final_caption[:50]}..."
+                            )
                         else:
-                            logger.warning(f"AngelHeart[{chat_id}]: 无法为消息添加转述结果")
+                            logger.warning(
+                                f"AngelHeart[{chat_id}]: 无法为消息添加转述结果"
+                            )
 
             except Exception as e:
                 logger.error(f"AngelHeart[{chat_id}]: 图片转述失败: {e}")
@@ -1526,7 +1412,9 @@ class ConversationLedger:
                 continue
 
         if processed_count > 0:
-            logger.info(f"AngelHeart[{chat_id}]: 图片转述完成，共处理 {processed_count} 张图片")
+            logger.info(
+                f"AngelHeart[{chat_id}]: 图片转述完成，共处理 {processed_count} 张图片"
+            )
 
         return processed_count
 
@@ -1548,12 +1436,15 @@ class ConversationLedger:
 
             has_images_needing_caption = False
             for message in all_messages:
-                if (message.get("role") == "user" and  # 只检查用户消息
-                    isinstance(message.get("content"), list) and
-                    not message.get("image_caption")):  # 还没有转述
-
+                if (
+                    message.get("role") == "user"  # 只检查用户消息
+                    and isinstance(message.get("content"), list)
+                    and not message.get("image_caption")
+                ):  # 还没有转述
                     # 检查是否包含图片
-                    has_image = any(item.get("type") == "image_url" for item in message["content"])
+                    has_image = any(
+                        item.get("type") == "image_url" for item in message["content"]
+                    )
                     if has_image:
                         has_images_needing_caption = True
                         break
@@ -1567,13 +1458,23 @@ class ConversationLedger:
                 try:
                     current_provider = astr_context.get_using_provider(chat_id)
                     if current_provider:
-                        modalities = current_provider.provider_config.get("modalities", None)
-                        if not modalities or not isinstance(modalities, list) or "image" in modalities:
-                            logger.debug(f"AngelHeart[{chat_id}]: 当前Provider支持图片，无需转述")
+                        modalities = current_provider.provider_config.get(
+                            "modalities", None
+                        )
+                        if (
+                            not modalities
+                            or not isinstance(modalities, list)
+                            or "image" in modalities
+                        ):
+                            logger.debug(
+                                f"AngelHeart[{chat_id}]: 当前Provider支持图片，无需转述"
+                            )
                             return False
                 except Exception:
                     # 如果获取当前Provider失败，保守处理，继续进行转述
-                    logger.debug(f"AngelHeart[{chat_id}]: 无法确定当前Provider能力，继续进行图片转述")
+                    logger.debug(
+                        f"AngelHeart[{chat_id}]: 无法确定当前Provider能力，继续进行图片转述"
+                    )
 
             # 3. 有图片且当前Provider不支持图片，需要转述
             logger.debug(f"AngelHeart[{chat_id}]: 发现需要转述的图片，准备进行图片转述")
@@ -1584,7 +1485,9 @@ class ConversationLedger:
             # 出错时保守处理，不进行转述
             return False
 
-    async def process_image_captions_if_needed(self, chat_id: str, caption_provider_id: str, astr_context=None) -> int:
+    async def process_image_captions_if_needed(
+        self, chat_id: str, caption_provider_id: str, astr_context=None
+    ) -> int:
         """
         如果需要，为指定会话中的图片生成转述（一步完成检查+处理）
 
@@ -1601,7 +1504,9 @@ class ConversationLedger:
             return 0
 
         if self.should_process_images(chat_id, astr_context):
-            return await self.generate_captions_for_chat(chat_id, caption_provider_id, astr_context)
+            return await self.generate_captions_for_chat(
+                chat_id, caption_provider_id, astr_context
+            )
 
         return 0
 
@@ -1654,7 +1559,12 @@ class ConversationLedger:
             return 0
 
         effective_limit = min(limits)
-        if provider_limit and configured_limit and provider_limit > 0 and configured_limit > 0:
+        if (
+            provider_limit
+            and configured_limit
+            and provider_limit > 0
+            and configured_limit > 0
+        ):
             logger.debug(
                 f"AngelHeart[{chat_id}]: 上下文上限取较小值 "
                 f"(插件={configured_limit}, 模型={provider_limit}, 生效={effective_limit})"
@@ -1706,7 +1616,7 @@ class ConversationLedger:
         if last_time == 0.0:
             # 从未压缩过，检查会话中最早消息的时间
             ledger = self._get_or_create_ledger(chat_id)
-            with self._lock:
+            with self._get_chat_lock(chat_id):
                 messages = ledger["messages"]
                 if not messages:
                     return False
@@ -1742,7 +1652,9 @@ class ConversationLedger:
 
         # 计算其他字符串字段
         for key, value in msg.items():
-            if key not in ["content", "timestamp", "is_processed"] and isinstance(value, str):
+            if key not in ["content", "timestamp", "is_processed"] and isinstance(
+                value, str
+            ):
                 total += self._count_tokens_in_text(value)
 
         total += self._count_tokens_in_text(format_reply_metadata(msg))
@@ -1760,7 +1672,7 @@ class ConversationLedger:
             int: 估算的Token数量
         """
         ledger = self._get_or_create_ledger(chat_id)
-        with self._lock:
+        with self._get_chat_lock(chat_id):
             total_tokens = 0
             messages = ledger["messages"]
 
@@ -1785,7 +1697,11 @@ class ConversationLedger:
 
                 # 添加其他字段的Token估算
                 for key, value in msg.items():
-                    if key not in ["content", "timestamp", "is_processed"] and isinstance(value, str):
+                    if key not in [
+                        "content",
+                        "timestamp",
+                        "is_processed",
+                    ] and isinstance(value, str):
                         total_tokens += self._count_tokens_in_text(value)
 
                 total_tokens += self._count_tokens_in_text(format_reply_metadata(msg))
@@ -1815,7 +1731,7 @@ class ConversationLedger:
 
         for char in text:
             # 中文字符（包括中文标点）
-            if '\u4e00' <= char <= '\u9fff' or char in '，。！？；：""''（）【】《》':
+            if "\u4e00" <= char <= "\u9fff" or char in '，。！？；：""（）【】《》':
                 chinese_chars += 1
             else:
                 english_chars += 1
@@ -1830,11 +1746,12 @@ class ConversationLedger:
 
     def close(self) -> None:
         """释放全部内存账本与 SQLite 句柄；允许重复调用。"""
-        with self._lock:
-            self._ledgers.clear()
-            self._quote_cursors.clear()
-            self._last_compression_time.clear()
-            self._compression_locks.clear()
+        # 卸载路径上不会再有入账，直接清空
+        self._ledgers.clear()
+        self._quote_cursors.clear()
+        self._last_compression_time.clear()
+        self._compression_locks.clear()
+        self._chat_locks.clear()
 
         with self._db_lock:
             cursor = self.db_cursor

@@ -69,7 +69,6 @@ def ledger(temp_dir):
     config = type("MockConfig", (), {
         "max_conversation_tokens": 5000,
         "context_content_retain_tokens": 3000,
-        "context_tool_retain_tokens": 1000,
         "enable_context_compression_for_chat_ids": [],
     })()
     lg = ConversationLedger(config, temp_dir)

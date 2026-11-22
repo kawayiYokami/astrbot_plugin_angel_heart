@@ -311,14 +311,8 @@
       },
       "content_retain_tokens": {
         "type": "int",
-        "description": "正文保留Token预算",
-        "hint": "压缩时从最新消息往前保留的正文消息Token数量。",
-        "default": 10000
-      },
-      "tool_retain_tokens": {
-        "type": "int",
-        "description": "工具消息保留Token预算",
-        "hint": "压缩时从最新消息往前保留的工具调用+结果消息Token数量。",
+        "description": "上下文保留Token预算",
+        "hint": "压缩时从最新消息往前保留的正文Token数量。",
         "default": 10000
       },
       "forgetting_timeout": {

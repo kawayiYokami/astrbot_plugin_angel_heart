@@ -80,7 +80,6 @@ def ledger():
         "max_conversation_tokens": 0,
         "context_compression_threshold": 0.8,
         "context_content_retain_tokens": 3000,
-        "context_tool_retain_tokens": 1000,
         "context_forgetting_timeout": 0,
     })()
     with tempfile.TemporaryDirectory() as td:
@@ -335,8 +334,7 @@ class TestCacheCleanupIntegration:
             "max_conversation_tokens": 0,
             "context_compression_threshold": 0.8,
             "context_content_retain_tokens": 3000,
-            "context_tool_retain_tokens": 1000,
-            "context_forgetting_timeout": 0,
+                "context_forgetting_timeout": 0,
         })()
         lg = ConversationLedger(config, tmp_path)
         try:

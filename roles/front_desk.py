@@ -52,7 +52,6 @@ from ..core.angel_heart_status import AngelHeartStatus, StatusChecker
 from ..core.debounce_manager import PROCESS, KILL
 
 
-
 class FrontDesk:
     """
     前台角色 - 专注的消息接收与缓存员
@@ -122,6 +121,11 @@ class FrontDesk:
 
         # 来源登记（见过的人群/私聊，供 WebUI 认群）；由 main.py 注入
         self.chat_sources = None
+
+        # 冷启动补种的幂等标记：同一会话在本次进程生命周期内只补一次。
+        # 账本是内存态，重启即丢，所以进程重启后这个集合也清空，正好对应
+        # 「重启失忆 → 重新补一次」的语义，不需要额外的失效逻辑。
+        self._supplemented_chats: set[str] = set()
 
         # 最近决策存储（每群最近一条，供 WebUI 状态栏）；由 main.py 注入
         self.last_decisions = None
@@ -210,7 +214,9 @@ class FrontDesk:
         return path
 
     def _get_file_component_name(self, component: File) -> str:
-        file_path = self._normalize_local_file_path(getattr(component, "file_", None) or "")
+        file_path = self._normalize_local_file_path(
+            getattr(component, "file_", None) or ""
+        )
         file_url = getattr(component, "url", None) or ""
         return (
             getattr(component, "name", None)
@@ -220,7 +226,9 @@ class FrontDesk:
         )
 
     async def _read_image_component_bytes(self, component: Image) -> tuple[bytes, str]:
-        source_ref = getattr(component, "url", None) or getattr(component, "file", None) or ""
+        source_ref = (
+            getattr(component, "url", None) or getattr(component, "file", None) or ""
+        )
         try:
             local_path = await component.convert_to_file_path()
             local_path = self._normalize_local_file_path(local_path)
@@ -242,7 +250,9 @@ class FrontDesk:
 
         return b"", source_ref
 
-    async def _build_cached_image_item(self, chat_id: str, component: Image) -> dict | None:
+    async def _build_cached_image_item(
+        self, chat_id: str, component: Image
+    ) -> dict | None:
         raw_bytes, source_ref = await self._read_image_component_bytes(component)
         if not raw_bytes:
             return None
@@ -273,7 +283,9 @@ class FrontDesk:
         }
 
     async def _resolve_file_component_path(self, component: File) -> str:
-        file_path = self._normalize_local_file_path(getattr(component, "file_", None) or "")
+        file_path = self._normalize_local_file_path(
+            getattr(component, "file_", None) or ""
+        )
         if file_path and os.path.exists(file_path):
             return os.path.abspath(file_path)
 
@@ -291,7 +303,9 @@ class FrontDesk:
         name = self._get_file_component_name(component)
         ext = Path(name).suffix.lower()
         if ext not in self.SUPPORTED_TEXT_FILE_EXTENSIONS:
-            logger.debug(f"AngelHeart[{chat_id}]: 不支持的文件类型 {ext}，已跳过: {name}")
+            logger.debug(
+                f"AngelHeart[{chat_id}]: 不支持的文件类型 {ext}，已跳过: {name}"
+            )
             return {"type": "text", "text": f"[不支持的文件类型: {name}]"}
 
         local_path = await self._resolve_file_component_path(component)
@@ -304,7 +318,9 @@ class FrontDesk:
             return {"type": "text", "text": f"[文件已失效: {name}]"}
 
         if size > self.MAX_TEXT_FILE_BYTES:
-            logger.debug(f"AngelHeart[{chat_id}]: 文本文件过大({size}bytes)，已跳过: {name}")
+            logger.debug(
+                f"AngelHeart[{chat_id}]: 文本文件过大({size}bytes)，已跳过: {name}"
+            )
             return {"type": "text", "text": f"[文件过大，不支持: {name}]"}
 
         cached_path = await self.context.conversation_ledger.image_cache.put_text_file(
@@ -351,7 +367,11 @@ class FrontDesk:
                 text_parts.append(component.text)
             elif isinstance(component, At):
                 # @消息的显示名也是消息内容的一部分，人类看到的就是 "@昵称"
-                name = getattr(component, "name", None) or getattr(component, "display", None) or ""
+                name = (
+                    getattr(component, "name", None)
+                    or getattr(component, "display", None)
+                    or ""
+                )
                 if name:
                     text_parts.append(f"@{name}")
             elif isinstance(component, File):
@@ -391,17 +411,26 @@ class FrontDesk:
                         content_list.append({"type": "text", "text": "[图片处理失败]"})
                 except Exception as e:
                     original_url = component.url or component.file or "未知URL"
-                    logger.debug(f"AngelHeart[{chat_id}]: 图片处理跳过，URL: {original_url}, 原因: {str(e)[:100]}")
+                    logger.debug(
+                        f"AngelHeart[{chat_id}]: 图片处理跳过，URL: {original_url}, 原因: {str(e)[:100]}"
+                    )
 
             elif isinstance(component, File):
                 if not collect_media:
                     # 只留文件名，不读文件正文：正文要下载并缓存拷贝，正是这里要省的
                     continue
                 try:
-                    content_list.append(await self._build_cached_file_text_item(chat_id, component))
+                    content_list.append(
+                        await self._build_cached_file_text_item(chat_id, component)
+                    )
                 except Exception as e:
                     logger.debug(f"AngelHeart[{chat_id}]: File 组件处理异常: {e}")
-                    content_list.append({"type": "text", "text": f"[文件处理异常: {getattr(component, 'name', '')}]"})
+                    content_list.append(
+                        {
+                            "type": "text",
+                            "text": f"[文件处理异常: {getattr(component, 'name', '')}]",
+                        }
+                    )
 
         # 4. 如果没有内容，创建一个空文本
         if not content_list:
@@ -419,13 +448,20 @@ class FrontDesk:
                     is_at_self = True
                     break
                 # 引用自己发的消息视为点名（QQ 上比 @ 更常用的召唤方式）
-                if isinstance(component, Reply) and str(component.sender_id or "") == self_id:
+                if (
+                    isinstance(component, Reply)
+                    and str(component.sender_id or "") == self_id
+                ):
                     is_at_self = True
                     break
                 # 兼容非 strict At 类型
                 qq = getattr(component, "qq", None)
                 cls_name = component.__class__.__name__
-                if qq is not None and str(qq) == self_id and ("At" in cls_name or "at" in cls_name.lower()):
+                if (
+                    qq is not None
+                    and str(qq) == self_id
+                    and ("At" in cls_name or "at" in cls_name.lower())
+                ):
                     is_at_self = True
                     break
         except Exception:
@@ -451,7 +487,8 @@ class FrontDesk:
 
         new_message = {
             "role": "user",
-            "echo_eligible": bool(body_text.strip()) and all(
+            "echo_eligible": bool(body_text.strip())
+            and all(
                 isinstance(component, (Plain, Reply)) for component in message_chain
             ),
             "content": content_list,  # 标准多模态列表
@@ -472,11 +509,13 @@ class FrontDesk:
             ),
         }
         # 只保存上游显式引用的 ID；引用链/图片按需读取，避免重复下载和历史递归展开。
-        reply_targets = normalize_reply_targets([
-            getattr(component, "id", None)
-            for component in message_chain
-            if isinstance(component, Reply)
-        ])
+        reply_targets = normalize_reply_targets(
+            [
+                getattr(component, "id", None)
+                for component in message_chain
+                if isinstance(component, Reply)
+            ]
+        )
         if reply_targets:
             new_message["reply_to_message_ids"] = reply_targets
         # 6. 将消息添加到 Ledger。上下文清理由压缩策略统一控制，不再因离场状态触发。
@@ -533,14 +572,19 @@ class FrontDesk:
                 return
 
             # 2. 闭嘴状态检查
-            muted = chat_id in self.context.silenced_until and current_time < self.context.silenced_until[chat_id]
+            muted = (
+                chat_id in self.context.silenced_until
+                and current_time < self.context.silenced_until[chat_id]
+            )
             unmuted_now = False
             cm = self.config_manager.for_chat(chat_id)
             if muted:
                 speak_words_str = cm.speak_words
                 if speak_words_str:
                     speak_words = [
-                        word.strip() for word in speak_words_str.split("|") if word.strip()
+                        word.strip()
+                        for word in speak_words_str.split("|")
+                        if word.strip()
                     ]
                     for word in speak_words:
                         if word in message_content:
@@ -567,7 +611,9 @@ class FrontDesk:
                 slap_words_str = cm.slap_words
                 if slap_words_str:
                     slap_words = [
-                        word.strip() for word in slap_words_str.split("|") if word.strip()
+                        word.strip()
+                        for word in slap_words_str.split("|")
+                        if word.strip()
                     ]
                     for word in slap_words:
                         if word in message_content:
@@ -728,7 +774,9 @@ class FrontDesk:
             trigger_summary = ""
             try:
                 if hasattr(event, "get_extra"):
-                    trigger_message_id = self.context.debounce_manager.get_end_message_id(event)
+                    trigger_message_id = (
+                        self.context.debounce_manager.get_end_message_id(event)
+                    )
             except Exception:
                 trigger_message_id = ""
             if not trigger_message_id:
@@ -833,16 +881,12 @@ class FrontDesk:
                 self.context.status_transition_manager.get_status_start_time(chat_id)
             )
             if status_start_time == 0:
-                logger.warning(
-                    f"AngelHeart[{chat_id}]: 状态缺少开始时间，跳过超时检查"
-                )
+                logger.warning(f"AngelHeart[{chat_id}]: 状态缺少开始时间，跳过超时检查")
                 return
 
             timeout = self.config_manager.for_chat(chat_id).observation_timeout
             if current_time - status_start_time >= timeout:
-                logger.info(
-                    f"AngelHeart[{chat_id}]: 在场超时({timeout}秒)，转为离场"
-                )
+                logger.info(f"AngelHeart[{chat_id}]: 在场超时({timeout}秒)，转为离场")
                 await self.context.transition_to_status(
                     chat_id,
                     AngelHeartStatus.NOT_PRESENT,
@@ -893,7 +937,9 @@ class FrontDesk:
         - 不能把后到消息注入已运行子代理
         """
         try:
-            leave_reply_trigger = self.context.debounce_manager.get_leave_reply_trigger(event)
+            leave_reply_trigger = self.context.debounce_manager.get_leave_reply_trigger(
+                event
+            )
             if leave_reply_trigger:
                 decision = await self.fishing_reply.generate_reply_strategy(
                     chat_id, event, leave_reply_trigger
@@ -924,7 +970,9 @@ class FrontDesk:
 
             if (
                 event.is_at_or_wake_command
-                and self.context.config_manager.for_chat(chat_id).block_unapproved_wake_non_command
+                and self.context.config_manager.for_chat(
+                    chat_id
+                ).block_unapproved_wake_non_command
             ):
                 logger.debug(
                     f"AngelHeart[{chat_id}]: 上游唤醒聊天事件未获批准，已停止后续主 LLM 处理。"
@@ -985,11 +1033,11 @@ class FrontDesk:
             # 秘书兜底：秘书链路异常时放行，让主脑无脑处理，而不是 stop 导致不回复。
             # 秘书是"拦"的角色；秘书死了，助理应该照常干活，不能陪葬。
             event.is_at_or_wake_command = True
-            logger.debug(
-                f"AngelHeart[{chat_id}]: 秘书异常，放行主脑无脑处理"
-            )
+            logger.debug(f"AngelHeart[{chat_id}]: 秘书异常，放行主脑无脑处理")
 
-    def _record_last_decision(self, chat_id: str, should_reply: bool, summary: str) -> None:
+    def _record_last_decision(
+        self, chat_id: str, should_reply: bool, summary: str
+    ) -> None:
         """记录该群最近一次秘书决策（供 WebUI 状态栏）；store 未注入或失败只 debug 不打断。"""
         if self.last_decisions is None:
             return
@@ -1139,13 +1187,23 @@ class FrontDesk:
         )
 
     async def _ensure_minimum_context(self, chat_id: str, event: AstrMessageEvent):
-        """
-        冷启动补种：连续块过短时从历史库补充。
+        """冷启动补种：连续块过短时从历史库补充。
 
-        与入场整理二选一：
-        - 已有 current_summary / 本事件做过入场整理 → 禁止补种（补种=整理的一种，互斥）
-        - 仅真空/冷启动场景才补种
+        调用时机：每次防抖到期激活事件、私聊重建上下文时都会进来，
+        **不是只在进程首次启动**。所以函数自己要判断这次需不需要补。
+
+        幂等：同一会话在本次进程生命周期内只补一次，靠 `_supplemented_chats`
+        标记。账本是内存态，重启即丢，标记跟着清空，正好对应
+        「重启失忆 → 重新补一次」，不需要额外失效逻辑。
+
+        注意账本永远非空：当前轮消息在 `cache_message` 阶段就已入账，走到这里
+        时至少有一条。所以判断条件是「当前块够不够厚」，不是「账本是否为空」。
+
+        与入场整理互斥：两者都在建立上下文，同一事件里只能走一条。
         """
+        # 已经补过就不再进判断，避免每次激活都重复评估
+        if chat_id in self._supplemented_chats:
+            return
         try:
             ledger = self.context.conversation_ledger
 
@@ -1154,9 +1212,7 @@ class FrontDesk:
                 if hasattr(event, "get_extra") and event.get_extra(
                     "angelheart_group_enter_organized", False
                 ):
-                    logger.debug(
-                        f"AngelHeart[{chat_id}]: 本事件已入场整理，跳过补种"
-                    )
+                    logger.debug(f"AngelHeart[{chat_id}]: 本事件已入场整理，跳过补种")
                     return
             except Exception:
                 pass
@@ -1172,6 +1228,9 @@ class FrontDesk:
             current_messages = ledger.get_all_messages(chat_id)
 
             # 统计总消息数（包括图片等无文本消息）
+            # 这里不会把历史条目算成「虚高的消息数」：上面已有 current_summary
+            # 就直接 return 了，而有历史条目必有 current_summary（同一次整理一起
+            # 写的），所以能走到这行时账本里没有任何历史条目。
             total_messages = len(current_messages)
             text_messages = [
                 msg for msg in current_messages if self._has_text_content(msg)
@@ -1189,6 +1248,10 @@ class FrontDesk:
                 f"AngelHeart[{chat_id}]: 当前有 {len(text_messages)} 条消息，开始获取历史消息"
             )
             supplement_messages = await self._fetch_database_history(chat_id, 19, event)
+            if supplement_messages is None:
+                # 拉取失败（网络/协议异常）：不打标记，下次激活还能重试。
+                # 只有「确实查过、结果为空」才算这个群没有可补的历史。
+                return
 
             if supplement_messages:
                 # 按消息身份合并；无 ID 的重复发言按批内出现次数保留。
@@ -1212,6 +1275,10 @@ class FrontDesk:
                 # 使用公共方法更新消息列表
                 ledger.set_messages(chat_id, all_messages)
 
+            # 走到这里说明本次评估过要不要补：拉到了就并进去了，没拉到也说明
+            # 这个群没有可补的历史。两种情况都标记，避免后续每次激活重复试。
+            self._supplemented_chats.add(chat_id)
+
         except Exception as e:
             logger.error(f"AngelHeart[{chat_id}]: 补充历史消息失败: {e}")
 
@@ -1230,18 +1297,24 @@ class FrontDesk:
 
     async def _fetch_database_history(
         self, chat_id: str, needed_count: int, event: AstrMessageEvent
-    ) -> List[Dict]:
-        """
-        优先从 QQ API 获取历史消息；若失败或为空，则回退到 AstrBot 官方会话历史。
+    ) -> List[Dict] | None:
+        """优先从 QQ API 获取历史消息；失败则回退到 AstrBot 官方会话历史。
+
+        返回 `None` 表示拉取过程出错（网络、协议、上游异常），调用方据此跳过
+        补种标记，下次激活还能重试；返回空列表表示确实查过、没有历史。
         """
         try:
             if not self._is_group_chat(chat_id):
                 logger.debug(
                     f"AngelHeart[{chat_id}]: 非群聊会话，直接从 AstrBot 官方会话历史补充"
                 )
-                return await self._fetch_astrbot_conversation_history(chat_id, needed_count)
+                return await self._fetch_astrbot_conversation_history(
+                    chat_id, needed_count
+                )
 
-            converted_messages = await self._fetch_qq_history(chat_id, needed_count, event)
+            converted_messages = await self._fetch_qq_history(
+                chat_id, needed_count, event
+            )
             if converted_messages:
                 return converted_messages
 
@@ -1254,7 +1327,7 @@ class FrontDesk:
             logger.error(
                 f"AngelHeart[{chat_id}]: 获取QQ API历史失败: {e}", exc_info=True
             )
-            return []
+            return None
 
     async def _fetch_qq_history(
         self, chat_id: str, needed_count: int, event: AstrMessageEvent
@@ -1285,7 +1358,9 @@ class FrontDesk:
         try:
             conv_mgr = getattr(self.astr_context, "conversation_manager", None)
             if not conv_mgr:
-                logger.warning(f"AngelHeart[{chat_id}]: AstrBot conversation_manager 不可用")
+                logger.warning(
+                    f"AngelHeart[{chat_id}]: AstrBot conversation_manager 不可用"
+                )
                 return []
 
             conversation_id = await conv_mgr.get_curr_conversation_id(chat_id)
@@ -1301,7 +1376,9 @@ class FrontDesk:
             try:
                 history_records = json.loads(conversation.history)
             except Exception as e:
-                logger.warning(f"AngelHeart[{chat_id}]: 解析官方 conversation history 失败: {e}")
+                logger.warning(
+                    f"AngelHeart[{chat_id}]: 解析官方 conversation history 失败: {e}"
+                )
                 return []
 
             if not isinstance(history_records, list) or not history_records:
@@ -1529,7 +1606,9 @@ class FrontDesk:
                     f"(platform_name={platform_name!r})，但事件类型为真 aiocqhttp，放行。"
                 )
             try:
-                group_id = str(event.get_group_id() or "") or self._extract_group_id(chat_id)
+                group_id = str(event.get_group_id() or "") or self._extract_group_id(
+                    chat_id
+                )
             except Exception:
                 group_id = self._extract_group_id(chat_id)
             try:
@@ -1538,7 +1617,9 @@ class FrontDesk:
                 sender_id = ""
             if not sender_id:
                 try:
-                    raw_sender = getattr(getattr(event, "message_obj", None), "sender", None)
+                    raw_sender = getattr(
+                        getattr(event, "message_obj", None), "sender", None
+                    )
                     sender_id = str(getattr(raw_sender, "user_id", "") or "")
                 except Exception:
                     sender_id = ""
@@ -1548,7 +1629,10 @@ class FrontDesk:
                 self_id = ""
             if not self_id:
                 try:
-                    self_id = str(getattr(getattr(event, "message_obj", None), "self_id", "") or "")
+                    self_id = str(
+                        getattr(getattr(event, "message_obj", None), "self_id", "")
+                        or ""
+                    )
                 except Exception:
                     self_id = ""
             if not group_id.isdigit() or not sender_id.isdigit():
@@ -1563,9 +1647,7 @@ class FrontDesk:
             if cooldown > 0:
                 last = self._last_poke_time.get(chat_id, 0.0)
                 if now - last < cooldown:
-                    logger.debug(
-                        f"AngelHeart[{chat_id}]: 戳触发者冷却中，跳过。"
-                    )
+                    logger.debug(f"AngelHeart[{chat_id}]: 戳触发者冷却中，跳过。")
                     return
             bot = self._get_bot_instance(event)
             if bot is None or not hasattr(bot, "group_poke"):
@@ -1573,9 +1655,7 @@ class FrontDesk:
                 return
             await bot.group_poke(group_id=int(group_id), user_id=int(sender_id))
             self._last_poke_time[chat_id] = now
-            logger.debug(
-                f"AngelHeart[{chat_id}]: 已戳触发者 user_id={sender_id}。"
-            )
+            logger.debug(f"AngelHeart[{chat_id}]: 已戳触发者 user_id={sender_id}。")
         except Exception as e:
             logger.debug(f"AngelHeart[{chat_id}]: 戳触发者失败（不影响回复）: {e}")
 
@@ -1623,13 +1703,15 @@ class FrontDesk:
             }
             chain = raw_msg.get("message")
             if isinstance(chain, list):
-                targets = normalize_reply_targets([
-                    part["data"].get("id")
-                    for part in chain
-                    if isinstance(part, dict)
-                    and part.get("type") == "reply"
-                    and isinstance(part.get("data"), dict)
-                ])
+                targets = normalize_reply_targets(
+                    [
+                        part["data"].get("id")
+                        for part in chain
+                        if isinstance(part, dict)
+                        and part.get("type") == "reply"
+                        and isinstance(part.get("data"), dict)
+                    ]
+                )
                 if targets:
                     converted["reply_to_message_ids"] = targets
             return converted
@@ -1750,7 +1832,10 @@ class FrontDesk:
                     if isinstance(content, list):
                         filtered_content = []
                         for item in content:
-                            if isinstance(item, dict) and item.get("type") == "image_url":
+                            if (
+                                isinstance(item, dict)
+                                and item.get("type") == "image_url"
+                            ):
                                 images_filtered_count += 1
                                 continue
                             filtered_content.append(item)
@@ -1900,9 +1985,7 @@ class FrontDesk:
         )
         return recent_dialogue, historical_context, boundary_ts
 
-    def _get_decision_context_for_rewrite(
-        self, chat_id: str, event: AstrMessageEvent
-    ):
+    def _get_decision_context_for_rewrite(self, chat_id: str, event: AstrMessageEvent):
         """
         主脑重写用的上下文：群聊必须等于秘书判断点，不得二次全量扩窗。
         秘书只看文字（压缩版），助理看完整（raw），同边界不扩窗。
@@ -1954,9 +2037,7 @@ class FrontDesk:
                     f"ledger empty or boundary missing ({boundary_message_id})"
                 )
             except Exception as e:
-                logger.debug(
-                    f"AngelHeart[{chat_id}]: 重算完整上下文回退秘书切片: {e}"
-                )
+                logger.debug(f"AngelHeart[{chat_id}]: 重算完整上下文回退秘书切片: {e}")
                 recent = frozen.get("recent_dialogue") or []
                 historical = frozen.get("historical_context") or []
                 boundary_ts = frozen.get("boundary_ts", 0.0)
@@ -2064,7 +2145,9 @@ class FrontDesk:
                 return body_text
         return convert_content_to_string(message.get("content", ""))
 
-    def _message_has_focus_hit(self, message: Dict[str, Any] | None, chat_id: str = "") -> bool:
+    def _message_has_focus_hit(
+        self, message: Dict[str, Any] | None, chat_id: str = ""
+    ) -> bool:
         """读取入库时写好的焦点命中。"""
         if not isinstance(message, dict):
             return False
@@ -2127,7 +2210,9 @@ class FrontDesk:
         if not self._is_group_chat(chat_id):
             return None
 
-        candidate_messages = list(recent_dialogue or []) + list(prompt_recent_dialogue or [])
+        candidate_messages = list(recent_dialogue or []) + list(
+            prompt_recent_dialogue or []
+        )
         focus = False
         for message in candidate_messages:
             if not isinstance(message, dict):
@@ -2166,7 +2251,9 @@ class FrontDesk:
                 work_id = str(event.get_extra("angelheart_work_id", "") or "")
             if not work_id and event is not None:
                 work_id = self._get_event_message_id(event)
-            text = self.context.work_ledger.format_for_assistant(chat_id, current_work_id=work_id)
+            text = self.context.work_ledger.format_for_assistant(
+                chat_id, current_work_id=work_id
+            )
         except Exception as e:
             logger.warning(f"AngelHeart[{chat_id}]: 构建工作账本提醒失败: {e}")
             return None
@@ -2220,7 +2307,7 @@ class FrontDesk:
 
     def _build_contexts_with_processor(
         self,
-        processor: 'MessageProcessor',
+        processor: "MessageProcessor",
         historical_context: List[Dict],
         recent_dialogue: List[Dict],
         chat_id: str,
@@ -2235,10 +2322,7 @@ class FrontDesk:
         if scene_hint:
             # 在最顶部添加场景说明消息，避免某些模型不允许第一条消息是助理
             new_contexts.append(
-                {
-                    "role": "user",
-                    "content": [{"type": "text", "text": scene_hint}]
-                }
+                {"role": "user", "content": [{"type": "text", "text": scene_hint}]}
             )
 
         # 1) 历史消息（不编号）
@@ -2248,7 +2332,10 @@ class FrontDesk:
 
         # 2) 最新消息（按当前消息 ID 过滤，避免与 req.prompt 对应的新消息重复）
         for msg in recent_dialogue:
-            if current_message_id and str(msg.get("source_message_id", "") or "") == current_message_id:
+            if (
+                current_message_id
+                and str(msg.get("source_message_id", "") or "") == current_message_id
+            ):
                 continue
             processed_msg = processor.process_message(msg)
             new_contexts.append(processed_msg)
@@ -2260,7 +2347,9 @@ class FrontDesk:
     ) -> List[Dict]:
         """工具链收口，出请求前保证调用与回执一一配对。"""
         try:
-            normalized = ensure_tool_call_pairing(normalize_history_tool_pairs(contexts))
+            normalized = ensure_tool_call_pairing(
+                normalize_history_tool_pairs(contexts)
+            )
         except Exception as e:
             logger.error(
                 f"AngelHeart[{chat_id}]: 工具链收口失败，按原样下发: {e}", exc_info=True
@@ -2322,9 +2411,7 @@ class FrontDesk:
             start_id = str(
                 self.context.debounce_manager.get_start_message_id(event) or ""
             )
-            end_id = str(
-                self.context.debounce_manager.get_end_message_id(event) or ""
-            )
+            end_id = str(self.context.debounce_manager.get_end_message_id(event) or "")
         except Exception:
             return []
 
@@ -2357,7 +2444,12 @@ class FrontDesk:
         )
 
     def _image_item_request_url(self, item: Dict) -> str:
-        for key in ("cache_path", "local_file_path", "original_file_url", "original_url"):
+        for key in (
+            "cache_path",
+            "local_file_path",
+            "original_file_url",
+            "original_url",
+        ):
             url = item.get(key)
             if isinstance(url, str) and url:
                 return url
@@ -2381,7 +2473,9 @@ class FrontDesk:
         image_urls = []
         seen = set()
         for msg in recent_dialogue:
-            is_current = str(msg.get("source_message_id", "") or "") == current_message_id
+            is_current = (
+                str(msg.get("source_message_id", "") or "") == current_message_id
+            )
             if include_current != is_current:
                 continue
             content = msg.get("content")
@@ -2408,7 +2502,10 @@ class FrontDesk:
             logger.warning(f"AngelHeart: 无法导入 ImageURLPart，跳过聚合图片追加: {e}")
             return
 
-        if not hasattr(req, "extra_user_content_parts") or req.extra_user_content_parts is None:
+        if (
+            not hasattr(req, "extra_user_content_parts")
+            or req.extra_user_content_parts is None
+        ):
             req.extra_user_content_parts = []
 
         for url in image_urls:
@@ -2514,7 +2611,6 @@ class FrontDesk:
             )
             return []
 
-
     def _update_request(
         self,
         req: Any,
@@ -2582,9 +2678,9 @@ class FrontDesk:
         scene_hint = None
         scene_prompt = None
         preserve_current_image_urls = self._should_preserve_current_image_urls(chat_id)
-        manage_quote_target = bool(allow_quote_target) and self._should_manage_quote_target(
-            chat_id, event
-        )
+        manage_quote_target = bool(
+            allow_quote_target
+        ) and self._should_manage_quote_target(chat_id, event)
 
         # 历史重写：
         # - 群聊：必须用秘书判断点固化的切片（秘书点=主脑点）
@@ -2602,8 +2698,10 @@ class FrontDesk:
             logger.debug(f"AngelHeart[{chat_id}]: 暂无可用上下文，跳过重构。")
             return
 
-        context_recent_dialogue, prompt_recent_dialogue = self._split_recent_dialogue_at_current_message(
-            recent_dialogue, current_message_id
+        context_recent_dialogue, prompt_recent_dialogue = (
+            self._split_recent_dialogue_at_current_message(
+                recent_dialogue, current_message_id
+            )
         )
         should_mark_processed = True
         if self._is_group_chat(chat_id):

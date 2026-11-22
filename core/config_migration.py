@@ -29,7 +29,10 @@ _MIGRATION_MAP = {
     "familiarity_cooldown_duration": ("leave_reply", "familiarity_cooldown_duration"),
     # wake_interaction
     "force_reply_when_summoned": ("wake_interaction", "force_reply_when_summoned"),
-    "block_unapproved_wake_non_command": ("wake_interaction", "block_unapproved_wake_non_command"),
+    "block_unapproved_wake_non_command": (
+        "wake_interaction",
+        "block_unapproved_wake_non_command",
+    ),
     "alias": ("wake_interaction", "alias"),
     "slap_words": ("wake_interaction", "slap_words"),
     "speak_words": ("wake_interaction", "speak_words"),
@@ -38,11 +41,13 @@ _MIGRATION_MAP = {
     "whitelist_enabled": ("access_control", "whitelist_enabled"),
     "chat_ids": ("access_control", "chat_ids"),
     "group_chat_enhancement": ("access_control", "group_chat_enhancement"),
-    "takeover_private_chat_context": ("access_control", "takeover_private_chat_context"),
+    "takeover_private_chat_context": (
+        "access_control",
+        "takeover_private_chat_context",
+    ),
     # context_compression
     "max_conversation_tokens": ("context_compression", "max_conversation_tokens"),
     "context_content_retain_tokens": ("context_compression", "content_retain_tokens"),
-    "context_tool_retain_tokens": ("context_compression", "tool_retain_tokens"),
     "context_forgetting_timeout": ("context_compression", "forgetting_timeout"),
     # debug
     "strip_markdown_enabled": ("output_rewrite", "strip_markdown_enabled"),
@@ -102,6 +107,7 @@ def _find_config_path() -> str | None:
     # 方式1：通过 AstrBot API 获取
     try:
         from astrbot.core.utils.astrbot_path import get_astrbot_config_path
+
         config_dir = get_astrbot_config_path()
         config_file = os.path.join(config_dir, f"{_PLUGIN_DIR_NAME}_config.json")
         if os.path.exists(config_file):
@@ -112,7 +118,7 @@ def _find_config_path() -> str | None:
     # 方式2：从插件目录往上推导 (data/plugins/plugin_name -> data/config/)
     plugin_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     plugins_dir = os.path.dirname(plugin_dir)  # data/plugins/
-    data_dir = os.path.dirname(plugins_dir)    # data/
+    data_dir = os.path.dirname(plugins_dir)  # data/
     config_file = os.path.join(data_dir, "config", f"{_PLUGIN_DIR_NAME}_config.json")
     if os.path.exists(config_file):
         return config_file

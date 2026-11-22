@@ -64,7 +64,9 @@ class ConfigManager:
         记 warning 暴露调用方漏传问题（不抛异常，避免打断运行时）。
         """
         if not chat_id:
-            logger.warning("AngelHeart: for_chat 收到空 chat_id，本次读取将回退全局配置，请检查调用方是否漏传")
+            logger.warning(
+                "AngelHeart: for_chat 收到空 chat_id，本次读取将回退全局配置，请检查调用方是否漏传"
+            )
         view = ConfigManager(self._config)
         view._profile_store = self._profile_store
         view._prompt_settings = self._prompt_settings
@@ -233,7 +235,9 @@ class ConfigManager:
 
     @property
     def block_unapproved_wake_non_command(self) -> bool:
-        return self._get_grouped("wake_interaction", "block_unapproved_wake_non_command", False)
+        return self._get_grouped(
+            "wake_interaction", "block_unapproved_wake_non_command", False
+        )
 
     @property
     def alias(self) -> str:
@@ -245,13 +249,19 @@ class ConfigManager:
         values = self._get_grouped("wake_interaction", "ignored_sender_ids", [])
         if not isinstance(values, list):
             return []
-        return [str(value).strip() for value in values if value is not None and str(value).strip()]
+        return [
+            str(value).strip()
+            for value in values
+            if value is not None and str(value).strip()
+        ]
 
     @property
     def alias_wake_cooldown_seconds(self) -> float:
         """昵称唤醒间隔（秒）；零、负数或无效值关闭冷却。"""
         try:
-            seconds = float(self._get_grouped("wake_interaction", "alias_wake_cooldown_seconds", 1))
+            seconds = float(
+                self._get_grouped("wake_interaction", "alias_wake_cooldown_seconds", 1)
+            )
         except (TypeError, ValueError):
             return 0.0
         return seconds if math.isfinite(seconds) and seconds > 0 else 0.0
@@ -292,7 +302,9 @@ class ConfigManager:
 
     @property
     def takeover_private_chat_context(self) -> bool:
-        return self._get_grouped("access_control", "takeover_private_chat_context", False)
+        return self._get_grouped(
+            "access_control", "takeover_private_chat_context", False
+        )
 
     # ========== 系统提示词 ==========
 
@@ -319,11 +331,15 @@ class ConfigManager:
 
     @property
     def max_conversation_tokens(self) -> int:
-        return self._get_grouped("context_compression", "max_conversation_tokens", 100000)
+        return self._get_grouped(
+            "context_compression", "max_conversation_tokens", 100000
+        )
 
     @property
     def context_compression_threshold(self) -> float:
-        return self._get_grouped("context_compression", "context_compression_threshold", 0.82)
+        return self._get_grouped(
+            "context_compression", "context_compression_threshold", 0.82
+        )
 
     @property
     def context_content_retain_tokens(self) -> int:
@@ -332,13 +348,6 @@ class ConfigManager:
         if isinstance(grp, dict) and "content_retain_tokens" in grp:
             return grp["content_retain_tokens"]
         return self._config.get("context_content_retain_tokens", 10000)
-
-    @property
-    def context_tool_retain_tokens(self) -> int:
-        grp = self._config.get("context_compression")
-        if isinstance(grp, dict) and "tool_retain_tokens" in grp:
-            return grp["tool_retain_tokens"]
-        return self._config.get("context_tool_retain_tokens", 10000)
 
     @property
     def context_forgetting_timeout(self) -> int:
@@ -379,7 +388,6 @@ class ConfigManager:
             "context_compression": {
                 "max_conversation_tokens": self.max_conversation_tokens,
                 "context_content_retain_tokens": self.context_content_retain_tokens,
-                "context_tool_retain_tokens": self.context_tool_retain_tokens,
                 "context_forgetting_timeout": self.context_forgetting_timeout,
             },
             "wake_interaction": {
