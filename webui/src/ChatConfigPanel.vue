@@ -200,6 +200,15 @@
                   hide-details
                   @update:model-value="(v: string) => setChatBinding(item.chat_id, v)"
                 />
+                <v-btn
+                  variant="tonal"
+                  size="small"
+                  prepend-icon="lucide:book-open"
+                  block
+                  @click="openLedgerDrawer(item)"
+                >
+                  查看当前上下文
+                </v-btn>
               </v-card-text>
             </v-card>
           </v-col>
@@ -401,6 +410,55 @@
     </div>
   </v-navigation-drawer>
 
+  <!-- 当前上下文：某会话的账本消息，只读 -->
+  <v-navigation-drawer
+    v-model="ledgerDrawerVisible"
+    location="right"
+    temporary
+    :width="720"
+    class="ledger-drawer"
+  >
+    <div class="d-flex flex-column ga-3 pa-4 h-100 overflow-y-auto">
+      <div class="d-flex align-center ga-2">
+        <span class="text-h6 text-truncate" :title="ledgerChatId">{{ ledgerTitle }}</span>
+        <v-spacer />
+        <v-btn icon="lucide:x" variant="text" size="small" aria-label="关闭" @click="ledgerDrawerVisible = false" />
+      </div>
+      <p class="text-caption text-medium-emphasis mb-0">
+        共 {{ ledgerTotal }} 条 · 摘要：{{ ledgerSummary ? '有' : '无' }}
+      </p>
+
+      <v-alert v-if="ledgerSummary" variant="tonal" density="compact" class="text-body-2 ledger-summary">
+        {{ summaryPreview }}
+      </v-alert>
+
+      <div v-if="ledgerLoading" class="d-flex justify-center py-8">
+        <v-progress-circular indeterminate color="primary" />
+      </div>
+
+      <v-empty-state
+        v-else-if="!ledgerMessages.length"
+        icon="lucide:book-open"
+        title="这个会话还没有消息"
+        text="账本里还没有它的记录"
+      />
+
+      <div v-else class="d-flex flex-column ga-5">
+        <div
+          v-for="msg in ledgerMessages"
+          :key="msgKey(msg)"
+          class="ledger-row"
+          :class="msg.is_self ? 'ledger-row-self' : 'ledger-row-peer'"
+        >
+          <div class="ledger-meta text-caption text-medium-emphasis">
+            {{ senderLabel(msg) }} · {{ msgTime(msg.timestamp) }}<template v-if="msg.quote_no !== null"> · #{{ msg.quote_no }}</template>
+          </div>
+          <v-sheet rounded="lg" class="ledger-bubble">{{ bubbleText(msg) }}</v-sheet>
+        </div>
+      </div>
+    </div>
+  </v-navigation-drawer>
+
   <!-- 新增模板 -->
   <v-dialog v-model="createModalVisible" max-width="440" persistent>
     <v-card rounded="card">
@@ -456,6 +514,8 @@ import {
   GROUPS,
   type ChatItem,
   type ChatStatusItem,
+  type LedgerMessage,
+  type LedgerMessagesResponse,
   type RequestRingResponse,
   type RequestSnapshot,
   type TemplateDetail,
@@ -987,6 +1047,88 @@ async function loadRequestSnapshots() {
   }
 }
 
+// ---------- 当前上下文抽屉：某会话的账本消息（只读） ----------
+
+const ledgerDrawerVisible = ref(false)
+const ledgerLoading = ref(false)
+const ledgerChatId = ref('')
+const ledgerTitle = ref('')
+const ledgerTotal = ref(0)
+const ledgerSummary = ref('')
+const ledgerMessages = ref<LedgerMessage[]>([])
+
+const summaryPreview = computed(() => {
+  const text = ledgerSummary.value.trim()
+  if (text.length <= 200) return text
+  return `${text.slice(0, 200)}…`
+})
+
+async function openLedgerDrawer(item: ChatStatusItem) {
+  ledgerChatId.value = item.chat_id
+  ledgerTitle.value = item.display_name || chatShortId(item.chat_id)
+  ledgerMessages.value = []
+  ledgerSummary.value = ''
+  ledgerTotal.value = 0
+  ledgerDrawerVisible.value = true
+  await loadLedgerLatest()
+}
+
+/** 一次拿全部：压缩后账本总量就在上下文预算量级，不需要分页 */
+async function loadLedgerLatest() {
+  ledgerLoading.value = true
+  try {
+    const data = await apiGet<LedgerMessagesResponse>('ledger/messages', {
+      chat_id: ledgerChatId.value,
+    })
+    ledgerTotal.value = data.total
+    ledgerSummary.value = data.summary || ''
+    ledgerMessages.value = data.messages || []
+  } catch (e) {
+    toast.error('读取上下文失败：' + String((e as Error)?.message || e))
+  } finally {
+    ledgerLoading.value = false
+  }
+}
+
+/** 消息唯一键：优先原始消息 ID，没有就用时间 + 角色 + 内容前缀兜底 */
+function msgKey(msg: LedgerMessage): string {
+  if (msg.source_message_id) return `id:${msg.source_message_id}`
+  return `t:${msg.timestamp}|${msg.role}|${(msg.content || '').slice(0, 32)}`
+}
+
+/** 发送者显示名：框架术语（assistant / tool_result）一律换成人话 */
+function senderLabel(msg: LedgerMessage): string {
+  if (msg.kind === 'context_summary') return '摘要'
+  if (msg.is_tool) return '工具'
+  if (msg.is_self) return '自己'
+  return msg.sender_name || '群友'
+}
+
+/** 气泡正文：摘要去掉内部标记，图片消息显示转述 */
+function bubbleText(msg: LedgerMessage): string {
+  const text = msg.content || ''
+  if (msg.kind === 'context_summary') {
+    return text.replace(/^\[当前摘要\]\s*/, '') || '（空摘要）'
+  }
+  // 图片消息的 content 会被清空，正文在 image_caption 里
+  if (!text.trim() && msg.image_caption) {
+    return `[图片] ${msg.image_caption}`
+  }
+  return text || '（空消息）'
+}
+
+/** 时间戳（秒）→ 当天只显示时分秒，跨天带上月日 */
+function msgTime(ts: number | null): string {
+  const num = Number(ts)
+  if (!Number.isFinite(num) || num <= 0) return '时间未知'
+  const d = new Date(num * 1000)
+  const pad = (n: number) => String(n).padStart(2, '0')
+  const hms = `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+  const now = new Date()
+  if (d.toDateString() === now.toDateString()) return hms
+  return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${hms}`
+}
+
 // 全局队列里会话混在一起，列表里只显示会话尾号，标题保留全文
 function shortChatId(chatId: string): string {
   if (!chatId) return '未知会话'
@@ -1224,5 +1366,47 @@ onUnmounted(() => {
 .fab-leave-to {
   opacity: 0;
   transform: translateY(14px) scale(0.92);
+}
+
+/* ---------- 当前上下文：账本消息列表 ---------- */
+
+.ledger-summary {
+  white-space: pre-wrap;
+}
+
+.ledger-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: 100%;
+}
+
+/* 专家（自己）在右，群友在左，只靠对齐区分 */
+.ledger-row-self {
+  align-items: flex-end;
+  text-align: right;
+}
+
+.ledger-row-peer {
+  align-items: flex-start;
+  text-align: left;
+}
+
+.ledger-meta {
+  line-height: 1.3;
+  padding: 0 4px;
+}
+
+/* 圆角背景 + 原文，长内容自动换行，不撑破抽屉 */
+.ledger-bubble {
+  max-width: 78%;
+  padding: 10px 14px;
+  background-color: rgb(var(--v-theme-surface-variant));
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  font-size: 0.875rem;
+  line-height: 1.6;
+  text-align: left;
 }
 </style>

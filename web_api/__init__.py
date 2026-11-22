@@ -367,6 +367,106 @@ class ProfileAPI:
             return _err(f"读取请求快照失败: {e}")
         return _ok({"available": True, "chats": chats, "chat_id": chat_id, "items": items})
 
+    # ---------- 账本消息（只读） ----------
+
+    # 单条内容上限：超长消息截断后标注原长，避免一次把整段长文塞给前端
+    LEDGER_CONTENT_LIMIT = 4000
+
+    def _ledger_message_view(self, message: Dict) -> Dict:
+        """把账本里的一条消息压成前端要的形状。
+
+        只读投影：不改原消息，也不触发任何写入。
+        """
+        ledger = self.conversation_ledger
+        text = ""
+        try:
+            text = ledger._extract_message_text(message)
+        except Exception:
+            text = str(message.get("content") or "")
+
+        original_length = len(text)
+        if original_length > self.LEDGER_CONTENT_LIMIT:
+            text = text[: self.LEDGER_CONTENT_LIMIT] + (
+                f"…（已截断，原长 {original_length} 字符）"
+            )
+
+        try:
+            is_tool = bool(ledger._is_tool_message(message))
+        except Exception:
+            is_tool = message.get("role") == "tool"
+
+        role = str(message.get("role") or "")
+        sender_id = str(message.get("sender_id") or "")
+        sender_name = str(message.get("sender_name") or "")
+
+        # 账本里自己发的消息是 assistant；sender_id 兜底（缺 self_id 时写入 "assistant"）
+        is_self = role == "assistant" or sender_id == "assistant"
+
+        quote_no = message.get("quote_no")
+        try:
+            quote_no = int(quote_no) if quote_no is not None else None
+        except (TypeError, ValueError):
+            quote_no = None
+
+        return {
+            "role": role,
+            "sender_id": sender_id,
+            "sender_name": sender_name,
+            "timestamp": message.get("timestamp"),
+            "content": text,
+            "image_caption": str(message.get("image_caption") or ""),
+            "kind": message.get("kind"),
+            "quote_no": quote_no,
+            "is_tool": is_tool,
+            "is_self": is_self,
+            "source_message_id": str(message.get("source_message_id") or ""),
+        }
+
+    async def ledger_messages(self):
+        """某会话的账本消息，按时间正序，一次返回全部。
+
+        只读：不改账本读写语义，只调 get_all_messages / get_current_summary。
+        """
+        chat_id = (_get_query("chat_id") or "").strip()
+        if not chat_id:
+            return _err("缺少 chat_id 参数")
+        if self.conversation_ledger is None:
+            return _err("账本不可用")
+
+        try:
+            known = set(self.conversation_ledger.get_all_chat_ids())
+        except Exception as e:
+            return _err(f"读取账本会话列表失败: {e}")
+
+        # 账本是内存态，重启就空；来源登记过的会话仍在联系人监控里，
+        # 但账本里可能一条消息都没有。这种情况返回空结果，不是错误。
+        if chat_id not in known:
+            return _ok(
+                {
+                    "chat_id": chat_id,
+                    "total": 0,
+                    "summary": "",
+                    "messages": [],
+                }
+            )
+
+        try:
+            all_messages = self.conversation_ledger.get_all_messages(chat_id)
+            summary = self.conversation_ledger.get_current_summary(chat_id)
+        except Exception as e:
+            return _err(f"读取账本失败: {e}")
+
+        messages = [self._ledger_message_view(item) for item in all_messages]
+
+        return _ok(
+            {
+                "chat_id": chat_id,
+                "total": len(messages),
+                "summary": summary,
+                "messages": messages,
+            }
+        )
+
 
 def register_all_routes(
     context,
@@ -409,6 +509,12 @@ def register_all_routes(
             api.request_ring,
             ["GET"],
             "最近 10 次请求的快照（全局，只存内存）",
+        ),
+        (
+            "/astrbot_plugin_angel_heart/ledger/messages",
+            api.ledger_messages,
+            ["GET"],
+            "某会话的账本消息（只读，按时间正序，服务端切页）",
         ),
     ]
 

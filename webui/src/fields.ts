@@ -186,3 +186,27 @@ export interface RequestRingResponse {
   chat_id?: string
   items: RequestSnapshot[]
 }
+
+/** 账本里的一条消息（只读投影，字段由后端压平） */
+export interface LedgerMessage {
+  role: string
+  sender_id: string
+  sender_name: string
+  timestamp: number | null
+  content: string
+  /** 图片转述：图片消息的 content 会被清空，正文在这里 */
+  image_caption: string
+  kind: string | null
+  quote_no: number | null
+  is_tool: boolean
+  is_self: boolean
+  source_message_id: string
+}
+
+/** GET ledger/messages 的返回体 */
+export interface LedgerMessagesResponse {
+  chat_id: string
+  total: number
+  summary: string
+  messages: LedgerMessage[]
+}

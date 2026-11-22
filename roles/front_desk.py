@@ -373,7 +373,8 @@ class FrontDesk:
                     or ""
                 )
                 if name:
-                    text_parts.append(f"@{name}")
+                    # 补空格，避免昵称和正文粘成一段看不出边界
+                    text_parts.append(f"@{name} ")
             elif isinstance(component, File):
                 file_name = self._get_file_component_name(component)
                 if file_name:
@@ -688,18 +689,11 @@ class FrontDesk:
 
         # 离场进场：先标记进场，再进入助理防抖
         if can_enter and not is_present:
-            # 入场整理：收口离场历史（规则整理，不主动 LLM 摘要）
-            # 与补种二选一：做过入场整理后，激活路径禁止再补种
+            # 入场整理：按上下文预算保留最近一段正文，工具链一律不进。
+            # 不传 keep_from_timestamp——传「最后一条的时间戳」等于只留当前这一条，
+            # 会把账本清空，后面的补种又因互斥标记跳过，结果永远是空账本。
             try:
-                keep_ts = None
-                all_msgs = self.context.conversation_ledger.get_all_messages(chat_id)
-                if all_msgs:
-                    keep_ts = all_msgs[-1].get("timestamp")
-                self.context.conversation_ledger.organize_on_group_enter(
-                    chat_id, keep_from_timestamp=keep_ts
-                )
-                if hasattr(event, "set_extra"):
-                    event.set_extra("angelheart_group_enter_organized", True)
+                self.context.conversation_ledger.organize_on_group_enter(chat_id)
             except Exception as e:
                 logger.warning(f"AngelHeart[{chat_id}]: 入场整理失败: {e}")
 
@@ -1207,15 +1201,6 @@ class FrontDesk:
         try:
             ledger = self.context.conversation_ledger
 
-            # 入场整理与补种互斥
-            try:
-                if hasattr(event, "get_extra") and event.get_extra(
-                    "angelheart_group_enter_organized", False
-                ):
-                    logger.debug(f"AngelHeart[{chat_id}]: 本事件已入场整理，跳过补种")
-                    return
-            except Exception:
-                pass
             try:
                 if str(ledger.get_current_summary(chat_id) or "").strip():
                     logger.debug(
