@@ -188,6 +188,12 @@ export interface RequestRingResponse {
 }
 
 /** 账本里的一条消息（只读投影，字段由后端压平） */
+export interface LedgerToolCall {
+  id: string
+  name: string
+  arguments: string
+}
+
 export interface LedgerMessage {
   role: string
   sender_id: string
@@ -201,6 +207,10 @@ export interface LedgerMessage {
   is_tool: boolean
   is_self: boolean
   source_message_id: string
+  /** 这条消息发起的工具调用（assistant 才有） */
+  tool_calls: LedgerToolCall[]
+  /** 这条消息是哪个工具调用的回执（tool 才有） */
+  tool_call_id: string
 }
 
 /** GET ledger/messages 的返回体 */

@@ -444,17 +444,47 @@
       />
 
       <div v-else class="d-flex flex-column ga-5">
-        <div
-          v-for="msg in ledgerMessages"
-          :key="msgKey(msg)"
-          class="ledger-row"
-          :class="msg.is_self ? 'ledger-row-self' : 'ledger-row-peer'"
-        >
-          <div class="ledger-meta text-caption text-medium-emphasis">
-            {{ senderLabel(msg) }} · {{ msgTime(msg.timestamp) }}<template v-if="msg.quote_no !== null"> · #{{ msg.quote_no }}</template>
+        <template v-for="item in ledgerDisplayItems" :key="item.key">
+          <!-- 工具卡：一次调用可能带多个 call，每个 call 一组「请求 / 返回」 -->
+          <v-expansion-panels
+            v-if="item.kind === 'tool'"
+            variant="accordion"
+            flat
+            class="ledger-tool"
+          >
+            <v-expansion-panel>
+              <v-expansion-panel-title class="text-caption">
+                <v-icon icon="lucide:wrench" size="14" class="mr-2" />
+                {{ toolTitle(item) }}
+              </v-expansion-panel-title>
+              <v-expansion-panel-text>
+                <div
+                  v-for="call in item.calls"
+                  :key="call.id || call.name"
+                  class="ledger-tool-call"
+                >
+                  <div class="ledger-tool-name">{{ call.name || '工具' }}</div>
+                  <div class="ledger-tool-label">请求</div>
+                  <pre class="ledger-tool-body ledger-tool-request">{{ call.arguments || '（无参数）' }}</pre>
+                  <div class="ledger-tool-label">返回</div>
+                  <pre class="ledger-tool-body ledger-tool-response">{{ toolResult(item, call.id) }}</pre>
+                </div>
+              </v-expansion-panel-text>
+            </v-expansion-panel>
+          </v-expansion-panels>
+
+          <!-- 普通消息 -->
+          <div
+            v-else
+            class="ledger-row"
+            :class="item.msg.is_self ? 'ledger-row-self' : 'ledger-row-peer'"
+          >
+            <div class="ledger-meta text-caption text-medium-emphasis">
+              {{ senderLabel(item.msg) }} · {{ msgTime(item.msg.timestamp) }}<template v-if="item.msg.quote_no !== null"> · #{{ item.msg.quote_no }}</template>
+            </div>
+            <v-sheet rounded="lg" class="ledger-bubble">{{ bubbleText(item.msg) }}</v-sheet>
           </div>
-          <v-sheet rounded="lg" class="ledger-bubble">{{ bubbleText(msg) }}</v-sheet>
-        </div>
+        </template>
       </div>
     </div>
   </v-navigation-drawer>
@@ -516,6 +546,7 @@ import {
   type ChatStatusItem,
   type LedgerMessage,
   type LedgerMessagesResponse,
+  type LedgerToolCall,
   type RequestRingResponse,
   type RequestSnapshot,
   type TemplateDetail,
@@ -1096,6 +1127,62 @@ function msgKey(msg: LedgerMessage): string {
   return `t:${msg.timestamp}|${msg.role}|${(msg.content || '').slice(0, 32)}`
 }
 
+interface LedgerToolItem {
+  kind: 'tool'
+  key: string
+  calls: LedgerToolCall[]
+  results: LedgerMessage[]
+}
+
+interface LedgerMessageItem {
+  kind: 'message'
+  key: string
+  msg: LedgerMessage
+}
+
+type LedgerDisplayItem = LedgerToolItem | LedgerMessageItem
+
+/** 把 assistant 的工具调用和它的回执合成一张卡，其余消息原样成行 */
+const ledgerDisplayItems = computed<LedgerDisplayItem[]>(() => {
+  const items: LedgerDisplayItem[] = []
+  const pending = new Map<string, LedgerToolItem>()
+  for (const msg of ledgerMessages.value) {
+    if (msg.tool_calls?.length) {
+      const item: LedgerToolItem = {
+        kind: 'tool',
+        key: `call:${msg.source_message_id || msg.timestamp}`,
+        calls: msg.tool_calls,
+        results: [],
+      }
+      items.push(item)
+      for (const call of msg.tool_calls) {
+        if (call.id) pending.set(call.id, item)
+      }
+      continue
+    }
+    if (msg.tool_call_id && pending.has(msg.tool_call_id)) {
+      pending.get(msg.tool_call_id)!.results.push(msg)
+      continue
+    }
+    items.push({ kind: 'message', key: msgKey(msg), msg })
+  }
+  return items
+})
+
+/** 折叠卡标题：单个调用显示工具名，多个显示「第一个 +N」 */
+function toolTitle(item: LedgerToolItem): string {
+  const names = item.calls.map((call) => call.name || '工具')
+  if (names.length <= 1) return names[0] || '工具'
+  return `${names[0]} +${names.length - 1}`
+}
+
+/** 某个调用的回执正文 */
+function toolResult(item: LedgerToolItem, callId: string): string {
+  const hit = item.results.find((result) => result.tool_call_id === callId)
+  if (!hit) return '（没有回执）'
+  return hit.content || '（空结果）'
+}
+
 /** 发送者显示名：框架术语（assistant / tool_result）一律换成人话 */
 function senderLabel(msg: LedgerMessage): string {
   if (msg.kind === 'context_summary') return '摘要'
@@ -1409,4 +1496,49 @@ onUnmounted(() => {
   line-height: 1.6;
   text-align: left;
 }
+
+/* 工具调用折叠卡：标题一行，展开是「请求 / 返回」两段 */
+.ledger-tool {
+  max-width: 100%;
+}
+
+.ledger-tool-call + .ledger-tool-call {
+  margin-top: 12px;
+}
+
+.ledger-tool-name {
+  font-size: 0.75rem;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.ledger-tool-label {
+  font-size: 0.75rem;
+  opacity: 0.7;
+  margin-bottom: 4px;
+}
+
+.ledger-tool-body {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background-color: rgb(var(--v-theme-surface-variant));
+  font-size: 0.75rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+/* 请求与回执不同：左侧竖线区分，请求走主色，回执走成功色 */
+.ledger-tool-request {
+  border-left: 2px solid rgb(var(--v-theme-primary));
+}
+
+.ledger-tool-response {
+  border-left: 2px solid rgb(var(--v-theme-success));
+  margin-top: 6px;
+}
+
 </style>

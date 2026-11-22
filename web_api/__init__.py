@@ -408,6 +408,21 @@ class ProfileAPI:
         except (TypeError, ValueError):
             quote_no = None
 
+        # 工具调用：OpenAI 形状是 {"id", "type", "function": {"name", "arguments"}}，
+        # 这里拍平成前端直接能用的三字段
+        tool_calls = []
+        for call in message.get("tool_calls") or []:
+            if not isinstance(call, dict):
+                continue
+            fn = call.get("function") or {}
+            tool_calls.append(
+                {
+                    "id": str(call.get("id") or ""),
+                    "name": str(fn.get("name") or call.get("name") or ""),
+                    "arguments": str(fn.get("arguments") or ""),
+                }
+            )
+
         return {
             "role": role,
             "sender_id": sender_id,
@@ -420,6 +435,8 @@ class ProfileAPI:
             "is_tool": is_tool,
             "is_self": is_self,
             "source_message_id": str(message.get("source_message_id") or ""),
+            "tool_calls": tool_calls,
+            "tool_call_id": str(message.get("tool_call_id") or ""),
         }
 
     async def ledger_messages(self):

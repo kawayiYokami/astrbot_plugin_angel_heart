@@ -133,6 +133,49 @@ async def test_unknown_chat_returns_empty_not_error(ledger, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_tool_call_and_result_fields(ledger, monkeypatch):
+    """工具调用带出 name/arguments，回执带出 tool_call_id。"""
+    ledger.add_message(
+        CHAT,
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call-1",
+                    "type": "function",
+                    "function": {"name": "akasha_read", "arguments": '{"doc":"x"}'},
+                }
+            ],
+            "timestamp": 1.0,
+            "chat_id": CHAT,
+            "source_message_id": "src-1",
+        },
+    )
+    ledger.add_message(
+        CHAT,
+        {
+            "role": "tool",
+            "tool_call_id": "call-1",
+            "content": "工具结果",
+            "timestamp": 2.0,
+            "chat_id": CHAT,
+            "source_message_id": "src-2",
+        },
+    )
+    _query(monkeypatch, chat_id=CHAT)
+
+    result = await _api(ledger).ledger_messages()
+    messages = result["data"]["messages"]
+
+    assert messages[0]["tool_calls"] == [
+        {"id": "call-1", "name": "akasha_read", "arguments": '{"doc":"x"}'}
+    ]
+    assert messages[1]["tool_call_id"] == "call-1"
+    assert messages[1]["is_tool"] is True
+
+
+@pytest.mark.asyncio
 async def test_long_content_is_truncated_with_original_length(ledger, monkeypatch):
     ledger.add_message(CHAT, _msg(1, "x" * 5000))
     _query(monkeypatch, chat_id=CHAT)
