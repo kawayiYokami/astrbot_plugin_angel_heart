@@ -44,6 +44,31 @@ astrbot_core_star_filter_command_module = types.ModuleType("astrbot.core.star.fi
 astrbot_core_star_filter_command_group_module = types.ModuleType(
     "astrbot.core.star.filter.command_group"
 )
+astrbot_core_utils_module = types.ModuleType("astrbot.core.utils")
+astrbot_core_utils_active_event_registry_module = types.ModuleType(
+    "astrbot.core.utils.active_event_registry"
+)
+
+
+class ActiveEventRegistry:
+    """框架的活跃事件注册表桩：记录按会话发起的停止请求。"""
+
+    def __init__(self):
+        self.stop_requests = []
+
+    def request_agent_stop_all(self, umo, exclude=None):
+        self.stop_requests.append((umo, exclude))
+        return 0
+
+    def stop_all(self, umo, exclude=None):
+        self.stop_requests.append((umo, exclude))
+        return 0
+
+
+active_event_registry = ActiveEventRegistry()
+astrbot_core_utils_active_event_registry_module.active_event_registry = (
+    active_event_registry
+)
 
 
 class AstrMessageEvent:
@@ -225,6 +250,8 @@ for _module in (
     astrbot_core_star_filter_module,
     astrbot_core_star_filter_command_module,
     astrbot_core_star_filter_command_group_module,
+    astrbot_core_utils_module,
+    astrbot_core_utils_active_event_registry_module,
 ):
     sys.modules.setdefault(_module.__name__, _module)
 

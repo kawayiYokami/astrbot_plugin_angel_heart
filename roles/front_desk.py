@@ -552,6 +552,36 @@ class FrontDesk:
         except Exception as e:
             logger.debug(f"AngelHeart[{chat_id}]: 来源登记失败: {e}")
 
+    def _interrupt_running_agent(self, chat_id: str, event) -> int:
+        """打断该会话正在跑的 agent 执行。
+
+        闭嘴不能只终止入站事件：已经生成中的执行还会继续调工具、继续烧模型。
+        框架的 active_event_registry 给每个执行留了停止回调，这里按会话发起
+        停止请求，工具循环会在下一个检查点抛 _ToolExecutionInterrupted 退出。
+        当前事件本身排除在外，它由调用方自己 stop_event 收尾。
+        """
+        try:
+            from astrbot.core.utils.active_event_registry import active_event_registry
+        except ImportError:
+            logger.debug(
+                f"AngelHeart[{chat_id}]: 框架无 active_event_registry，跳过打断进行中的执行。"
+            )
+            return 0
+
+        try:
+            stopped = active_event_registry.request_agent_stop_all(
+                chat_id, exclude=event
+            )
+        except (AttributeError, TypeError) as e:
+            logger.warning(f"AngelHeart[{chat_id}]: 打断进行中的执行失败: {e}")
+            return 0
+
+        if stopped:
+            logger.info(
+                f"AngelHeart[{chat_id}]: 已请求打断 {stopped} 个进行中的 agent 执行。"
+            )
+        return stopped
+
     async def handle_event(self, event: AstrMessageEvent):
         """
         处理新消息事件 - 集成4状态机制重构版
@@ -601,6 +631,7 @@ class FrontDesk:
                     logger.info(
                         f"AngelHeart[{chat_id}]: 处于闭嘴状态 (剩余 {remaining:.1f} 秒)，事件已终止。"
                     )
+                    self._interrupt_running_agent(chat_id, event)
                     await self.context.debounce_manager.clear_chat(
                         chat_id, reason="silenced"
                     )
@@ -625,6 +656,7 @@ class FrontDesk:
                             logger.info(
                                 f"AngelHeart[{chat_id}]: 检测到掌嘴词 '{word}'，启动闭嘴模式 {silence_duration} 秒，事件已终止。"
                             )
+                            self._interrupt_running_agent(chat_id, event)
                             await self.context.debounce_manager.clear_chat(
                                 chat_id, reason="slap_words"
                             )
