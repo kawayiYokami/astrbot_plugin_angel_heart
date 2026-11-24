@@ -7,6 +7,7 @@ running 无人收尾，同会话后续消息会一直撞 assistant_busy 直到�
 
 from __future__ import annotations
 
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -41,6 +42,7 @@ def _plugin():
     plugin._runtime_tasks = _ImmediateTasks()
     plugin.angel_context = MagicMock()
     plugin.angel_context.work_ledger = WorkLedger()
+    plugin.angel_context.silenced_until = {}
     plugin.angel_context.debounce_manager.charge_reply_energy = AsyncMock()
     plugin.front_desk = MagicMock()
     plugin.front_desk._get_event_message_id.return_value = WORK
@@ -183,3 +185,32 @@ async def test_normal_reply_keeps_work_open():
     await plugin.strip_markdown_on_decorating_result(event)
 
     assert len(_active(plugin)) == 1
+
+
+@pytest.mark.asyncio
+async def test_silenced_chat_clears_chain_and_closes_work():
+    """回复生成期间被掌嘴：这一条不外发，同时收口。"""
+    plugin = _plugin()
+    _start(plugin)
+    plugin.angel_context.silenced_until[CHAT] = time.time() + 60
+    event = _event([Plain(text="票我上周就买好了")])
+
+    await plugin.strip_markdown_on_decorating_result(event)
+
+    assert event.get_result.return_value.chain == []
+    assert _active(plugin) == []
+    plugin.angel_context.debounce_manager.charge_reply_energy.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_silence_expired_does_not_block_send():
+    """闭嘴已过期：照常发送，不误拦。"""
+    plugin = _plugin()
+    _start(plugin)
+    plugin.angel_context.silenced_until[CHAT] = time.time() - 1
+    event = _event([Plain(text="票我上周就买好了")])
+
+    await plugin.strip_markdown_on_decorating_result(event)
+
+    assert event.get_result.return_value.chain
+    plugin.angel_context.debounce_manager.charge_reply_energy.assert_awaited()

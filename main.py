@@ -541,7 +541,18 @@ class AngelHeartPlugin(Star):
                 )
                 return
 
-            # 2. 引用目标：解析标记、按间隔判断是否插入 Reply
+            # 2. 闭嘴状态：回复生成期间被掌嘴的，这一条不外发
+            if self.angel_context.silenced_until.get(chat_id, 0) > time.time():
+                logger.info(f"AngelHeart[{chat_id}]: 处于闭嘴状态，本条回复不外发。")
+                result = event.get_result()
+                if result:
+                    result.chain = []
+                self._close_work_on_empty_result(
+                    event, chat_id, "闭嘴状态，已拦截发送"
+                )
+                return
+
+            # 3. 引用目标：解析标记、按间隔判断是否插入 Reply
             # 顺序固定在 Markdown 清洗与字数扣能之前，标记不会计入回复字数。
             try:
                 self._apply_quote_target(event, chat_id, message_chain)
@@ -550,7 +561,7 @@ class AngelHeartPlugin(Star):
                     f"AngelHeart[{chat_id}]: 引用目标处理失败，继续原有输出清理: {e}"
                 )
 
-            # 3. 遍历消息链中的每个元素，进行 Markdown 清洗
+            # 4. 遍历消息链中的每个元素，进行 Markdown 清洗
             # 只处理 Plain 文本组件，保持其他组件不变
             if self.config_manager.strip_markdown_enabled:
                 for i, component in enumerate(message_chain):
@@ -579,7 +590,7 @@ class AngelHeartPlugin(Star):
             else:
                 logger.debug(f"AngelHeart[{chat_id}]: Markdown清洗已禁用，跳过清洗步骤。")
 
-            # 4. 句末句号清理：换行符之前的中文句号清理掉
+            # 5. 句末句号清理：换行符之前的中文句号清理掉
             if self.config_manager.strip_period_before_newline:
                 for i, component in enumerate(message_chain):
                     if isinstance(component, Plain):
@@ -592,12 +603,12 @@ class AngelHeartPlugin(Star):
                                     f"AngelHeart[{chat_id}]: 已清理句末句号: '{original_text[:50]}...' -> '{cleaned_text[:50]}...'"
                                 )
 
-            # 3. 先按原文结算能量：转图后消息链只剩图片，字符数会归零
+            # 6. 按原文结算能量：转图后消息链只剩图片，字符数会归零
             await self.angel_context.debounce_manager.charge_reply_energy(
                 event, message_chain
             )
 
-            # 4. 长回复整条转长图：文字换成图片，避免群里刷屏。
+            # 7. 长回复整条转长图：文字换成图片，避免群里刷屏。
             #    账本记录的是 run_context.messages 里的原文，这里只替换发送用的消息链。
             await self._try_convert_long_reply(event, message_chain)
             # 清洗、扣能、转图之后若已无可发内容，发送环节会被跳过，这里先收口

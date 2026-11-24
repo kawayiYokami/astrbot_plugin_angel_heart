@@ -51,6 +51,7 @@ class TestHookStripsPeriodBeforeNewline:
         plugin._is_upstream_command_event = MagicMock(return_value=False)
         plugin._is_astrbot_error_message = MagicMock(return_value=False)
         plugin.angel_context = MagicMock()
+        plugin.angel_context.silenced_until = {}
         plugin.angel_context.debounce_manager.charge_reply_energy = AsyncMock()
 
         event = MagicMock()
@@ -81,6 +82,7 @@ class TestHookStripsPeriodBeforeNewline:
         plugin._is_upstream_command_event = MagicMock(return_value=False)
         plugin._is_astrbot_error_message = MagicMock(return_value=False)
         plugin.angel_context = MagicMock()
+        plugin.angel_context.silenced_until = {}
         plugin.angel_context.debounce_manager.charge_reply_energy = AsyncMock()
 
         event = MagicMock()
@@ -109,6 +111,7 @@ class TestHookStripsPeriodBeforeNewline:
         plugin.config_manager.strip_period_before_newline = True
         plugin._is_upstream_command_event = MagicMock(return_value=True)
         plugin.angel_context = MagicMock()
+        plugin.angel_context.silenced_until = {}
         plugin.angel_context.debounce_manager.charge_reply_energy = AsyncMock()
 
         event = MagicMock()

@@ -322,6 +322,7 @@ class TestLedgerKeepsOriginal:
         plugin._is_upstream_command_event = lambda ev: False
         plugin._is_astrbot_error_message = lambda text: False
         plugin.angel_context = MagicMock()
+        plugin.angel_context.silenced_until = {}
         plugin.angel_context.debounce_manager.charge_reply_energy = AsyncMock()
 
         with patch(
