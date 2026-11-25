@@ -6,6 +6,7 @@ AngelHeart 插件 - 核心工具模块
 # 从各个子模块导入函数
 from .time_utils import get_latest_message_time, format_relative_time, get_beijing_time_str
 from .content_utils import (
+    clean_text_for_send,
     convert_content_to_string,
     strip_markdown,
     strip_period_before_newline,
@@ -40,6 +41,7 @@ __all__ = [
     'convert_content_to_string',
     'strip_markdown',
     'strip_period_before_newline',
+    'clean_text_for_send',
 
     # 正文命中相关
     'build_message_metadata',

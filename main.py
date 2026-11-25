@@ -27,10 +27,10 @@ from astrbot.core.message.components import Plain, At, AtAll, Reply, Poke, Image
 
 from .core.config_manager import ConfigManager
 from .core.config_migration import run_migration
-from .core.quote_target import parse_prefix_marker
+from .core.quote_target import parse_prefix_marker, strip_prefix_marker
 from .roles.front_desk import FrontDesk
 from .roles.secretary import Secretary
-from .core.utils import strip_markdown, strip_period_before_newline
+from .core.utils import clean_text_for_send
 from .core.utils.message_utils import (
     extract_completed_agent_messages,
     serialize_agent_run_message,
@@ -495,13 +495,68 @@ class AngelHeartPlugin(Star):
             )
             return False  # 异常时保守处理，不处理消息
 
+    def _clean_outgoing_text(self, text: str) -> str:
+        """按当前开关清洗一条外发纯文本。
+
+        常规回复与工具直发共用这一份口径，两者的开关也必须是同一组。
+        """
+        return clean_text_for_send(
+            text,
+            markdown=self.config_manager.strip_markdown_enabled,
+            period=self.config_manager.strip_period_before_newline,
+        )
+
+    @filter.on_using_llm_tool()
+    async def clean_tool_sent_text(
+        self, event: AstrMessageEvent, tool, tool_args, *args, **kwargs
+    ):
+        """工具直发消息不经过发送前管线，这里补上同一套文本清理。
+
+        `send_message_to_user` 由 ToolExecutor 直接发出去，`on_decorating_result`
+        那条路一概不走：`[#n]` 标记会原样出现在群里，Markdown 也不清洗。钩子拿到的
+        tool_args 就是随后展开执行的同一个 dict，就地改写即可生效。
+        闭嘴期间同样在这里拦下，工具不该成为闭嘴的后门。
+        """
+        try:
+            if getattr(tool, "name", "") != "send_message_to_user":
+                return
+
+            messages = (tool_args or {}).get("messages")
+            if not isinstance(messages, list):
+                return
+
+            chat_id = event.unified_msg_origin
+            if self.angel_context.silenced_until.get(chat_id, 0) > time.time():
+                tool_args["messages"] = []
+                logger.info(
+                    f"AngelHeart[{chat_id}]: 处于闭嘴状态，拦下工具直发的消息。"
+                )
+                return
+
+            for item in messages:
+                if not isinstance(item, dict) or item.get("type") != "plain":
+                    continue
+                text = item.get("text")
+                if not isinstance(text, str) or not text:
+                    continue
+
+                stripped = strip_prefix_marker(text)
+                if stripped != text:
+                    logger.debug(
+                        f"AngelHeart[{chat_id}]: 工具发送剥离引用标记: '{text[:40]}...'"
+                    )
+                item["text"] = self._clean_outgoing_text(stripped)
+        except Exception as e:
+            logger.warning(f"清洗工具发送参数失败，保持原样: {e}")
+
     @filter.on_decorating_result(priority=200)
     @track_runtime_handler
     async def strip_markdown_on_decorating_result(
         self, event: AstrMessageEvent, *args, **kwargs
     ):
         """
-        在消息发送前，对消息链中的文本内容进行Markdown清洗，并检测错误信息。
+        发送前的统一收口：错误信息拦截、闭嘴拦截、引用目标、文本清洗、
+        能量结算与长回复转图。
         """
         chat_id = event.unified_msg_origin
         try:
@@ -561,54 +616,30 @@ class AngelHeartPlugin(Star):
                     f"AngelHeart[{chat_id}]: 引用目标处理失败，继续原有输出清理: {e}"
                 )
 
-            # 4. 遍历消息链中的每个元素，进行 Markdown 清洗
-            # 只处理 Plain 文本组件，保持其他组件不变
-            if self.config_manager.strip_markdown_enabled:
-                for i, component in enumerate(message_chain):
-                    if isinstance(component, Plain):
-                        original_text = component.text
-                        if original_text:
-                            try:
-                                cleaned_text = strip_markdown(original_text)
+            # 4. 文本清洗：Markdown 与句末句号，各按开关，只动 Plain 组件
+            for i, component in enumerate(message_chain):
+                if not isinstance(component, Plain) or not component.text:
+                    continue
+                original_text = component.text
+                try:
+                    cleaned_text = self._clean_outgoing_text(original_text)
+                except (AttributeError, ValueError) as e:
+                    logger.warning(
+                        f"AngelHeart[{chat_id}]: 文本清洗失败: {e}，保持原文本"
+                    )
+                    continue
+                if cleaned_text != original_text:
+                    message_chain[i] = Plain(text=cleaned_text)
+                    logger.debug(
+                        f"AngelHeart[{chat_id}]: 已清洗文本组件: '{original_text[:50]}...' -> '{cleaned_text[:50]}...'"
+                    )
 
-                                # 只有在清洗结果有效且真正改变了内容时才替换
-                                if (
-                                    cleaned_text
-                                    and cleaned_text.strip()
-                                    and cleaned_text != original_text
-                                ):
-                                    # 替换整个 Plain 组件对象，但保持其他组件不变
-                                    message_chain[i] = Plain(text=cleaned_text)
-                                    logger.debug(
-                                        f"AngelHeart[{chat_id}]: 已清洗文本组件: '{original_text[:50]}...' -> '{cleaned_text[:50]}...'"
-                                    )
-                                # 如果清洗结果相同或为空，保持原组件不变
-                            except (AttributeError, ValueError) as e:
-                                logger.warning(
-                                    f"AngelHeart[{chat_id}]: 文本清洗失败: {e}，保持原文本"
-                                )
-            else:
-                logger.debug(f"AngelHeart[{chat_id}]: Markdown清洗已禁用，跳过清洗步骤。")
-
-            # 5. 句末句号清理：换行符之前的中文句号清理掉
-            if self.config_manager.strip_period_before_newline:
-                for i, component in enumerate(message_chain):
-                    if isinstance(component, Plain):
-                        original_text = component.text
-                        if original_text:
-                            cleaned_text = strip_period_before_newline(original_text)
-                            if cleaned_text != original_text:
-                                message_chain[i] = Plain(text=cleaned_text)
-                                logger.debug(
-                                    f"AngelHeart[{chat_id}]: 已清理句末句号: '{original_text[:50]}...' -> '{cleaned_text[:50]}...'"
-                                )
-
-            # 6. 按原文结算能量：转图后消息链只剩图片，字符数会归零
+            # 5. 按原文结算能量：转图后消息链只剩图片，字符数会归零
             await self.angel_context.debounce_manager.charge_reply_energy(
                 event, message_chain
             )
 
-            # 7. 长回复整条转长图：文字换成图片，避免群里刷屏。
+            # 6. 长回复整条转长图：文字换成图片，避免群里刷屏。
             #    账本记录的是 run_context.messages 里的原文，这里只替换发送用的消息链。
             await self._try_convert_long_reply(event, message_chain)
             # 清洗、扣能、转图之后若已无可发内容，发送环节会被跳过，这里先收口

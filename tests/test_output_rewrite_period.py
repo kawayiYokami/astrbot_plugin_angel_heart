@@ -6,7 +6,30 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from astrbot_plugin_angel_heart.core.utils import strip_period_before_newline
+from astrbot_plugin_angel_heart.core.utils import (
+    clean_text_for_send,
+    strip_period_before_newline,
+)
+
+
+class TestCleanTextForSend:
+    def test_markdown_stripped_when_enabled(self):
+        assert clean_text_for_send("**加粗** 和 `代码`", markdown=True) == "加粗 和 代码"
+
+    def test_markdown_kept_when_disabled(self):
+        assert clean_text_for_send("**加粗**", markdown=False) == "**加粗**"
+
+    def test_period_stripped_when_enabled(self):
+        assert (
+            clean_text_for_send("你好。\n明天见。", markdown=False, period=True)
+            == "你好\n明天见。"
+        )
+
+    def test_period_kept_when_disabled(self):
+        assert clean_text_for_send("你好。\n明天见。", markdown=False) == "你好。\n明天见。"
+
+    def test_empty_text(self):
+        assert clean_text_for_send("") == ""
 
 
 class TestStripPeriodBeforeNewline:

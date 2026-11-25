@@ -191,6 +191,7 @@ class _Filter:
     )
     event_message_type = staticmethod(_noop_decorator)
     on_llm_request = staticmethod(_noop_decorator)
+    on_using_llm_tool = staticmethod(_noop_decorator)
     on_decorating_result = staticmethod(_noop_decorator)
     after_message_sent = staticmethod(_noop_decorator)
 

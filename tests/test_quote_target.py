@@ -18,6 +18,7 @@ from astrbot_plugin_angel_heart.core.conversation_ledger import ConversationLedg
 from astrbot_plugin_angel_heart.core.quote_target import (
     is_quotable_message,
     parse_prefix_marker,
+    strip_prefix_marker,
 )
 from astrbot_plugin_angel_heart.core.utils.xml_formatter import format_message_to_text
 
@@ -289,6 +290,22 @@ def test_parse_prefix_marker(text, number, rest):
 def test_parse_prefix_marker_ignores_middle_of_text():
     text = "票我上周就买好了 [#3]"
     assert parse_prefix_marker(text) == (None, text)
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("[#3167] 这版改到开衩大腿", "这版改到开衩大腿"),
+        ("  【#4】全角括号", "全角括号"),
+        ("没有标记", "没有标记"),
+        ("看这条 [#3167] 说的是", "看这条 [#3167] 说的是"),
+        ("[#0] 零号", "[#0] 零号"),
+        ("", ""),
+    ],
+)
+def test_strip_prefix_marker(text, expected):
+    """工具直发没有引用通道：只剥开头的标记，中段的不动。"""
+    assert strip_prefix_marker(text) == expected
 
 
 # ---------------------------------------------------------------------------

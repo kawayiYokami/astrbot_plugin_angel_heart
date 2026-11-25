@@ -107,3 +107,23 @@ def strip_period_before_newline(text: str) -> str:
     if not text:
         return text
     return re.sub(r"。(\r?\n)", r"\1", text)
+
+
+def clean_text_for_send(
+    text: str, *, markdown: bool = True, period: bool = False
+) -> str:
+    """按开关清洗一条要发出去的纯文本。
+
+    常规回复走 decorating 钩子、工具直发走工具钩子，两条路径共用这一份清洗，
+    免得清洗口径分叉。Markdown 清洗结果为空时保留原文——宁可带着格式，
+    也不要把整条内容清没。
+    """
+    if not text:
+        return text
+    if markdown:
+        cleaned_text = strip_markdown(text)
+        if cleaned_text and cleaned_text.strip():
+            text = cleaned_text
+    if period:
+        text = strip_period_before_newline(text)
+    return text

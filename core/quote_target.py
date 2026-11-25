@@ -69,3 +69,11 @@ def parse_prefix_marker(text: Any) -> Tuple[Optional[int], str]:
     if number <= 0:
         return None, source
     return number, source[match.end() :]
+
+
+def strip_prefix_marker(text: Any) -> str:
+    """只剥掉正文开头的 ``[#n]``，不解析引用目标。
+
+    工具直发的文本没有引用通道，标记留着只会原样出现在群里。
+    """
+    return parse_prefix_marker(text)[1]
