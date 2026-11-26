@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.4.3 - 2026-11-26
+
+### Fixed
+
+- **工具直发的文本绕过了所有清洗**：`send_message_to_user` 由 ToolExecutor 直接发出，不经过 `on_decorating_result`，正文开头的 `[#n]` 会原样出现在群里，Markdown 与句末句号也不处理。现在在 `on_using_llm_tool` 里就地改写待发送参数：剥掉前缀标记，再按开关做 Markdown 与句号清洗；闭嘴期间工具直发同样被拦下，不让工具成为闭嘴的后门。`main.py`。
+
+### Changed
+
+- 外发文本清洗收成公共实现：`strip_prefix_marker()`（只剥标记、不解析引用）、`clean_text_for_send()`（按开关清洗），常规回复与工具直发共用，避免两条路径的清洗口径分叉。`core/quote_target.py`、`core/utils/content_utils.py`。
+
 ## 2.4.2 - 2026-11-24
 
 ### Fixed
