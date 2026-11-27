@@ -1006,15 +1006,19 @@ async function deleteTemplate(id: string) {
 }
 
 async function saveTemplate() {
-  if (!currentTemplate.value) return
+  const tpl = currentTemplate.value
+  if (!tpl) return
   saving.value = true
   try {
+    const config = JSON.parse(JSON.stringify(configModel.value))
     await apiPost('profiles/update', {
-      id: currentTemplate.value.id,
-      description: currentTemplate.value.description,
-      config: JSON.parse(JSON.stringify(configModel.value)),
+      id: tpl.id,
+      description: tpl.description,
+      config,
     })
-    templateBaseline.value = JSON.stringify(configModel.value)
+    templateBaseline.value = JSON.stringify(config)
+    // 回写本地缓存：selectTemplate 从 templates 重建表单，不同步会让切走再切回时显示旧值
+    tpl.config = config
     toast.success('配置已保存')
   } catch (e) {
     toast.error('保存失败：' + String((e as Error)?.message || e))

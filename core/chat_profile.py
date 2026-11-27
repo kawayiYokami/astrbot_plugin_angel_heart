@@ -326,9 +326,13 @@ class ChatProfileStore:
         for group, keys in TEMPLATE_GROUPS.items():
             group_data: Dict = {}
             for key in keys:
-                try:
+                # 属性名与 schema 键名不一定同名（如 familiarity_cooldown_duration），
+                # 取不到时按原始键名读分组值，避免复制全局配置时静默丢字段。
+                if hasattr(config_manager, key):
                     value = getattr(config_manager, key)
-                except (AttributeError, TypeError):
+                elif hasattr(config_manager, "grouped_value"):
+                    value = config_manager.grouped_value(group, key)
+                else:
                     continue
                 if value is not None:
                     group_data[key] = value

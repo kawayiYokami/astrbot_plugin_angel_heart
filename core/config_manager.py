@@ -92,6 +92,14 @@ class ConfigManager:
         # 回退到旧的扁平 key
         return self._config.get(key, default)
 
+    def grouped_value(self, group: str, key: str, default=None):
+        """按分组与原始键名读取配置值。
+
+        供按 schema 键名取值的场景使用（如从全局配置复制模板），
+        避免依赖属性名与键名同名。
+        """
+        return self._get_grouped(group, key, default)
+
     # ========== 顶层配置 ==========
 
     @property
