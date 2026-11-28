@@ -1,5 +1,16 @@
 # Changelog
 
+## 2.4.4 - 2026-11-28
+
+### Fixed
+
+- **新建群配置模板时从全局配置继承字段会静默丢字段**：`template_from_global` 按 schema 键名逐个取全局配置，键名与 `ConfigManager` 属性名不同名的项（如 `familiarity_cooldown_duration`）取不到就被跳过，该字段根本不进模板——离场冷却继承过来一直是默认值，界面上也不报错。现在属性不存在时退回按分组与原始键名读值（新增 `ConfigManager.grouped_value()`）。`core/chat_profile.py`、`core/config_manager.py`。
+- **面板保存模板后不回写本地缓存**：切走再切回时表单从内存里的模板列表重建，显示的还是保存前的旧值，看起来像没存上。现在保存成功后把提交的配置回写到本地模板对象。`webui/src/ChatConfigPanel.vue`。
+
+### Build
+
+- 重新构建 `pages/chat-config` 面板产物。
+
 ## 2.4.3 - 2026-11-26
 
 ### Fixed
