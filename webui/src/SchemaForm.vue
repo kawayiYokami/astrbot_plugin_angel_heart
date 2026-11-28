@@ -573,12 +573,15 @@ function providerOptions(path: string[]) {
 .card-section--plain {
   margin: 0;
 }
+/* 分组标题与字段名左对齐：字段名在 8px 行内边距 + 16px 列表项内边距之后，
+   标题要补上同样的 24px，才能和它站在同一条竖线上 */
 .card-section-title {
-  padding: 10px 6px 2px;
-  font-size: 0.75rem;
+  padding: 10px 6px 2px 24px;
+  font-size: 0.8125rem;
   font-weight: 600;
   letter-spacing: 0.04em;
   color: rgb(var(--v-theme-secondaryText));
+  opacity: 0.75;
 }
 /* 子块里最后一条后面不再画分隔线 */
 .card-section .config-divider:last-child {
