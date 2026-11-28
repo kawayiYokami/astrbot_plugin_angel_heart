@@ -560,24 +560,21 @@ function providerOptions(path: string[]) {
   margin-left: 24px;
 }
 
-/* 卡内子块：只描一条淡边框分段，不铺底色，避免和外面的卡片抢层次 */
+/* 卡内子块：分组之间只拉一条横线，不围框、不铺底色 */
 .card-section {
-  margin: 0 8px 14px;
-  padding: 4px 10px 8px;
-  border: 1px solid rgba(var(--v-border-color), 0.18);
-  border-radius: 8px;
+  margin: 0 8px;
+  padding: 0;
 }
-.card-section:last-child {
-  margin-bottom: 0;
+.card-section + .card-section {
+  margin-top: 6px;
+  padding-top: 2px;
+  border-top: 1px solid rgba(var(--v-border-color), 0.2);
 }
 .card-section--plain {
   margin: 0;
-  padding: 0;
-  border: 0;
-  border-radius: 0;
 }
 .card-section-title {
-  padding: 8px 6px 2px;
+  padding: 10px 6px 2px;
   font-size: 0.75rem;
   font-weight: 600;
   letter-spacing: 0.04em;
