@@ -560,12 +560,12 @@ function providerOptions(path: string[]) {
   margin-left: 24px;
 }
 
-/* 卡内子块：靠浅底和间距分段，不加边框，避免和外面的卡片形成卡中卡 */
+/* 卡内子块：只描一条淡边框分段，不铺底色，避免和外面的卡片抢层次 */
 .card-section {
-  margin: 0 8px 12px;
-  padding: 2px 8px 6px;
+  margin: 0 8px 14px;
+  padding: 4px 10px 8px;
+  border: 1px solid rgba(var(--v-border-color), 0.18);
   border-radius: 8px;
-  background-color: rgba(var(--v-border-color), 0.09);
 }
 .card-section:last-child {
   margin-bottom: 0;
@@ -573,11 +573,11 @@ function providerOptions(path: string[]) {
 .card-section--plain {
   margin: 0;
   padding: 0;
+  border: 0;
   border-radius: 0;
-  background-color: transparent;
 }
 .card-section-title {
-  padding: 10px 8px 4px;
+  padding: 8px 6px 2px;
   font-size: 0.75rem;
   font-weight: 600;
   letter-spacing: 0.04em;
