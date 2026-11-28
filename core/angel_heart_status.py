@@ -506,10 +506,16 @@ class StatusChecker:
             return False
 
     def _lone_message_text(self, message: Dict) -> str:
-        """取这条消息的纯文字正文；不是纯文字（含引用、@、图片表情）返回空串。"""
+        """取这条消息的纯文字正文；不是纯文字（含引用、@、图片表情）返回空串。
+
+        `lone_eligible` 由实时消息入口按原始消息段是否全是 Plain 写入，是唯一可信的
+        纯文字标记。缺失时一律按非纯文字处理（fail-closed）：冷启动补种的消息不带这个
+        字段，且其 content 是把原始消息压平后的字符串，图片与 @ 段在压平中就丢了，
+        放行等于把「图 + 一句话」当成纯文字。宁可这类消息打断连发段，也不要误接。
+        """
         if message.get("role") != "user" or _is_summary_message(message):
             return ""
-        if message.get("lone_eligible") is False:
+        if message.get("lone_eligible") is not True:
             return ""
         content = message.get("content", "")
         if isinstance(content, list):
@@ -538,7 +544,7 @@ class StatusChecker:
         """同一人自说自话没人接。
 
         窗口内只有他一个人在说话、每条都是纯文字且不算太长、条数达到阈值、
-        两条之间没有高度重复（挡刷屏）。同一个人当天已经被接过就不再接。
+        三条内容不全是同一句（挡刷屏）。同一个人当天已经被接过就不再接。
 
         message_id 给出时只统计到这条消息为止，避免把后来的消息算进这一轮。
         """
@@ -617,7 +623,9 @@ class StatusChecker:
             # 三条全是同一句话 → 刷屏广告，不算。
             # 只认「全部相同」：人自说自话时重复一个应答词（好、嗯）很常见，
             # 按部分重复判会把正常连发整轮吞掉。
-            spam_keys = {self._spam_key(text) for text in texts}
+            # 归一化后为空的（纯标点、纯 emoji）退回原文比较：三条各不相同的表情
+            # 压完都是空串，直接按集合去重会被误判成刷屏；三条一模一样的表情仍该挡。
+            spam_keys = {self._spam_key(text) or text.strip() for text in texts}
             if len(texts) > 1 and len(spam_keys) == 1:
                 logger.debug(
                     f"AngelHeart[{chat_id}]: 自说自话检测 - 内容完全重复，判为刷屏，不接"

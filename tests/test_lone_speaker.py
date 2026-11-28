@@ -21,7 +21,7 @@ def message(
     sender="u1",
     role="user",
     timestamp=NOW,
-    lone_eligible=None,
+    lone_eligible=True,
     **extra,
 ):
     item = {
@@ -299,3 +299,81 @@ def test_config_defaults_and_template_inheritance():
 
     group = ChatProfileStore.template_from_global(config).get("leave_reply") or {}
     assert "leave_lone_reply" in group, "新建群模板时会丢掉 leave_lone_reply"
+
+
+def test_missing_lone_eligible_is_treated_as_non_plain(monkeypatch):
+    """缺失 lone_eligible 的消息按非纯文字处理。
+
+    冷启动补种的消息不带这个字段，且 content 是把原始消息压平后的字符串，
+    图片与 @ 段在压平中就丢了。放行等于把「图 + 一句话」当成纯文字接住。
+    """
+    messages = [
+        message("1"),
+        message("2"),
+        message("3", lone_eligible=None),  # 字段缺失，不是显式 False
+    ]
+    assert checker(monkeypatch, messages).get_leave_reply_trigger("g") == ""
+
+
+def test_missing_lone_eligible_in_the_middle_breaks_the_run(monkeypatch):
+    """补种消息夹在中间时打断连发段，不让它被算作纯文字。"""
+    messages = [
+        message("1"),
+        message("seed", lone_eligible=None),
+        message("2"),
+        message("3"),
+    ]
+    assert checker(monkeypatch, messages).get_leave_reply_trigger("g") == ""
+
+
+def test_message_id_locates_the_target_instead_of_the_last_message(monkeypatch):
+    """给了 message_id 就只统计到那条为止，走按 id 精确匹配的分支。
+
+    账本尾部是他后来单独说的两句，若按「取最后一条」只数得到两条；
+    指定到第三句时，前面连续三条才是完整的一轮。
+    """
+    messages = [
+        message("1"),
+        message("2"),
+        message("3"),
+        message("other", sender="u2"),
+        message("4"),
+        message("5"),
+    ]
+    value = checker(monkeypatch, messages)
+    assert value.get_leave_reply_trigger("g", message_id="3") == "lone_speaker"
+    # 不指定 id 时取最后一条，往前被别人的消息切断，只剩两条
+    assert value.get_leave_reply_trigger("g") == ""
+
+
+def test_unknown_message_id_does_not_trigger(monkeypatch):
+    messages = [message("1"), message("2"), message("3")]
+    assert (
+        checker(monkeypatch, messages).get_leave_reply_trigger(
+            "g", message_id="not-there"
+        )
+        == ""
+    )
+
+
+def test_distinct_emoji_messages_are_not_spam(monkeypatch):
+    """三条各不相同的表情不算刷屏。
+
+    归一化只留字母数字，纯 emoji 压完都是空串，直接按集合去重会误判成刷屏。
+    """
+    messages = [
+        message("1", content="😂"),
+        message("2", content="😅"),
+        message("3", content="😊"),
+    ]
+    assert checker(monkeypatch, messages).get_leave_reply_trigger("g") == "lone_speaker"
+
+
+def test_identical_emoji_messages_are_spam(monkeypatch):
+    """三条一模一样的表情仍按刷屏挡掉。"""
+    messages = [
+        message("1", content="😂"),
+        message("2", content="😂"),
+        message("3", content="😂"),
+    ]
+    assert checker(monkeypatch, messages).get_leave_reply_trigger("g") == ""
