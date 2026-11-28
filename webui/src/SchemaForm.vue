@@ -28,11 +28,18 @@
 
       <div class="object-config">
         <div class="config-item">
-          <template v-for="row in group.rows" :key="rowKey(row)">
-            <!-- 二级子分区（组内嵌套 object）：小标题软分段 -->
-            <div v-if="row.kind === 'subsection'" class="subsection-title">{{ row.title }}</div>
+          <div
+            v-for="(section, sectionIndex) in group.sections"
+            :key="`${group.key}-s${sectionIndex}`"
+            class="card-section"
+            :class="{ 'card-section--plain': !section.title }"
+          >
+            <div v-if="section.title" class="card-section-title">{{ section.title }}</div>
+            <template v-for="row in section.rows" :key="rowKey(row)">
+              <!-- 二级子分区（组内嵌套 object）：小标题软分段 -->
+              <div v-if="row.kind === 'subsection'" class="subsection-title">{{ row.title }}</div>
 
-            <template v-else>
+              <template v-else>
               <v-row class="config-row" :class="{ 'is-disabled': isDisabled(row) }">
                 <v-col cols="12" :sm="row.block ? 12 : 6" class="property-info">
                   <v-list-item density="compact">
@@ -159,7 +166,8 @@
               </v-row>
               <v-divider class="config-divider" />
             </template>
-          </template>
+            </template>
+          </div>
         </div>
       </div>
     </v-card>
@@ -169,6 +177,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { SchemaMeta } from './schema'
+import { GROUP_SECTIONS } from './sections'
 
 interface FieldRow {
   kind: 'field'
@@ -186,12 +195,19 @@ interface SubsectionRow {
 
 type CardRow = FieldRow | SubsectionRow
 
+interface Section {
+  /** 子块标题；为空表示这张卡不分子块，整段平铺 */
+  title: string
+  rows: CardRow[]
+}
+
 interface Group {
   key: string
   title: string
   subtitle?: string
   canReset: boolean
   rows: CardRow[]
+  sections: Section[]
 }
 
 const props = defineProps<{
@@ -243,6 +259,41 @@ function rowKey(row: CardRow): string {
   return row.kind === 'field' ? row.path.join('.') : row.title
 }
 
+/**
+ * 把一张卡的字段按 GROUP_SECTIONS 切成几块。
+ *
+ * 只搬字段、不丢字段：声明顺序决定块序，没被任何块认领的字段落到末尾的「其他」。
+ * 表里没登记的卡整段平铺，标题留空，渲染时不画子块背景。
+ */
+function buildSections(groupKey: string, rows: CardRow[]): Section[] {
+  const defs = GROUP_SECTIONS[groupKey]
+  if (!defs || !defs.length) return [{ title: '', rows }]
+
+  const byKey = new Map<string, CardRow>()
+  for (const row of rows) {
+    if (row.kind === 'field') byKey.set(row.path[row.path.length - 1], row)
+  }
+
+  const claimed = new Set<CardRow>()
+  const sections: Section[] = []
+  for (const def of defs) {
+    const picked: CardRow[] = []
+    for (const key of def.keys) {
+      const row = byKey.get(key)
+      if (!row) continue
+      picked.push(row)
+      claimed.add(row)
+    }
+    if (picked.length) sections.push({ title: def.label, rows: picked })
+  }
+
+  const leftovers = rows.filter((row) => !claimed.has(row))
+  if (leftovers.length) {
+    sections.push({ title: sections.length ? '其他' : '', rows: leftovers })
+  }
+  return sections
+}
+
 // 顶层叶子归入「常规」组置顶；顶层 object 各成一卡；二级 object 成为卡内子分区
 const groups = computed<Group[]>(() => {
   const schema = props.schema || {}
@@ -269,6 +320,7 @@ const groups = computed<Group[]>(() => {
         subtitle: meta.hint,
         canReset: false,
         rows,
+        sections: [],
       })
     } else {
       rootRows.push(buildField([], key, meta))
@@ -278,12 +330,15 @@ const groups = computed<Group[]>(() => {
   const result: Group[] = []
   if (rootRows.length) {
     // 「常规」组不提供恢复默认（顶层字段无统一默认语义）
-    result.push({ key: '__root__', title: '常规', canReset: false, rows: rootRows })
+    result.push({ key: '__root__', title: '常规', canReset: false, rows: rootRows, sections: [] })
   }
   for (const s of sections) {
     s.canReset = props.fallbackValues !== undefined
       || s.rows.some((r) => r.kind === 'field' && r.meta.default !== undefined)
     result.push(s)
+  }
+  for (const group of result) {
+    group.sections = buildSections(group.key, group.rows)
   }
   return result
 })
@@ -503,6 +558,34 @@ function providerOptions(path: string[]) {
 .config-divider {
   border-color: rgba(0, 0, 0, 0.1);
   margin-left: 24px;
+}
+
+/* 卡内子块：靠浅底和间距分段，不加边框，避免和外面的卡片形成卡中卡 */
+.card-section {
+  margin: 0 8px 12px;
+  padding: 2px 8px 6px;
+  border-radius: 8px;
+  background-color: rgba(var(--v-border-color), 0.09);
+}
+.card-section:last-child {
+  margin-bottom: 0;
+}
+.card-section--plain {
+  margin: 0;
+  padding: 0;
+  border-radius: 0;
+  background-color: transparent;
+}
+.card-section-title {
+  padding: 10px 8px 4px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: rgb(var(--v-theme-secondaryText));
+}
+/* 子块里最后一条后面不再画分隔线 */
+.card-section .config-divider:last-child {
+  display: none;
 }
 
 /* 宽控件独占整行时，标题与控件上下排 */
