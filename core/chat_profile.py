@@ -34,6 +34,7 @@ TEMPLATE_GROUPS: Dict[str, Dict[str, Any]] = {
     "leave_reply": {
         "leave_echo_reply": None,
         "leave_dense_reply": None,
+        "leave_lone_reply": None,
         "echo_detection_threshold": None,
         "echo_detection_window": None,
         "dense_conversation_threshold": None,

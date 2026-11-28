@@ -175,10 +175,16 @@
         "hint": "参与人数达到这个数量，才会判定多人正在热聊。",
         "default": 5
       },
+      "leave_lone_reply": {
+        "type": "bool",
+        "description": "冷场关怀",
+        "hint": "如果一个人连续说话但是没人理他，让我理理他。",
+        "default": false
+      },
       "familiarity_cooldown_duration": {
         "type": "int",
         "description": "两次离场应答的最短间隔（秒）",
-        "hint": "因复读或热聊回复一次后，这段时间内不会再触发下一次离场应答。",
+        "hint": "因复读、热聊或冷场关怀回复一次后，这段时间内不会再触发下一次离场应答。",
         "default": 1800
       }
     }

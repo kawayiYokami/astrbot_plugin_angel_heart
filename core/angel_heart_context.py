@@ -53,6 +53,9 @@ class AngelHeartContext:
 
         # 离场应答冷却：一次性回复后，短时间内不再因复读或密集聊天触发回复。
         self.leave_reply_cooldown_until: Dict[str, float] = {}
+        # 自说自话应答去重：chat_id -> {sender_id: 日期(YYYY-MM-DD)}
+        # 同一个人当天已经被接过一次，就不再接，避免同一件事反复补话。
+        self.lone_reply_given: Dict[str, Dict[str, str]] = {}
 
         # ========== 群聊参与状态 ==========
         # 当前状态跟踪：chat_id -> AngelHeartStatus
@@ -105,6 +108,7 @@ class AngelHeartContext:
         with self.alias_wake_lock:
             self.last_alias_wake_time.clear()
         self.leave_reply_cooldown_until.clear()
+        self.lone_reply_given.clear()
         self.current_states.clear()
         self.status_transition_manager.status_start_times.clear()
         self.work_ledger.clear()

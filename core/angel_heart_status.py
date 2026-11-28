@@ -2,7 +2,7 @@
 
 import time
 from enum import Enum
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from astrbot.api import logger
 
@@ -15,6 +15,12 @@ from .utils.message_hits import (
 # 上下文整理产出的摘要消息以 user 角色存在账本里，但它不是任何人说的话，
 # 任何「扫描用户消息」的判断都必须把它排除。
 SUMMARY_MESSAGE_KINDS = ("context_summary",)
+
+# 冷场关怀的固定参数，不开放配置：一个人连说 3 句、都在 10 分钟内、单条不超过 50 字。
+# 判定细则见 StatusChecker._detect_lone_speaker。
+LONE_SPEAKER_THRESHOLD = 3
+LONE_SPEAKER_WINDOW_SECONDS = 600
+LONE_SPEAKER_MAX_CHARS = 50
 
 
 def _is_summary_message(msg: Dict) -> bool:
@@ -366,6 +372,10 @@ class StatusChecker:
                 return "echo_chamber"
             if cm.leave_dense_reply and self._detect_dense_conversation(chat_id):
                 return "dense_conversation"
+            if cm.leave_lone_reply and self._detect_lone_speaker(
+                chat_id, message_id=message_id
+            ):
+                return "lone_speaker"
         except Exception as e:
             logger.debug(f"AngelHeart[{chat_id}]: 离场应答检测失败: {e}")
         return ""
@@ -493,6 +503,137 @@ class StatusChecker:
 
         except Exception as e:
             logger.debug(f"AngelHeart[{chat_id}]: 密集发言检测失败: {e}")
+            return False
+
+    def _lone_message_text(self, message: Dict) -> str:
+        """取这条消息的纯文字正文；不是纯文字（含引用、@、图片表情）返回空串。"""
+        if message.get("role") != "user" or _is_summary_message(message):
+            return ""
+        if message.get("lone_eligible") is False:
+            return ""
+        content = message.get("content", "")
+        if isinstance(content, list):
+            if not content or any(
+                not isinstance(part, dict)
+                or part.get("type") != "text"
+                or not isinstance(part.get("text"), str)
+                for part in content
+            ):
+                return ""
+            content = "".join(part["text"] for part in content)
+        return content.strip() if isinstance(content, str) else ""
+
+    @staticmethod
+    def _spam_key(text: str) -> str:
+        """把一句话压成比较用的形状：只留文字数字，丢掉标点和空白。
+
+        刷屏的特征是同一条内容反复发，所以只认「压完之后完全一样」，
+        不按字符重合比例判——中文短句本来就共用常用字。
+        """
+        return "".join(ch for ch in str(text or "") if ch.isalnum())
+
+    def _detect_lone_speaker(
+        self, chat_id: str, *, message_id: Optional[str] = None
+    ) -> bool:
+        """同一人自说自话没人接。
+
+        窗口内只有他一个人在说话、每条都是纯文字且不算太长、条数达到阈值、
+        两条之间没有高度重复（挡刷屏）。同一个人当天已经被接过就不再接。
+
+        message_id 给出时只统计到这条消息为止，避免把后来的消息算进这一轮。
+        """
+        try:
+            all_messages = self.angel_context.conversation_ledger.get_all_messages(
+                chat_id
+            )
+            requested_id = str(message_id or "") if message_id is not None else None
+            if requested_id == "":
+                return False
+            target_index = None
+            for index in range(len(all_messages) - 1, -1, -1):
+                message = all_messages[index]
+                if message.get("role") != "user" or _is_summary_message(message):
+                    continue
+                identity = str(
+                    message.get("source_message_id", message.get("message_id", ""))
+                    or ""
+                )
+                if requested_id is None or identity == requested_id:
+                    target_index = index
+                    break
+            if target_index is None:
+                return False
+
+            target = all_messages[target_index]
+            sender_id = str(target.get("sender_id", "") or "")
+            if not sender_id:
+                return False
+
+            # 同一个人当天已经被接过一次，就不再接。
+            given = self.angel_context.lone_reply_given.get(chat_id) or {}
+            today = time.strftime("%Y-%m-%d")
+            if given.get(sender_id) == today:
+                return False
+
+            target_text = self._lone_message_text(target)
+            if not target_text or len(target_text) > LONE_SPEAKER_MAX_CHARS:
+                return False
+
+            cutoff_time = time.time() - LONE_SPEAKER_WINDOW_SECONDS
+            if float(target.get("timestamp", 0) or 0) < cutoff_time:
+                return False
+
+            texts: List[str] = []
+            seen = set()
+            for message in reversed(all_messages[: target_index + 1]):
+                if message.get("role") != "user" or _is_summary_message(message):
+                    continue
+                if float(message.get("timestamp", 0) or 0) < cutoff_time:
+                    continue
+                # 别人的消息是连发段的边界：他这段自说自话到此为止，
+                # 更早别人说过话不算他"没人搭话"，只说明连发段从这里开始。
+                if str(message.get("sender_id", "") or "") != sender_id:
+                    break
+                identity = str(
+                    message.get("source_message_id", message.get("message_id", ""))
+                    or ""
+                )
+                if identity and identity in seen:
+                    continue
+                if identity:
+                    seen.add(identity)
+                text = self._lone_message_text(message)
+                if not text:
+                    # 中间夹了带图、带引用、带 @ 的消息：不是连续的纯文字，本轮作废
+                    return False
+                if len(text) > LONE_SPEAKER_MAX_CHARS:
+                    # 纯文字但太长：这条不计入，也不算中断
+                    continue
+                texts.append(text)
+
+            if len(texts) < LONE_SPEAKER_THRESHOLD:
+                return False
+
+            # 三条全是同一句话 → 刷屏广告，不算。
+            # 只认「全部相同」：人自说自话时重复一个应答词（好、嗯）很常见，
+            # 按部分重复判会把正常连发整轮吞掉。
+            spam_keys = {self._spam_key(text) for text in texts}
+            if len(texts) > 1 and len(spam_keys) == 1:
+                logger.debug(
+                    f"AngelHeart[{chat_id}]: 自说自话检测 - 内容完全重复，判为刷屏，不接"
+                )
+                return False
+
+            given[sender_id] = today
+            self.angel_context.lone_reply_given[chat_id] = given
+            logger.debug(
+                f"AngelHeart[{chat_id}]: 自说自话检测 - {sender_id} "
+                f"连发 {len(texts)} 条纯文字无人应答"
+            )
+            return True
+
+        except Exception as e:
+            logger.debug(f"AngelHeart[{chat_id}]: 自说自话检测失败: {e}")
             return False
 
 

@@ -492,6 +492,10 @@ class FrontDesk:
             and all(
                 isinstance(component, (Plain, Reply)) for component in message_chain
             ),
+            # 纯文字判定（第三种离场应答用）：组件全是文字，没有引用、没有 @、没有图片表情。
+            # 与 echo_eligible 的区别是这里连 Reply 也不放行——要求字面意义上的纯文字。
+            "lone_eligible": bool(body_text.strip())
+            and all(isinstance(component, Plain) for component in message_chain),
             "content": content_list,  # 标准多模态列表
             "sender_id": event.get_sender_id(),
             "sender_name": self._normalize_sender_name(

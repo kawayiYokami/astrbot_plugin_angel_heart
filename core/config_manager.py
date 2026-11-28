@@ -203,6 +203,11 @@ class ConfigManager:
         return self._get_grouped("leave_reply", "leave_dense_reply", False)
 
     @property
+    def leave_lone_reply(self) -> bool:
+        """冷场关怀：一个人连续说话没人理他时，是否去理一句。"""
+        return self._get_grouped("leave_reply", "leave_lone_reply", False)
+
+    @property
     def echo_detection_threshold(self) -> int:
         return self._get_grouped("leave_reply", "echo_detection_threshold", 3)
 

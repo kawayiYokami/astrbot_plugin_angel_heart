@@ -89,6 +89,10 @@ class FishingDirectReply:
             if trigger_type == "echo_chamber":
                 strategy = "跟紧复读队形"
                 topic = "复读互动"
+            elif trigger_type == "lone_speaker":
+                # 他一个人连说几句没人接：自然接住最后一句，不点破、不慰问。
+                strategy = "接住他最后一句，别点破没人理"
+                topic = "自说自话"
             else:  # dense_conversation
                 strategy = "回应热闹聊天"
                 topic = "密集讨论"

@@ -50,7 +50,8 @@ export const GROUPS: GroupDef[] = [
       { key: 'dense_conversation_threshold', label: '热聊判定条数', type: 'number', step: 1, hint: '在设定时间内达到这个消息数，才会判定聊天很热闹。' },
       { key: 'dense_conversation_window', label: '热聊判定窗口（秒）', type: 'number', step: 10, hint: '只统计这段时间内发出的消息。' },
       { key: 'min_participant_count', label: '最少参与人数', type: 'number', step: 1, hint: '参与人数达到这个数量，才会判定多人正在热聊。' },
-      { key: 'familiarity_cooldown_duration', label: '回复冷却时长（秒）', type: 'number', step: 60, hint: '因复读或热聊回复一次后，这段时间内不会再触发下一次离场应答。' },
+      { key: 'leave_lone_reply', label: '冷场关怀', type: 'bool', hint: '如果一个人连续说话但是没人理他，让我理理他。' },
+      { key: 'familiarity_cooldown_duration', label: '回复冷却时长（秒）', type: 'number', step: 60, hint: '因复读、热聊或冷场关怀回复一次后，这段时间内不会再触发下一次离场应答。' },
     ],
   },
   {
